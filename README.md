@@ -2,10 +2,6 @@
 
 A high-performance, memory-safe Layer 1 blockchain implementation in Rust, featuring Proof-of-Work consensus, a complete P2P networking stack, and a modular architecture designed for future post-quantum upgrades.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)
-
 ## Features
 
 - **Consensus**: SHA256d Proof-of-Work with per-block difficulty adjustment (150s target).
@@ -54,10 +50,10 @@ curl -X POST http://127.0.0.1:8332 \
 
 ## Project Status
 
-**Version**: 0.2.0 (Alpha)  
+**Version**: 0.2.0 (Alpha)
 **Phase**: P2P Network Implementation (Complete)
 
-### Implemented ✅
+### Implemented
 
 - **Core**: Block/Tx validation, Merkle roots, UTXO set management.
 - **Networking**:
@@ -70,7 +66,7 @@ curl -X POST http://127.0.0.1:8332 \
 - **RPC**: Full suite of control commands (`getblockchaininfo`, `mineblocks`, `getpeerinfo`, etc.).
 - **UI**: Terminal User Interface (TUI) for real-time statistics.
 
-### Roadmap 🗺️
+### Roadmap
 
 - **Phase 1 (Current)**: Bitcoin-like foundation (PoW, UTXO, P2P).
 - **Phase 2**: Wallet integration and transaction management.
