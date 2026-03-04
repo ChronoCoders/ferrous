@@ -1,53 +1,48 @@
 # Ferrous Network
 
-A Bitcoin-inspired blockchain implementation in Rust, featuring Proof-of-Work consensus, UTXO transactions, and a stack-based scripting engine.
+A high-performance, memory-safe Layer 1 blockchain implementation in Rust, featuring Proof-of-Work consensus, a complete P2P networking stack, and a modular architecture designed for future post-quantum upgrades.
+
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)
+![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)
 
 ## Features
 
-- **Nakamoto Consensus**: Proof-of-Work with SHA256d hashing
-- **UTXO Model**: Unspent Transaction Output tracking with witness support
-- **Script Engine**: Stack-based VM supporting P2PKH and P2WPKH
-- **Difficulty Adjustment**: Per-block target retargeting with timespan clamped to \[1/4, 4\] × target block time
-- **Chain Reorganization**: Automatic reorg handling with cumulative work comparison
-- **Network Modes**: Mainnet, Testnet, and Regtest configurations via `ChainParams`
-- **JSON-RPC Interface**: HTTP-based node control and queries
-- **Zero Unsafe Code**: Memory-safe implementation with comprehensive testing
+- **Consensus**: SHA256d Proof-of-Work with per-block difficulty adjustment (150s target).
+- **Networking**: Full P2P stack with headers-first sync, block relay, and inventory protocol.
+- **Storage**: Persistent blockchain state using RocksDB.
+- **Architecture**: Modular design separating consensus, networking, and storage logic.
+- **Interface**: JSON-RPC API and TUI Dashboard for node monitoring.
+- **Safety**: 100% safe Rust code with strict linting (`deny(warnings)`).
 
 ## Quick Start
 
 ### Prerequisites
 - Rust 1.70+ (stable)
-- Cargo package manager
+- Clang (for RocksDB bindings)
+- CMake
 
 ### Build & Run
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/ferrous
+git clone https://github.com/ChronoCoders/ferrous
 cd ferrous
 
-# Run tests
-cargo test
+# Run the full node with TUI dashboard (Regtest mode)
+cargo run --example node -- --dashboard --network regtest
 
-# Start node (Regtest mode - fast mining)
-cargo run --example node -- --network regtest
-
-# Start node (Mainnet mode)
+# Run on Mainnet
 cargo run --example node -- --network mainnet
 ```
 
-### Mine Blocks via RPC
+### Mining (Regtest)
+
+To mine blocks instantly in `regtest` mode, open a second terminal and use the RPC interface:
 
 ```powershell
 # PowerShell
-$body = @{
-    jsonrpc = "2.0"
-    method = "mineblocks"
-    params = @(10)
-    id = 1
-} | ConvertTo-Json
-
-Invoke-RestMethod -Uri http://127.0.0.1:8332 -Method Post -Body $body -ContentType "application/json"
+Invoke-RestMethod -Uri http://127.0.0.1:8332 -Method Post -Body '{"jsonrpc": "2.0", "method": "mineblocks", "params": [10], "id": 1}' -ContentType "application/json"
 ```
 
 ```bash
@@ -59,87 +54,56 @@ curl -X POST http://127.0.0.1:8332 \
 
 ## Project Status
 
-**Current Phase**: Single-node testnet  
-**Version**: 0.1.0  
-**Completion**: ~60% of full node implementation
+**Version**: 0.2.0 (Alpha)  
+**Phase**: P2P Network Implementation (Complete)
 
 ### Implemented ✅
 
-- Complete consensus engine (PoW, difficulty adjustment, chain selection)
-- UTXO state management with coinbase maturity and basic double-spend prevention
-- Block validation (Merkle roots, weight, structure)
-- Mining with per-block difficulty adjustment
-- Script execution (P2PKH, P2WPKH)
-- Signature verification (ECDSA over secp256k1)
-- JSON-RPC server (`getblockchaininfo`, `mineblocks`, `getblock`, `getbestblockhash`, `stop`)
-- Network parameter separation (Mainnet/Testnet/Regtest via `ChainParams`)
+- **Core**: Block/Tx validation, Merkle roots, UTXO set management.
+- **Networking**:
+  - Handshake (Version/Verack)
+  - Headers-first synchronization
+  - Block propagation (Inv/GetData/Block)
+  - Transaction relay & Mempool
+  - Peer discovery (Addr/GetAddr)
+- **Storage**: RocksDB integration for chain state and block index.
+- **RPC**: Full suite of control commands (`getblockchaininfo`, `mineblocks`, `getpeerinfo`, etc.).
+- **UI**: Terminal User Interface (TUI) for real-time statistics.
 
-### In Progress 🚧
+### Roadmap 🗺️
 
-- Block/UTXO persistence (embedded key-value store)
-- P2P networking layer
-- Transaction mempool
-
-### Planned 📋
-
-- Wallet functionality
-- Full node sync
-- Multi-signature support
-- Additional script opcodes
+- **Phase 1 (Current)**: Bitcoin-like foundation (PoW, UTXO, P2P).
+- **Phase 2**: Wallet integration and transaction management.
+- **Phase 3**: Post-Quantum Cryptography (CRYSTALS-Dilithium signatures).
+- **Phase 4**: Privacy Features (Ring Confidential Transactions).
 
 ## Documentation
 
 - [Architecture Overview](docs/ARCHITECTURE.md)
 - [Consensus Specification](docs/CONSENSUS.md)
-- [RPC API Reference](docs/API.md)
+- [API Reference](docs/API.md)
 - [Development Guide](docs/DEVELOPMENT.md)
 
 ## Testing
 
+The project maintains a strict "zero warnings" policy.
+
 ```bash
-# Run all tests (unit + integration)
+# Run unit and integration tests
 cargo test
 
-# Run specific integration suites
-cargo test --test chain_tests
-cargo test --test mining_tests
-cargo test --test rpc_tests
+# Run specific P2P integration tests
+cargo test --test p2p_integration
 
-# Show test output
-cargo test -- --nocapture
-
-# Clippy lints
+# Run strict linting checks
 cargo clippy --all-targets --all-features -- -D warnings
+cargo fmt --check
 ```
-
-**Test Statistics**:
-- Integration suites: 15 test binaries under `tests/`
-- Unit tests: focused on consensus, mining, script engine
-- Coverage: Core consensus, mining, RPC, scripts, serialization, UTXO
-- Regtest is used in most integration tests for fast execution
-
-## Performance
-
-**Regtest Mode** (Development):
-- Block time: Fast (easy PoW target, no difficulty retargeting)
-- Difficulty: Constant
-- Use case: Rapid testing, development
-
-**Testnet Mode**:
-- Target block time: ~150 seconds
-- Difficulty: Adjusts per block based on previous timestamp
-- Use case: Public testing, experimentation
-
-**Mainnet Mode**:
-- Target block time: 150 seconds
-- Difficulty: Per-block adjustment with clamped timespan
-- Use case: Production (when ready)
 
 ## License
 
-[Your License Here]
+MIT License. See [LICENSE](LICENSE) for details.
 
 ## Contact
 
-[Your Contact Info]
-
+Maintained by **ChronoCoders**.
