@@ -4,6 +4,8 @@ use crate::primitives::serialize::{Decode, DecodeError, Encode};
 use crate::primitives::varint::{decode as decode_varint, encode as encode_varint, VarIntError};
 use std::net::SocketAddr;
 
+pub type ProtocolVersion = u32;
+
 // Inventory types
 pub const INV_TX: u32 = 1;
 pub const INV_BLOCK: u32 = 2;

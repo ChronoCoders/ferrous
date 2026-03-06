@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::network::connection::PeerConnection;
 use crate::network::discovery::PeerDiscovery;
+use crate::network::dos::DosProtection;
 use crate::network::handshake::perform_handshake;
 use crate::network::keepalive::KeepaliveManager;
 use crate::network::listener::NetworkListener;
@@ -16,6 +17,7 @@ use crate::network::recovery::RecoveryManager;
 use crate::network::relay::BlockRelay;
 use crate::network::stats::NetworkStats;
 use crate::network::sync::SyncManager;
+use crate::network::validation::Validate;
 use crate::primitives::serialize::Encode;
 
 #[derive(Clone, Debug)]
@@ -43,6 +45,7 @@ pub struct PeerManager {
     keepalive: Arc<Mutex<Option<Arc<KeepaliveManager>>>>,
     stats: Arc<Mutex<Option<Arc<NetworkStats>>>>,
     recovery: Arc<Mutex<Option<Arc<RecoveryManager>>>>,
+    dos_protection: Arc<Mutex<DosProtection>>,
 }
 
 impl PeerManager {
@@ -67,6 +70,7 @@ impl PeerManager {
             keepalive: Arc::new(Mutex::new(None)),
             stats: Arc::new(Mutex::new(None)),
             recovery: Arc::new(Mutex::new(None)),
+            dos_protection: Arc::new(Mutex::new(DosProtection::new())),
         }
     }
 
@@ -125,10 +129,28 @@ impl PeerManager {
 
     pub fn disconnect_peer(&self, peer_id: u64) -> Result<(), String> {
         let mut peers = self.peers.lock().unwrap();
-        if peers.remove(&peer_id).is_some() {
+        if let Some(peer) = peers.remove(&peer_id) {
+            let ip = peer.addr.ip();
+            let inbound = peer.inbound;
+
+            // Record disconnection
+            let mut dos = self.dos_protection.lock().unwrap();
+            dos.record_disconnection(peer_id, ip, inbound);
+
             Ok(())
         } else {
             Err("Peer not found".to_string())
+        }
+    }
+
+    pub fn punish_peer(&self, peer_id: u64, score: u32) {
+        let mut peers = self.peers.lock().unwrap();
+        if let Some(peer) = peers.get_mut(&peer_id) {
+            peer.add_ban_score(score);
+            if peer.should_ban() {
+                println!("Peer {} banned (score: {})", peer_id, peer.get_ban_score());
+                peers.remove(&peer_id);
+            }
         }
     }
 
@@ -197,14 +219,29 @@ impl PeerManager {
     }
 
     pub fn connect_to_peer(&self, addr: SocketAddr) -> Result<u64, String> {
+        let ip = addr.ip();
+
+        // DoS check
+        let dos = self.dos_protection.lock().unwrap();
+        if !dos.can_connect_outbound(ip) {
+            return Err("Connection rejected by DoS protection".to_string());
+        }
+        drop(dos);
+
         let peers = self.peers.lock().unwrap();
         if peers.len() >= self.max_peers {
             return Err("Max peers reached".to_string());
         }
         drop(peers);
 
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
-            .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+        let stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+            Ok(s) => s,
+            Err(e) => {
+                let mut dos = self.dos_protection.lock().unwrap();
+                dos.record_failed_attempt(ip);
+                return Err(format!("Failed to connect to {}: {}", addr, e));
+            }
+        };
 
         let conn = PeerConnection::new(stream, self.magic)?;
 
@@ -218,6 +255,7 @@ impl PeerManager {
         peer.inbound = false;
 
         let peers_clone = Arc::clone(&self.peers);
+        let dos_protection_clone = Arc::clone(&self.dos_protection);
         let our_version = self.our_version;
         let our_services = self.our_services;
         let our_height = self.our_height;
@@ -245,6 +283,10 @@ impl PeerManager {
                         peer.last_recv = Instant::now();
                         peer.state = PeerState::Active;
                         peers.insert(id, peer);
+
+                        // Record successful connection
+                        let mut dos = dos_protection_clone.lock().unwrap();
+                        dos.record_connection(id, ip, false);
                     }
                     Err(e) => {
                         println!("Handshake failed with {}: {}", addr, e);
@@ -294,65 +336,165 @@ impl PeerManager {
         let listener = NetworkListener::new(addr, self.magic, self.max_peers);
 
         let peers_clone = Arc::clone(&self.peers);
-        let next_id_clone = Arc::clone(&self.next_peer_id);
-        let our_version = self.our_version;
-        let our_services = self.our_services;
-        let our_height = self.our_height;
+        let next_peer_id_clone = Arc::clone(&self.next_peer_id);
+        let dos_protection_clone = Arc::clone(&self.dos_protection);
         let max_peers = self.max_peers;
 
         listener.start(move |conn| {
-            let mut peers = peers_clone.lock().unwrap();
-            if peers.len() >= max_peers {
-                println!(
-                    "Max peers reached, rejecting incoming connection from {}",
-                    conn.peer_addr()
-                );
+            let peer_addr = conn.peer_addr();
+            let ip = peer_addr.ip();
+
+            // DoS check
+
+            // DoS check
+            let mut dos = dos_protection_clone.lock().unwrap();
+            if !dos.can_accept_inbound(ip) {
+                println!("Rejected inbound connection from {} (DoS protection)", ip);
+                // Record failed attempt for rate limiting
+                dos.record_failed_attempt(ip);
+                return;
+            }
+            drop(dos);
+
+            if peers_clone.lock().unwrap().len() >= max_peers {
+                println!("Max peers reached. Rejecting connection from {}", peer_addr);
                 return;
             }
 
-            let mut id_guard = next_id_clone.lock().unwrap();
-            let id = *id_guard;
-            *id_guard += 1;
-            drop(id_guard);
+            println!("New inbound connection from {}", peer_addr);
+            let mut next_id = next_peer_id_clone.lock().unwrap();
+            let id = *next_id;
+            *next_id += 1;
 
-            let peer = Peer::new_inbound(id, conn);
-            let peer_addr = peer.addr;
-            peers.insert(id, peer); // Insert temporarily to track connection
-            drop(peers); // Release lock during handshake
+            let mut peer = Peer::new_inbound(id, conn);
 
-            // Spawn thread to handle this peer
+            // Let's spawn a handshake thread for inbound too
             let peers_inner = Arc::clone(&peers_clone);
+            let dos_protection_inner = Arc::clone(&dos_protection_clone);
+
             thread::spawn(move || {
-                let nonce = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos() as u64; // Simple nonce
+                peer.state = PeerState::Active; // Auto-active for now as per existing logic
+                peers_inner.lock().unwrap().insert(id, peer);
 
-                // Get peer back to perform handshake
-                let mut peers = peers_inner.lock().unwrap();
-                // Check if peer still exists (could be disconnected)
-                if let Some(mut peer) = peers.remove(&id) {
-                    drop(peers);
-
-                    println!("Starting handshake with inbound peer {}", peer_addr);
-                    match perform_handshake(&mut peer, our_version, our_services, our_height, nonce)
-                    {
-                        Ok(_) => {
-                            println!("Handshake success with {}", peer_addr);
-                            let mut peers = peers_inner.lock().unwrap();
-                            peer.connected_at = Instant::now();
-                            peer.last_recv = Instant::now();
-                            peer.state = PeerState::Active;
-                            peers.insert(id, peer);
-                        }
-                        Err(e) => {
-                            println!("Handshake failed with {}: {}", peer_addr, e);
-                            // Peer is dropped (removed)
-                        }
-                    }
-                }
+                // Record successful connection
+                let mut dos = dos_protection_inner.lock().unwrap();
+                dos.record_connection(id, ip, true);
             });
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_message(
+        id: u64,
+        payload: &MessagePayload,
+        magic: [u8; 4],
+        peers: &Arc<Mutex<HashMap<u64, Peer>>>,
+        relay: &Arc<Mutex<Option<Arc<BlockRelay>>>>,
+        sync: &Arc<Mutex<Option<Arc<SyncManager>>>>,
+        discovery: &Arc<Mutex<Option<Arc<PeerDiscovery>>>>,
+        keepalive: &Arc<Mutex<Option<Arc<KeepaliveManager>>>>,
+        stats: &Arc<Mutex<Option<Arc<NetworkStats>>>>,
+        recovery: &Arc<Mutex<Option<Arc<RecoveryManager>>>>,
+    ) {
+        // Handle Ping/Pong directly here
+        match payload {
+            MessagePayload::Ping(ping) => {
+                // Auto-respond with pong
+                let pong = PongMessage { nonce: ping.nonce };
+                let encoded = Encode::encode(&pong);
+                let resp = NetworkMessage::new(magic, "pong", encoded);
+                let resp_size = resp.encoded_size();
+
+                let mut peers_guard = peers.lock().unwrap();
+                if let Some(peer) = peers_guard.get_mut(&id) {
+                    let _ = peer.send(&resp);
+                    peer.record_sent(resp_size);
+                }
+                // Record sent stats
+                {
+                    let stats_guard = stats.lock().unwrap();
+                    if let Some(stats) = &*stats_guard {
+                        stats.record_message_sent(resp_size);
+                    }
+                }
+            }
+            MessagePayload::Pong(pong) => {
+                let keepalive_guard = keepalive.lock().unwrap();
+                if let Some(keepalive) = &*keepalive_guard {
+                    let _ = keepalive.handle_pong(id, pong.nonce);
+                }
+            }
+            _ => {}
+        }
+
+        // Dispatch to Relay
+        {
+            let relay_guard = relay.lock().unwrap();
+            if let Some(relay) = &*relay_guard {
+                match payload {
+                    MessagePayload::Inv(inv) => {
+                        let _ = relay.handle_inv(id, inv);
+                    }
+                    MessagePayload::GetData(getdata) => {
+                        let _ = relay.handle_getdata(id, getdata);
+                    }
+                    MessagePayload::Block(block) => {
+                        let _ = relay.handle_block(id, block);
+                        // Record block received
+                        let stats_guard = stats.lock().unwrap();
+                        if let Some(stats) = &*stats_guard {
+                            stats.record_block_received();
+                        }
+                        // Notify recovery manager
+                        let recovery_guard = recovery.lock().unwrap();
+                        if let Some(recovery) = &*recovery_guard {
+                            recovery.on_new_block();
+                        }
+                    }
+                    MessagePayload::Tx(tx) => {
+                        let _ = relay.handle_transaction(id, &tx.transaction);
+                        // Record tx received
+                        let stats_guard = stats.lock().unwrap();
+                        if let Some(stats) = &*stats_guard {
+                            stats.record_transaction_received();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Dispatch to Sync
+        {
+            let sync_guard = sync.lock().unwrap();
+            if let Some(sync) = &*sync_guard {
+                match payload {
+                    MessagePayload::Headers(headers) => {
+                        let _ = sync.handle_headers(id, headers);
+                    }
+                    MessagePayload::GetHeaders(getheaders) => {
+                        let _ = sync.handle_getheaders(id, getheaders);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Dispatch to Discovery
+        {
+            let discovery_guard = discovery.lock().unwrap();
+            if let Some(discovery) = &*discovery_guard {
+                match payload {
+                    MessagePayload::Addr(addr) => {
+                        let _ = discovery.handle_addr(addr);
+                    }
+                    MessagePayload::GetAddr(_) => {
+                        let _ = discovery.handle_getaddr(id);
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     pub fn start_message_handler(&self) {
@@ -364,6 +506,7 @@ impl PeerManager {
             Arc::clone(&self.keepalive);
         let stats_clone: Arc<Mutex<Option<Arc<NetworkStats>>>> = Arc::clone(&self.stats);
         let recovery_clone: Arc<Mutex<Option<Arc<RecoveryManager>>>> = Arc::clone(&self.recovery);
+        let dos_protection_clone = Arc::clone(&self.dos_protection);
 
         // Capture magic for auto-pong (can't use self inside thread)
         let magic = self.magic;
@@ -382,211 +525,157 @@ impl PeerManager {
                 }
 
                 for id in peer_ids {
+                    // We need to manage peer disconnection outside of holding the peer reference
+                    let mut should_disconnect = false;
+
                     // Lock peers to access peer
                     let mut peers = peers_clone.lock().unwrap();
                     if let Some(peer) = peers.get_mut(&id) {
                         // Try to read message
                         match peer.receive() {
                             Ok(Some(msg)) => {
-                                let msg_size = msg.encoded_size();
-                                // Update last_recv and record bandwidth
-                                peer.update_last_recv();
-                                peer.record_received(msg_size);
-
-                                // Record stats
-                                {
-                                    let stats_guard = stats_clone.lock().unwrap();
-                                    if let Some(stats) = &*stats_guard {
-                                        stats.record_message_received(msg_size);
-                                    }
-                                }
-
-                                // Check general message rate
-                                if !peer.check_message_rate() {
-                                    println!("Peer {} exceeded message rate limit", id);
+                                // VALIDATION CHECKPOINT 1: Message structure and size
+                                if let Err(e) = msg.validate() {
+                                    println!("Invalid message from {}: {:?}", id, e);
                                     peer.add_ban_score(10);
                                     if peer.should_ban() {
-                                        println!("Banning peer {} for rate limit abuse", id);
-                                        // Cannot remove peer while borrowing it. Marking state as disconnected/banned would be better,
-                                        // but for now we just drop the connection by returning from the loop iteration.
-                                        // The peer will be removed in cleanup or next cycle if we handled state properly.
-                                        // Since we can't remove here, we just rely on 'continue' to stop processing.
-
-                                        // Record ban
-                                        {
-                                            let stats_guard = stats_clone.lock().unwrap();
-                                            if let Some(stats) = &*stats_guard {
-                                                stats.record_banned_peer();
-                                            }
-                                        }
-                                        continue;
+                                        should_disconnect = true;
                                     }
-                                    // Record rate limit event
+                                    // Drop invalid message
+                                    // continue; // REMOVED to avoid skipping cleanup
+                                } else {
+                                    // Only process if valid
+                                    let msg_size = msg.encoded_size();
+                                    // Update last_recv and record bandwidth
+                                    peer.update_last_recv();
+                                    peer.record_received(msg_size);
+
+                                    // Record stats
                                     {
                                         let stats_guard = stats_clone.lock().unwrap();
                                         if let Some(stats) = &*stats_guard {
-                                            stats.record_rate_limited();
+                                            stats.record_message_received(msg_size);
                                         }
                                     }
-                                }
 
-                                drop(peers); // Drop lock before handling
-
-                                // Parse first to avoid cloning for dispatch
-                                match msg.parse_payload() {
-                                    Ok(payload) => {
-                                        // Specific rate limits
-                                        {
-                                            let mut peers = peers_clone.lock().unwrap();
-                                            if let Some(peer) = peers.get_mut(&id) {
-                                                match &payload {
-                                                    MessagePayload::Inv(_) => {
-                                                        if !peer.check_inv_rate() {
-                                                            println!(
-                                                                "Peer {} exceeded INV rate",
-                                                                id
-                                                            );
-                                                            peer.add_ban_score(20);
-                                                        }
-                                                    }
-                                                    MessagePayload::GetData(_) => {
-                                                        if !peer.check_getdata_rate() {
-                                                            println!(
-                                                                "Peer {} exceeded GetData rate",
-                                                                id
-                                                            );
-                                                            peer.add_ban_score(20);
-                                                        }
-                                                    }
-                                                    _ => {}
-                                                }
-
-                                                if peer.should_ban() {
-                                                    peers.remove(&id);
-                                                    continue;
+                                    // Check general message rate
+                                    if !peer.check_message_rate() {
+                                        println!("Peer {} exceeded message rate limit", id);
+                                        peer.add_ban_score(10);
+                                        if peer.should_ban() {
+                                            println!("Banning peer {} for rate limit abuse", id);
+                                            // Record ban
+                                            {
+                                                let stats_guard = stats_clone.lock().unwrap();
+                                                if let Some(stats) = &*stats_guard {
+                                                    stats.record_banned_peer();
                                                 }
                                             }
-                                        }
-
-                                        // Handle Ping/Pong directly here
-                                        match &payload {
-                                            MessagePayload::Ping(ping) => {
-                                                // Auto-respond with pong
-                                                let pong = PongMessage { nonce: ping.nonce };
-                                                let encoded =
-                                                    crate::primitives::serialize::Encode::encode(
-                                                        &pong,
-                                                    );
-                                                let resp =
-                                                    crate::network::message::NetworkMessage::new(
-                                                        magic, "pong", encoded,
-                                                    );
-                                                let resp_size = resp.encoded_size();
-
-                                                let mut peers = peers_clone.lock().unwrap();
-                                                if let Some(peer) = peers.get_mut(&id) {
-                                                    let _ = peer.send(&resp);
-                                                    peer.record_sent(resp_size);
-                                                }
-                                                // Record sent stats
-                                                {
-                                                    let stats_guard = stats_clone.lock().unwrap();
-                                                    if let Some(stats) = &*stats_guard {
-                                                        stats.record_message_sent(resp_size);
-                                                    }
-                                                }
-                                            }
-                                            MessagePayload::Pong(pong) => {
-                                                let keepalive_guard =
-                                                    keepalive_clone.lock().unwrap();
-                                                if let Some(keepalive) = &*keepalive_guard {
-                                                    let _ = keepalive.handle_pong(id, pong.nonce);
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-
-                                        // Dispatch to Relay
-                                        {
-                                            let relay_guard = relay_clone.lock().unwrap();
-                                            if let Some(relay) = &*relay_guard {
-                                                match &payload {
-                                                    MessagePayload::Inv(inv) => {
-                                                        let _ = relay.handle_inv(id, inv);
-                                                    }
-                                                    MessagePayload::GetData(getdata) => {
-                                                        let _ = relay.handle_getdata(id, getdata);
-                                                    }
-                                                    MessagePayload::Block(block) => {
-                                                        let _ = relay.handle_block(id, block);
-                                                        // Record block received
-                                                        let stats_guard =
-                                                            stats_clone.lock().unwrap();
-                                                        if let Some(stats) = &*stats_guard {
-                                                            stats.record_block_received();
-                                                        }
-                                                        // Notify recovery manager
-                                                        let recovery_guard =
-                                                            recovery_clone.lock().unwrap();
-                                                        if let Some(recovery) = &*recovery_guard {
-                                                            recovery.on_new_block();
-                                                        }
-                                                    }
-                                                    MessagePayload::Tx(tx) => {
-                                                        let _ = relay.handle_transaction(
-                                                            id,
-                                                            &tx.transaction,
-                                                        );
-                                                        // Record tx received
-                                                        let stats_guard =
-                                                            stats_clone.lock().unwrap();
-                                                        if let Some(stats) = &*stats_guard {
-                                                            stats.record_transaction_received();
-                                                        }
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
-                                        }
-
-                                        // Dispatch to Sync
-                                        {
-                                            let sync_guard = sync_clone.lock().unwrap();
-                                            if let Some(sync) = &*sync_guard {
-                                                match &payload {
-                                                    MessagePayload::Headers(headers) => {
-                                                        let _ = sync.handle_headers(id, headers);
-                                                    }
-                                                    MessagePayload::GetHeaders(getheaders) => {
-                                                        let _ =
-                                                            sync.handle_getheaders(id, getheaders);
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
-                                        }
-
-                                        // Dispatch to Discovery
-                                        {
-                                            let discovery_guard = discovery_clone.lock().unwrap();
-                                            if let Some(discovery) = &*discovery_guard {
-                                                match &payload {
-                                                    MessagePayload::Addr(addr) => {
-                                                        let _ = discovery.handle_addr(addr);
-                                                    }
-                                                    MessagePayload::GetAddr(_) => {
-                                                        let _ = discovery.handle_getaddr(id);
-                                                    }
-                                                    _ => {}
+                                            should_disconnect = true;
+                                            // continue; // REMOVED
+                                        } else {
+                                            // Record rate limit event
+                                            {
+                                                let stats_guard = stats_clone.lock().unwrap();
+                                                if let Some(stats) = &*stats_guard {
+                                                    stats.record_rate_limited();
                                                 }
                                             }
                                         }
                                     }
-                                    Err(e) => {
-                                        println!("Error parsing message from peer {}: {:?}", id, e);
-                                        let stats_guard = stats_clone.lock().unwrap();
-                                        if let Some(stats) = &*stats_guard {
-                                            stats.record_invalid_message();
+
+                                    // Process payload only if not disconnected
+                                    if !should_disconnect {
+                                        drop(peers); // Drop lock before handling
+
+                                        // Parse first to avoid cloning for dispatch
+                                        match msg.parse_payload() {
+                                            Ok(payload) => {
+                                                // VALIDATION CHECKPOINT 2: Payload content
+                                                if let Err(e) = payload.validate() {
+                                                    println!(
+                                                        "Invalid payload from {}: {:?}",
+                                                        id, e
+                                                    );
+                                                    // Severe violation
+                                                    // Re-acquire lock to punish
+                                                    let mut peers = peers_clone.lock().unwrap();
+                                                    if let Some(peer) = peers.get_mut(&id) {
+                                                        peer.add_ban_score(20);
+                                                        if peer.should_ban() {
+                                                            // We can remove directly here as we re-acquired lock
+                                                            // and we are outside the main loop lock scope for 'peer'
+                                                            // Wait, 'peers' variable shadows outer 'peers'?
+                                                            // Yes, 'let mut peers = ...'.
+                                                            // So we can remove.
+                                                            peers.remove(&id);
+                                                        }
+                                                    }
+                                                    // continue; // Loop continue
+                                                } else {
+                                                    // Valid payload processing...
+                                                    // Re-acquire lock for rate limits
+                                                    let mut peers = peers_clone.lock().unwrap();
+                                                    // Check if peer still exists
+                                                    if let Some(peer) = peers.get_mut(&id) {
+                                                        match &payload {
+                                                            MessagePayload::Inv(_) => {
+                                                                if !peer.check_inv_rate() {
+                                                                    println!(
+                                                                        "Peer {} exceeded INV rate",
+                                                                        id
+                                                                    );
+                                                                    peer.add_ban_score(20);
+                                                                }
+                                                            }
+                                                            MessagePayload::GetData(_) => {
+                                                                if !peer.check_getdata_rate() {
+                                                                    println!("Peer {} exceeded GetData rate", id);
+                                                                    peer.add_ban_score(20);
+                                                                }
+                                                            }
+                                                            _ => {}
+                                                        }
+
+                                                        if peer.should_ban() {
+                                                            peers.remove(&id);
+                                                            // continue;
+                                                        } else {
+                                                            // Continue processing
+                                                            drop(peers); // Drop again for dispatch
+
+                                                            // ... Dispatch logic ...
+                                                            // Need to indent existing dispatch logic or extract it
+                                                            // To avoid massive indentation, I'll use a helper or block
+                                                            // The existing code has dispatch logic following.
+                                                            // I need to wrap it.
+
+                                                            Self::dispatch_message(
+                                                                id,
+                                                                &payload,
+                                                                magic,
+                                                                &peers_clone,
+                                                                &relay_clone,
+                                                                &sync_clone,
+                                                                &discovery_clone,
+                                                                &keepalive_clone,
+                                                                &stats_clone,
+                                                                &recovery_clone,
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                println!(
+                                                    "Error parsing message from peer {}: {:?}",
+                                                    id, e
+                                                );
+                                                let stats_guard = stats_clone.lock().unwrap();
+                                                if let Some(stats) = &*stats_guard {
+                                                    stats.record_invalid_message();
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -596,13 +685,70 @@ impl PeerManager {
                             }
                             Err(e) => {
                                 println!("Error receiving from peer {}: {:?}", id, e);
-                                peers.remove(&id); // Disconnect
-                                                   // Record failed/closed connection
+                                should_disconnect = true;
+                                // Record failed/closed connection
                                 let stats_guard = stats_clone.lock().unwrap();
                                 if let Some(stats) = &*stats_guard {
                                     stats.record_connection_closed();
                                 }
                             }
+                        }
+                    } else {
+                        // Peer not found (removed concurrently?)
+                    }
+
+                    // Handle disconnection if marked
+                    if should_disconnect {
+                        // We need to re-acquire lock if we dropped it, or use the current lock if we hold it.
+                        // In the logic above:
+                        // - If validation 1 fails: we hold 'peers'. We set flag. We need to remove.
+                        // - If receive fails: we hold 'peers'. We set flag.
+                        // - If rate limit: we hold 'peers'.
+                        // - But if validation 2 fails: we dropped 'peers'. We re-acquired and handled removal there.
+                        // So 'should_disconnect' is only set when we HOLD 'peers'.
+                        // Wait, 'validation 2' re-acquires and removes immediately. It doesn't set flag.
+                        // So 'should_disconnect' is only for the first block where we hold 'peers'.
+
+                        // BUT, I dropped 'peers' in the middle of the loop!
+                        // The 'should_disconnect' logic assumes I hold 'peers'.
+                        // But if I drop 'peers' and then re-acquire, 'should_disconnect' must be checked BEFORE dropping.
+                        // Or I must ensure I don't use 'should_disconnect' after dropping.
+
+                        // The code structure:
+                        // lock peers
+                        // if validation 1 fails -> set flag, continue.
+                        // if receive fails -> set flag.
+                        // if rate limit -> set flag, continue.
+
+                        // drop peers
+
+                        // if validation 2 fails -> re-acquire, remove.
+
+                        // The 'should_disconnect' check at end of loop is OUTSIDE the 'peers' lock scope?
+                        // No, the original code had 'peers' lock scoped to 'if let Some(peer)'.
+                        // I need to be careful.
+
+                        // I will put 'should_disconnect' check inside the lock scope if possible, or re-acquire.
+                        // Since I dropped 'peers' in the middle, I must re-acquire if I want to remove at the end?
+                        // But if I set flag *before* drop, and then `continue`, I skip the drop!
+                        // So the lock is still held?
+                        // No, `continue` jumps to next iteration of `for id in peer_ids`.
+                        // The lock `peers` is dropped when `peers` variable goes out of scope.
+                        // `peers` variable is declared inside `for` loop.
+                        // So `continue` drops `peers`.
+                        // So if I set `should_disconnect = true` and `continue`, `peers` is dropped.
+                        // Then `should_disconnect` is checked *after* the `if let Some(peer)` block?
+                        // I need to place the check *after* the block but *inside* the loop.
+                        // And since `peers` is dropped, I must re-acquire to remove.
+
+                        // Correct logic:
+                        let mut peers = peers_clone.lock().unwrap();
+                        if let Some(peer) = peers.remove(&id) {
+                            let ip = peer.addr.ip();
+                            let inbound = peer.inbound;
+                            // Record disconnection
+                            let mut dos = dos_protection_clone.lock().unwrap();
+                            dos.record_disconnection(id, ip, inbound);
                         }
                     }
                 }
@@ -623,7 +769,12 @@ impl PeerManager {
         }
 
         for id in dead_peers {
-            peers.remove(&id);
+            if let Some(peer) = peers.remove(&id) {
+                let ip = peer.addr.ip();
+                let inbound = peer.inbound;
+                let mut dos = self.dos_protection.lock().unwrap();
+                dos.record_disconnection(id, ip, inbound);
+            }
         }
 
         Ok(())

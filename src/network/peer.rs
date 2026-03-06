@@ -71,10 +71,7 @@ impl Peer {
     }
 
     pub fn new_inbound(id: u64, connection: PeerConnection) -> Self {
-        let addr = connection
-            .peer_addr()
-            .parse()
-            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+        let addr = connection.peer_addr();
         let now = Instant::now();
         Self {
             id,

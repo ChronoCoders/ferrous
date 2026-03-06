@@ -142,8 +142,8 @@ impl PeerConnection {
         }
     }
 
-    pub fn peer_addr(&self) -> String {
-        self.addr.to_string()
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.addr
     }
 }
 
