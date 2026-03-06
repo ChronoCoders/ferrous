@@ -29,6 +29,9 @@ Implemented methods:
 - `getblock`
 - `getbestblockhash`
 - `stop`
+- `getpeerinfo`
+- `getrecoverystatus`
+- `forcereconnect`
 
 Error codes:
 
@@ -184,6 +187,98 @@ Fields:
   - `code = -32603`, `message = "Invalid hash length"`
 - If the block is not found:
   - `code = -32603`, `message = "Block not found"`
+
+## getpeerinfo
+
+Returns data about each connected network peer.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getpeerinfo",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+`result` is a `GetPeerInfoResponse`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "peers": [
+      {
+        "id": 1,
+        "addr": "127.0.0.1:8333",
+        "state": "Active",
+        "version": 70015,
+        "services": 1,
+        "start_height": 0,
+        "inbound": true,
+        "ban_score": 0,
+        "bytes_sent": 1024,
+        "bytes_received": 2048,
+        "send_rate": 512.0,
+        "recv_rate": 1024.0
+      }
+    ]
+  },
+  "id": 1
+}
+```
+
+## getrecoverystatus
+
+Returns the current status of the network recovery manager.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getrecoverystatus",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+`result` is a `GetRecoveryStatusResponse`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "partition_detected": false,
+    "last_block_age": 120,
+    "recovery_attempts": 0,
+    "active_peers": 5,
+    "known_addresses": 15
+  },
+  "id": 1
+}
+```
+
+## forcereconnect
+
+Manually triggers a full network reconnection (disconnects all peers and restarts discovery).
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "forcereconnect",
+  "params": [],
+  "id": 1
+}
+```
 
 ## getbestblockhash
 

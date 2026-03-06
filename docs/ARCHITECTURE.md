@@ -109,6 +109,17 @@ Responsibilities:
 - `mine_block(chain, transactions)` constructs a block template, computes the target via `calculate_next_target`, and searches nonces until `check_proof_of_work` passes.
 - `mine_and_attach(chain, transactions)` mines a block and attaches it to `ChainState` in one operation.
 
+### Network Recovery and Diagnostics
+
+To ensure robustness, the node includes a dedicated recovery system:
+
+- **RecoveryManager**: Monitors network health and detects partitions.
+  - Tracks active peer count and last block reception time.
+  - Automatically attempts reconnection if isolated (0 peers for >5m or stale tip >30m).
+  - Strategies: Query known good peers (AddressManager), fallback to seed nodes, or force full reconnect.
+- **NetworkStats**: Aggregates metrics (bytes sent/recv, message counts, ban scores) for diagnostics.
+- **Diagnostics**: Provides detailed peer health reports via RPC.
+
 ### RpcServer
 
 Defined in [server.rs](file:///c:/ferrous/src/rpc/server.rs#L8-L12), `RpcServer` owns:
@@ -116,12 +127,14 @@ Defined in [server.rs](file:///c:/ferrous/src/rpc/server.rs#L8-L12), `RpcServer`
 - `Arc<Mutex<ChainState>>` for synchronized access to the chain.
 - `Arc<Miner>` for mining operations.
 - `Arc<PeerManager>` for P2P network control.
+- `Arc<RecoveryManager>` for network health monitoring.
+- `Arc<NetworkStats>` for metrics.
 - A `tiny_http::Server` instance bound to the configured address.
 
 Responsibilities:
 
 - `run()` accepts HTTP requests and dispatches JSON-RPC calls.
-- Implements `getblockchaininfo`, `mineblocks`, `getblock`, `getbestblockhash`, `stop`, and `getpeerinfo`.
+- Implements `getblockchaininfo`, `mineblocks`, `getblock`, `getbestblockhash`, `stop`, `getpeerinfo`, `getrecoverystatus`, and `forcereconnect`.
 
 ## Data Flow
 

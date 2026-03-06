@@ -78,3 +78,12 @@ This document specifies the peer-to-peer network protocol used by Ferrous nodes 
 - **Ping/Pong**: Nodes send `ping` messages every 60 seconds to ensure connections remain active.
 - **Dead Peer Detection**: If a peer misses 3 consecutive `pong` responses or sends no data for 20 minutes, it is disconnected.
 - **Handshake Timeout**: New connections must complete the Version/Verack handshake within 10 seconds or are dropped.
+
+### Network Recovery
+
+- **Partition Detection**:
+  - A node is considered "partitioned" if it has 0 active peers for >5 minutes or its chain tip is older than 30 minutes (MTP).
+- **Recovery Strategy**:
+  1. **Address Manager**: Attempt to connect to previously known good peers.
+  2. **Seed Nodes**: Fallback to hardcoded seed nodes.
+  3. **Force Reconnect**: If recovery fails repeatedly, disconnect all peers and restart discovery.
