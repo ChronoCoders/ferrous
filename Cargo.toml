@@ -3,6 +3,10 @@ name = "ferrous-node"
 version = "0.1.0"
 edition = "2021"
 authors = ["Chronocoder"]
+description = "A next-generation, memory-safe Layer 1 blockchain engineered in Rust with modular architecture and P2P recovery."
+license = "MIT"
+repository = "https://github.com/ChronoCoders/ferrous"
+keywords = ["blockchain", "rust", "cryptocurrency", "layer1", "p2p"]
 
 [dependencies]
 sha2 = "0.10"

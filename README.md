@@ -1,6 +1,8 @@
 # Ferrous Network
 
-A high-performance, memory-safe Layer 1 blockchain implementation in Rust, featuring Proof-of-Work consensus, a complete P2P networking stack, and a modular architecture designed for future post-quantum upgrades.
+A next-generation, memory-safe Layer 1 blockchain engineered from the ground up in Rust. Ferrous combines the battle-tested security of Bitcoin-like Proof-of-Work consensus with a modern, modular architecture designed for high performance and long-term extensibility.
+
+Featuring a custom-built, asynchronous P2P networking stack with automatic partition recovery, persistent RocksDB storage, and a strict "zero-warnings" code quality policy, Ferrous serves as both a production-ready foundation for decentralized applications and a reference implementation for future cryptographic upgrades (Post-Quantum signatures, RingCT privacy).
 
 ## Features
 
