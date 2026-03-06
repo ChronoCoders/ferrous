@@ -284,7 +284,7 @@ mod tests {
         let chain = Arc::new(Mutex::new(ChainState::new(params, db_path, None).unwrap()));
 
         // Setup PeerManager
-        let peer_manager = Arc::new(PeerManager::new(REGTEST_MAGIC, 70015, 0, 0, 10));
+        let peer_manager = Arc::new(PeerManager::new(REGTEST_MAGIC, 10, 70015, 0, 0));
 
         // Setup SyncManager
         let sync_manager = SyncManager::new(chain.clone(), peer_manager.clone());

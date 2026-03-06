@@ -32,10 +32,10 @@ impl TestNode {
 
         let peer_manager = Arc::new(PeerManager::new(
             REGTEST_MAGIC,
+            10, // Max peers
             70015,
             0,
             0,
-            10, // Max peers
         ));
 
         let mempool = Arc::new(NetworkMempool::new(chain.clone()));
@@ -49,8 +49,8 @@ impl TestNode {
         let sync = Arc::new(SyncManager::new(chain.clone(), peer_manager.clone()));
 
         // Link components
-        peer_manager.set_relay_handler(relay.clone());
-        peer_manager.set_sync_handler(sync.clone());
+        peer_manager.set_relay(relay.clone());
+        peer_manager.set_sync_manager(sync.clone());
 
         // Start message loop
         peer_manager.start_message_handler();

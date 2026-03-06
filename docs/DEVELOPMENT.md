@@ -32,7 +32,7 @@ Key directories:
   - `primitives/`: Hashing, serialization, varint utilities.
   - `rpc/`: JSON-RPC server and method definitions.
   - `script/`: Script opcodes, engine, and sighash.
-- `tests/`: Integration tests for consensus, mining, RPC, scripts, and serialization.
+- `tests/`: Integration tests for consensus, mining, RPC, scripts, serialization, and networking.
 - `examples/`
   - `node.rs`: Example standalone node binary exposing the RPC interface.
 
@@ -41,12 +41,13 @@ Key directories:
 The primary entry point is the example node:
 
 ```bash
-cargo run --example node -- --network regtest
+cargo run --example node -- --network regtest --dashboard
 ```
 
 Options:
 
-- `--network <mainnet|testnet|regtest>` selects `ChainParams` from `consensus::params::Network`.
+- `--network <mainnet|testnet|regtest>` selects `ChainParams`.
+- `--dashboard` enables the TUI dashboard for monitoring peers and blocks.
 - The example binds the RPC server to `127.0.0.1:8332`.
 
 Typical workflows:
@@ -68,6 +69,7 @@ cargo test
 cargo test --test chain_tests
 cargo test --test mining_tests
 cargo test --test rpc_tests
+cargo test --test p2p_integration
 
 # Show output
 cargo test -- --nocapture
@@ -105,6 +107,7 @@ Integration suites (under `tests/`):
 - `utxo_tests`
 - `validation_tests`
 - `varint_tests`
+- `p2p_integration` (End-to-end networking tests)
 
 Together with unit tests in the modules, these cover:
 
@@ -113,6 +116,7 @@ Together with unit tests in the modules, these cover:
 - Chain reorganization and UTXO behavior.
 - Script engine, sighash, and signature verification.
 - RPC request handling and error paths.
+- P2P Handshake, Block Propagation, and Peer Discovery.
 
 Most integration tests run against the `Regtest` network parameters for speed.
 

@@ -1,12 +1,17 @@
 pub mod addrman;
 pub mod connection;
+pub mod diagnostics;
 pub mod discovery;
 pub mod handshake;
+pub mod keepalive;
 pub mod listener;
 pub mod manager;
 pub mod mempool;
 pub mod message;
 pub mod peer;
 pub mod protocol;
+pub mod ratelimit;
+pub mod recovery;
 pub mod relay;
+pub mod stats;
 pub mod sync;

@@ -1,9 +1,11 @@
+use std::net::SocketAddr;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
 use crate::network::connection::PeerConnection;
 use crate::network::message::NetworkMessage;
 use crate::network::protocol::{NetAddr, VerackMessage, VersionMessage};
+use crate::network::ratelimit::RateLimiter;
 use crate::primitives::serialize::Encode;
-use std::net::SocketAddr;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerState {
@@ -24,13 +26,26 @@ pub struct Peer {
     pub services: u64,
     pub start_height: u32,
     pub last_ping: Instant,
+    pub last_recv: Instant,
+    pub connected_at: Instant,
     pub last_pong: Instant,
     pub nonce: u64,
     pub inbound: bool,
+    // Rate limiters
+    message_limiter: RateLimiter, // Messages per second
+    inv_limiter: RateLimiter,     // INV messages per second
+    getdata_limiter: RateLimiter, // GetData requests per second
+    // Bandwidth tracking
+    bytes_sent: u64,
+    bytes_received: u64,
+    bandwidth_start: Instant,
+    // Ban score
+    ban_score: u32,
 }
 
 impl Peer {
     pub fn new(id: u64, addr: SocketAddr) -> Self {
+        let now = Instant::now();
         Self {
             id,
             addr,
@@ -39,10 +54,19 @@ impl Peer {
             version: None,
             services: 0,
             start_height: 0,
-            last_ping: Instant::now(),
-            last_pong: Instant::now(),
+            last_ping: now,
+            last_pong: now,
+            last_recv: now,
+            connected_at: now,
             nonce: 0,
             inbound: false,
+            message_limiter: RateLimiter::new(Duration::from_secs(1), 100),
+            inv_limiter: RateLimiter::new(Duration::from_secs(1), 50),
+            getdata_limiter: RateLimiter::new(Duration::from_secs(1), 50),
+            bytes_sent: 0,
+            bytes_received: 0,
+            bandwidth_start: now,
+            ban_score: 0,
         }
     }
 
@@ -51,6 +75,7 @@ impl Peer {
             .peer_addr()
             .parse()
             .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
+        let now = Instant::now();
         Self {
             id,
             addr,
@@ -59,11 +84,93 @@ impl Peer {
             version: None,
             services: 0,
             start_height: 0,
-            last_ping: Instant::now(),
-            last_pong: Instant::now(),
+            last_ping: now,
+            last_pong: now,
+            last_recv: now,
+            connected_at: now,
             nonce: 0,
             inbound: true,
+            message_limiter: RateLimiter::new(Duration::from_secs(1), 100),
+            inv_limiter: RateLimiter::new(Duration::from_secs(1), 50),
+            getdata_limiter: RateLimiter::new(Duration::from_secs(1), 50),
+            bytes_sent: 0,
+            bytes_received: 0,
+            bandwidth_start: now,
+            ban_score: 0,
         }
+    }
+
+    // Check if peer can send message
+    pub fn check_message_rate(&mut self) -> bool {
+        self.message_limiter.check()
+    }
+
+    pub fn check_inv_rate(&mut self) -> bool {
+        self.inv_limiter.check()
+    }
+
+    pub fn check_getdata_rate(&mut self) -> bool {
+        self.getdata_limiter.check()
+    }
+
+    // Update bandwidth stats
+    pub fn record_sent(&mut self, bytes: usize) {
+        self.bytes_sent += bytes as u64;
+    }
+
+    pub fn record_received(&mut self, bytes: usize) {
+        self.bytes_received += bytes as u64;
+    }
+
+    // Get bandwidth rate (bytes per second)
+    pub fn get_send_rate(&self) -> f64 {
+        let elapsed = self.bandwidth_start.elapsed().as_secs_f64();
+        if elapsed > 0.0 {
+            self.bytes_sent as f64 / elapsed
+        } else {
+            0.0
+        }
+    }
+
+    pub fn get_recv_rate(&self) -> f64 {
+        let elapsed = self.bandwidth_start.elapsed().as_secs_f64();
+        if elapsed > 0.0 {
+            self.bytes_received as f64 / elapsed
+        } else {
+            0.0
+        }
+    }
+
+    pub fn add_ban_score(&mut self, points: u32) {
+        self.ban_score += points;
+    }
+
+    pub fn get_ban_score(&self) -> u32 {
+        self.ban_score
+    }
+
+    pub fn should_ban(&self) -> bool {
+        self.ban_score >= 100
+    }
+
+    pub fn get_bytes_sent(&self) -> u64 {
+        self.bytes_sent
+    }
+
+    pub fn get_bytes_received(&self) -> u64 {
+        self.bytes_received
+    }
+
+    pub fn update_last_recv(&mut self) {
+        self.last_recv = Instant::now();
+    }
+
+    pub fn time_since_last_recv(&self) -> std::time::Duration {
+        self.last_recv.elapsed()
+    }
+
+    pub fn connection_duration(&self) -> std::time::Duration {
+        self.connected_at.elapsed()
     }
 
     pub fn send(&mut self, message: &NetworkMessage) -> Result<(), String> {

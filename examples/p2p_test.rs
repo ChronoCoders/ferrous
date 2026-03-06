@@ -6,12 +6,7 @@ fn main() {
     let magic = REGTEST_MAGIC;
 
     // Create PeerManager
-    let manager = PeerManager::new(
-        magic, 70015, // version
-        1,     // services
-        0,     // height
-        10,    // max peers
-    );
+    let manager = PeerManager::new(magic, 10, 70015, 1, 0);
 
     // We need to find a free port first because PeerManager::start_listener
     // doesn't return the bound address/port if we use port 0.
@@ -30,7 +25,7 @@ fn main() {
     println!("Peer count: {}", manager.peer_count());
 
     // Start a second peer manager to act as a client
-    let client_manager = PeerManager::new(magic, 70015, 1, 0, 10);
+    let client_manager = PeerManager::new(magic, 10, 70015, 1, 0);
 
     println!("Connecting client to {}...", local_addr);
     match client_manager.connect_to_peer(local_addr) {

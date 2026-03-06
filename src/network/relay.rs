@@ -223,7 +223,7 @@ mod tests {
         let chain = Arc::new(Mutex::new(ChainState::new(params, db_path, None).unwrap()));
 
         // Setup PeerManager
-        let peer_manager = Arc::new(PeerManager::new(REGTEST_MAGIC, 70015, 0, 0, 10));
+        let peer_manager = Arc::new(PeerManager::new(REGTEST_MAGIC, 10, 70015, 0, 0));
 
         // Setup Mempool
         let mempool = Arc::new(NetworkMempool::new(chain.clone()));
@@ -232,7 +232,7 @@ mod tests {
         let relay = Arc::new(BlockRelay::new(chain, peer_manager.clone(), mempool));
 
         // Link them
-        peer_manager.set_relay_handler(relay.clone());
+        peer_manager.set_relay(relay.clone());
 
         // Test announce_block (should succeed even with 0 peers)
         let block_hash = [0u8; 32];

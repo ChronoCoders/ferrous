@@ -2,6 +2,9 @@ use clap::Parser;
 use ferrous_node::consensus::chain::ChainState;
 use ferrous_node::consensus::params::Network;
 use ferrous_node::mining::{Miner, MiningEvent};
+use ferrous_node::network::manager::PeerManager;
+use ferrous_node::network::recovery::RecoveryManager;
+use ferrous_node::network::stats::NetworkStats;
 use ferrous_node::rpc::RpcServer;
 use ferrous_node::wallet::manager::Wallet;
 use std::sync::mpsc;
@@ -79,6 +82,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Wallet::load(&args.wallet, network_prefix).map_err(std::io::Error::other)?,
     ));
 
+    // Create network components (stubs for example)
+    let peer_manager = Arc::new(PeerManager::new([0u8; 4], 8, 70001, 0, 0));
+    let network_stats = Arc::new(NetworkStats::new());
+    // Create AddressManager for RecoveryManager
+    let addr_manager = Arc::new(Mutex::new(
+        ferrous_node::network::addrman::AddressManager::new(1000),
+    ));
+    let recovery_manager = Arc::new(RecoveryManager::new(peer_manager.clone(), addr_manager));
+
     if args.dashboard {
         // Dashboard mode
         use ferrous_node::dashboard::{Dashboard, MiningStats};
@@ -93,10 +105,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let chain_clone = chain.clone();
         let miner_clone = miner.clone();
         let wallet_clone = wallet.clone();
+        let peer_manager_clone = peer_manager.clone();
+        let network_stats_clone = network_stats.clone();
+        let recovery_manager_clone = recovery_manager.clone();
         let rpc_addr = args.rpc_addr.clone();
 
         thread::spawn(move || {
-            let server = RpcServer::new(chain_clone, miner_clone, wallet_clone, &rpc_addr).unwrap();
+            let server = RpcServer::new(
+                chain_clone,
+                miner_clone,
+                wallet_clone,
+                peer_manager_clone,
+                network_stats_clone,
+                recovery_manager_clone,
+                &rpc_addr,
+            )
+            .unwrap();
             server.run().ok();
         });
 
@@ -107,8 +131,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let miner = Arc::new(Miner::new(params, mining_address));
 
-        let server =
-            RpcServer::new(chain, miner, wallet, &args.rpc_addr).map_err(std::io::Error::other)?;
+        let server = RpcServer::new(
+            chain,
+            miner,
+            wallet,
+            peer_manager,
+            network_stats,
+            recovery_manager,
+            &args.rpc_addr,
+        )
+        .map_err(std::io::Error::other)?;
 
         println!("Node running. Press Ctrl+C to stop.");
         println!("\nExample commands:");

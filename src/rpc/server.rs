@@ -1,16 +1,24 @@
 use crate::consensus::chain::ChainState;
 use crate::mining::Miner;
+use crate::network::diagnostics::NetworkDiagnostics;
+use crate::network::manager::PeerManager;
+use crate::network::recovery::RecoveryManager;
+use crate::network::stats::NetworkStats;
 use crate::rpc::methods::*;
 use crate::wallet::builder::TransactionBuilder;
 use crate::wallet::manager::Wallet;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tiny_http::{Response, Server};
 
 pub struct RpcServer {
     chain: Arc<Mutex<ChainState>>,
     miner: Arc<Miner>,
     wallet: Arc<Mutex<Wallet>>,
+    peer_manager: Arc<PeerManager>,
+    network_stats: Arc<NetworkStats>,
+    recovery_manager: Arc<RecoveryManager>,
     server: Server,
 }
 
@@ -19,6 +27,9 @@ impl RpcServer {
         chain: Arc<Mutex<ChainState>>,
         miner: Arc<Miner>,
         wallet: Arc<Mutex<Wallet>>,
+        peer_manager: Arc<PeerManager>,
+        network_stats: Arc<NetworkStats>,
+        recovery_manager: Arc<RecoveryManager>,
         addr: &str,
     ) -> Result<Self, String> {
         let server = Server::http(addr).map_err(|e| format!("Failed to start server: {}", e))?;
@@ -27,6 +38,9 @@ impl RpcServer {
             chain,
             miner,
             wallet,
+            peer_manager,
+            network_stats,
+            recovery_manager,
             server,
         })
     }
@@ -66,6 +80,13 @@ impl RpcServer {
             "listunspent" => self.listunspent(),
             "sendtoaddress" => self.sendtoaddress(params),
             "generatetoaddress" => self.generatetoaddress(params),
+            "getnetworkinfo" => self.getnetworkinfo(),
+            "getpeerinfo" => self.getpeerinfo(),
+            "getconnectioncount" => self.getconnectioncount(),
+            "getnetworkhealth" => self.getnetworkhealth(),
+            "getrecoverystatus" => self.getrecoverystatus(),
+            "forcereconnect" => self.forcereconnect(),
+            "resetnetwork" => self.resetnetwork(),
             "stop" => Ok(json!("stopping")),
             _ => return self.error_response(id, -32601, "Method not found"),
         };
@@ -98,6 +119,87 @@ impl RpcServer {
             .unwrap_or(false);
 
         (self.handle_raw(&content), is_stop)
+    }
+
+    fn getnetworkinfo(&self) -> Result<Value, String> {
+        let stats = self.network_stats.get_snapshot();
+
+        Ok(json!({
+            "version": 70001,
+            "connections": stats.current_connections,
+            "connections_in": stats.total_connections_accepted,
+            "connections_out": stats.total_connections_initiated,
+            "bytes_sent": stats.bytes_sent,
+            "bytes_recv": stats.bytes_received,
+            "send_rate_mbps": (stats.avg_send_rate * 8.0) / 1_000_000.0,
+            "recv_rate_mbps": (stats.avg_recv_rate * 8.0) / 1_000_000.0,
+            "uptime": stats.uptime_secs,
+        }))
+    }
+
+    fn getpeerinfo(&self) -> Result<Value, String> {
+        let diagnostics = NetworkDiagnostics::new(self.peer_manager.clone());
+        let peers = diagnostics.get_peer_info();
+
+        let peer_list: Vec<_> = peers
+            .iter()
+            .map(|p| {
+                json!({
+                    "id": p.peer_id,
+                    "addr": p.address,
+                    "inbound": p.inbound,
+                    "conntime": p.connected_duration.as_secs(),
+                    "lastsend": p.last_message.as_secs(),
+                    "version": p.version,
+                    "startingheight": p.start_height,
+                    "bytessent": p.bytes_sent,
+                    "bytesrecv": p.bytes_received,
+                    "banscore": p.ban_score,
+                    "pingtime": p.latency.map(|d: Duration| d.as_millis()),
+                })
+            })
+            .collect();
+
+        Ok(serde_json::Value::Array(peer_list))
+    }
+
+    fn getconnectioncount(&self) -> Result<Value, String> {
+        let diagnostics = NetworkDiagnostics::new(self.peer_manager.clone());
+        let summary = diagnostics.get_connection_summary();
+        Ok(json!(summary.total_peers))
+    }
+
+    fn getnetworkhealth(&self) -> Result<Value, String> {
+        let diagnostics = NetworkDiagnostics::new(self.peer_manager.clone());
+        let health_score = diagnostics.get_health_score();
+
+        Ok(json!({
+            "health_score": health_score,
+            "status": if health_score >= 80 { "excellent" }
+                      else if health_score >= 60 { "good" }
+                      else if health_score >= 40 { "fair" }
+                      else { "poor" },
+        }))
+    }
+
+    fn getrecoverystatus(&self) -> Result<Value, String> {
+        Ok(json!({
+            "partition_detected": self.recovery_manager.is_partitioned(),
+            "recovery_attempts": self.recovery_manager.get_attempts(),
+            "last_block_age": self.recovery_manager.get_last_block_age_secs(),
+        }))
+    }
+
+    fn forcereconnect(&self) -> Result<Value, String> {
+        self.recovery_manager.force_reconnect();
+        Ok(json!({"result": "reconnecting"}))
+    }
+
+    fn resetnetwork(&self) -> Result<Value, String> {
+        match self.recovery_manager.recover() {
+            Ok(_) => Ok(json!({"result": "network reset initiated"})),
+            Err(e) => Err(format!("Network reset failed: {}", e)),
+        }
     }
 
     fn getblockchaininfo(&self) -> Result<Value, String> {

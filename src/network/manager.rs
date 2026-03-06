@@ -2,17 +2,21 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::network::connection::PeerConnection;
 use crate::network::discovery::PeerDiscovery;
 use crate::network::handshake::perform_handshake;
+use crate::network::keepalive::KeepaliveManager;
 use crate::network::listener::NetworkListener;
 use crate::network::message::NetworkMessage;
 use crate::network::peer::{Peer, PeerState};
-use crate::network::protocol::MessagePayload;
+use crate::network::protocol::{MessagePayload, PongMessage};
+use crate::network::recovery::RecoveryManager;
 use crate::network::relay::BlockRelay;
+use crate::network::stats::NetworkStats;
 use crate::network::sync::SyncManager;
+use crate::primitives::serialize::Encode;
 
 #[derive(Clone, Debug)]
 pub struct PeerInfo {
@@ -29,52 +33,249 @@ pub struct PeerManager {
     peers: Arc<Mutex<HashMap<u64, Peer>>>,
     next_peer_id: Arc<Mutex<u64>>,
     magic: [u8; 4],
+    max_peers: usize,
     our_version: u32,
     our_services: u64,
     our_height: u32,
-    max_peers: usize,
-    max_outbound: usize,
     relay: Arc<Mutex<Option<Arc<BlockRelay>>>>,
     sync_manager: Arc<Mutex<Option<Arc<SyncManager>>>>,
     discovery: Arc<Mutex<Option<Arc<PeerDiscovery>>>>,
+    keepalive: Arc<Mutex<Option<Arc<KeepaliveManager>>>>,
+    stats: Arc<Mutex<Option<Arc<NetworkStats>>>>,
+    recovery: Arc<Mutex<Option<Arc<RecoveryManager>>>>,
 }
 
 impl PeerManager {
     pub fn new(
         magic: [u8; 4],
-        our_version: u32,
-        our_services: u64,
-        our_height: u32,
         max_peers: usize,
+        version: u32,
+        services: u64,
+        start_height: u32,
     ) -> Self {
         Self {
             peers: Arc::new(Mutex::new(HashMap::new())),
-            next_peer_id: Arc::new(Mutex::new(1)),
+            next_peer_id: Arc::new(Mutex::new(0)),
             magic,
-            our_version,
-            our_services,
-            our_height,
             max_peers,
-            max_outbound: 8, // Default
+            our_version: version,
+            our_services: services,
+            our_height: start_height,
             relay: Arc::new(Mutex::new(None)),
             sync_manager: Arc::new(Mutex::new(None)),
             discovery: Arc::new(Mutex::new(None)),
+            keepalive: Arc::new(Mutex::new(None)),
+            stats: Arc::new(Mutex::new(None)),
+            recovery: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub fn set_relay_handler(&self, relay: Arc<BlockRelay>) {
+    pub fn set_recovery(&self, recovery: Arc<RecoveryManager>) {
+        let mut guard = self.recovery.lock().unwrap();
+        *guard = Some(recovery);
+    }
+
+    pub fn set_stats(&self, stats: Arc<NetworkStats>) {
+        let mut guard = self.stats.lock().unwrap();
+        *guard = Some(stats);
+    }
+
+    pub fn get_peers(&self) -> Arc<Mutex<HashMap<u64, Peer>>> {
+        Arc::clone(&self.peers)
+    }
+
+    pub fn set_relay(&self, relay: Arc<BlockRelay>) {
         let mut guard = self.relay.lock().unwrap();
         *guard = Some(relay);
     }
 
-    pub fn set_sync_handler(&self, sync: Arc<SyncManager>) {
+    pub fn set_sync_manager(&self, sync: Arc<SyncManager>) {
         let mut guard = self.sync_manager.lock().unwrap();
         *guard = Some(sync);
     }
 
-    pub fn set_discovery_handler(&self, discovery: Arc<PeerDiscovery>) {
+    pub fn set_discovery(&self, discovery: Arc<PeerDiscovery>) {
         let mut guard = self.discovery.lock().unwrap();
         *guard = Some(discovery);
+    }
+
+    pub fn set_keepalive(&self, keepalive: Arc<KeepaliveManager>) {
+        let mut guard = self.keepalive.lock().unwrap();
+        *guard = Some(keepalive);
+    }
+
+    pub fn get_active_peer_ids(&self) -> Vec<u64> {
+        let peers = self.peers.lock().unwrap();
+        peers
+            .iter()
+            .filter(|(_, p)| p.state == PeerState::Active)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    pub fn send_to_peer(&self, peer_id: u64, message: &NetworkMessage) -> Result<(), String> {
+        let mut peers = self.peers.lock().unwrap();
+        if let Some(peer) = peers.get_mut(&peer_id) {
+            // Allow sending even if connecting (e.g. handshake messages)
+            peer.send(message)
+        } else {
+            Err("Peer not found".to_string())
+        }
+    }
+
+    pub fn disconnect_peer(&self, peer_id: u64) -> Result<(), String> {
+        let mut peers = self.peers.lock().unwrap();
+        if peers.remove(&peer_id).is_some() {
+            Ok(())
+        } else {
+            Err("Peer not found".to_string())
+        }
+    }
+
+    pub fn cleanup_inactive_peers(&self) {
+        let timeout = Duration::from_secs(20 * 60); // 20 minutes
+        let mut to_disconnect: Vec<u64> = Vec::new();
+
+        {
+            let peers = self.peers.lock().unwrap();
+            for (peer_id, peer) in peers.iter() {
+                if peer.time_since_last_recv() > timeout {
+                    to_disconnect.push(*peer_id);
+                }
+            }
+        }
+
+        for peer_id in to_disconnect {
+            println!("Disconnecting inactive peer {}", peer_id);
+            let _ = self.disconnect_peer(peer_id);
+        }
+    }
+
+    pub fn start_maintenance(&self) {
+        let peers = Arc::clone(&self.peers);
+
+        thread::spawn(move || {
+            loop {
+                thread::sleep(Duration::from_secs(60));
+
+                // Cleanup logic inline to avoid cloning whole manager structure just for this
+                let timeout = Duration::from_secs(20 * 60);
+
+                {
+                    let mut peers_guard = peers.lock().unwrap();
+                    let keys: Vec<u64> = peers_guard.keys().cloned().collect();
+
+                    for peer_id in keys {
+                        let should_remove = if let Some(peer) = peers_guard.get(&peer_id) {
+                            if peer.time_since_last_recv() > timeout {
+                                true
+                            } else {
+                                let recv_rate = peer.get_recv_rate();
+                                if recv_rate > 10_000_000.0 {
+                                    println!(
+                                        "Peer {} exceeded bandwidth limit: {:.2} MB/s",
+                                        peer_id,
+                                        recv_rate / 1_000_000.0
+                                    );
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                        } else {
+                            false
+                        };
+
+                        if should_remove {
+                            println!("Disconnecting peer {}", peer_id);
+                            peers_guard.remove(&peer_id);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn connect_to_peer(&self, addr: SocketAddr) -> Result<u64, String> {
+        let peers = self.peers.lock().unwrap();
+        if peers.len() >= self.max_peers {
+            return Err("Max peers reached".to_string());
+        }
+        drop(peers);
+
+        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+            .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+
+        let conn = PeerConnection::new(stream, self.magic)?;
+
+        let mut id_guard = self.next_peer_id.lock().unwrap();
+        let id = *id_guard;
+        *id_guard += 1;
+        drop(id_guard);
+
+        // Use new_inbound and fix flag as we did before, but now inside this method block
+        let mut peer = Peer::new_inbound(id, conn);
+        peer.inbound = false;
+
+        let peers_clone = Arc::clone(&self.peers);
+        let our_version = self.our_version;
+        let our_services = self.our_services;
+        let our_height = self.our_height;
+
+        let mut peers = peers_clone.lock().unwrap();
+        peers.insert(id, peer);
+        drop(peers);
+
+        thread::spawn(move || {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64;
+
+            // Re-acquire to mutate for handshake
+            let mut peers = peers_clone.lock().unwrap();
+            if let Some(mut peer) = peers.remove(&id) {
+                drop(peers);
+                println!("Starting handshake with outbound peer {}", addr);
+                match perform_handshake(&mut peer, our_version, our_services, our_height, nonce) {
+                    Ok(_) => {
+                        println!("Handshake success with {}", addr);
+                        let mut peers = peers_clone.lock().unwrap();
+                        peer.connected_at = Instant::now();
+                        peer.last_recv = Instant::now();
+                        peer.state = PeerState::Active;
+                        peers.insert(id, peer);
+                    }
+                    Err(e) => {
+                        println!("Handshake failed with {}: {}", addr, e);
+                    }
+                }
+            }
+        });
+
+        Ok(id)
+    }
+
+    pub fn peer_count(&self) -> usize {
+        self.peers.lock().unwrap().len()
+    }
+
+    pub fn active_peer_count(&self) -> usize {
+        self.peers
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|p| p.state == PeerState::Active)
+            .count()
+    }
+
+    pub fn get_peer_addrs(&self) -> Vec<SocketAddr> {
+        self.peers
+            .lock()
+            .unwrap()
+            .values()
+            .map(|p| p.addr)
+            .collect()
     }
 
     pub fn outbound_peer_count(&self) -> usize {
@@ -98,12 +299,6 @@ impl PeerManager {
         let our_services = self.our_services;
         let our_height = self.our_height;
         let max_peers = self.max_peers;
-
-        // Also start message handler loop here?
-        // Or better, let the user call it.
-        // But for simplicity, let's just make start_message_handler public and assume it's called.
-        // Actually, start_listener spawns a thread. We should probably spawn the message loop too.
-        // But the prompt implied start_listener is for accepting connections.
 
         listener.start(move |conn| {
             let mut peers = peers_clone.lock().unwrap();
@@ -145,6 +340,9 @@ impl PeerManager {
                         Ok(_) => {
                             println!("Handshake success with {}", peer_addr);
                             let mut peers = peers_inner.lock().unwrap();
+                            peer.connected_at = Instant::now();
+                            peer.last_recv = Instant::now();
+                            peer.state = PeerState::Active;
                             peers.insert(id, peer);
                         }
                         Err(e) => {
@@ -162,11 +360,18 @@ impl PeerManager {
         let relay_clone = Arc::clone(&self.relay);
         let sync_clone = Arc::clone(&self.sync_manager);
         let discovery_clone = Arc::clone(&self.discovery);
+        let keepalive_clone: Arc<Mutex<Option<Arc<KeepaliveManager>>>> =
+            Arc::clone(&self.keepalive);
+        let stats_clone: Arc<Mutex<Option<Arc<NetworkStats>>>> = Arc::clone(&self.stats);
+        let recovery_clone: Arc<Mutex<Option<Arc<RecoveryManager>>>> = Arc::clone(&self.recovery);
+
+        // Capture magic for auto-pong (can't use self inside thread)
+        let magic = self.magic;
 
         thread::spawn(move || {
             loop {
                 // Collect IDs first to avoid holding lock while processing
-                let mut peer_ids = Vec::new();
+                let mut peer_ids: Vec<u64> = Vec::new();
                 {
                     let peers = peers_clone.lock().unwrap();
                     for (id, peer) in peers.iter() {
@@ -183,11 +388,124 @@ impl PeerManager {
                         // Try to read message
                         match peer.receive() {
                             Ok(Some(msg)) => {
+                                let msg_size = msg.encoded_size();
+                                // Update last_recv and record bandwidth
+                                peer.update_last_recv();
+                                peer.record_received(msg_size);
+
+                                // Record stats
+                                {
+                                    let stats_guard = stats_clone.lock().unwrap();
+                                    if let Some(stats) = &*stats_guard {
+                                        stats.record_message_received(msg_size);
+                                    }
+                                }
+
+                                // Check general message rate
+                                if !peer.check_message_rate() {
+                                    println!("Peer {} exceeded message rate limit", id);
+                                    peer.add_ban_score(10);
+                                    if peer.should_ban() {
+                                        println!("Banning peer {} for rate limit abuse", id);
+                                        // Cannot remove peer while borrowing it. Marking state as disconnected/banned would be better,
+                                        // but for now we just drop the connection by returning from the loop iteration.
+                                        // The peer will be removed in cleanup or next cycle if we handled state properly.
+                                        // Since we can't remove here, we just rely on 'continue' to stop processing.
+
+                                        // Record ban
+                                        {
+                                            let stats_guard = stats_clone.lock().unwrap();
+                                            if let Some(stats) = &*stats_guard {
+                                                stats.record_banned_peer();
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    // Record rate limit event
+                                    {
+                                        let stats_guard = stats_clone.lock().unwrap();
+                                        if let Some(stats) = &*stats_guard {
+                                            stats.record_rate_limited();
+                                        }
+                                    }
+                                }
+
                                 drop(peers); // Drop lock before handling
 
                                 // Parse first to avoid cloning for dispatch
                                 match msg.parse_payload() {
                                     Ok(payload) => {
+                                        // Specific rate limits
+                                        {
+                                            let mut peers = peers_clone.lock().unwrap();
+                                            if let Some(peer) = peers.get_mut(&id) {
+                                                match &payload {
+                                                    MessagePayload::Inv(_) => {
+                                                        if !peer.check_inv_rate() {
+                                                            println!(
+                                                                "Peer {} exceeded INV rate",
+                                                                id
+                                                            );
+                                                            peer.add_ban_score(20);
+                                                        }
+                                                    }
+                                                    MessagePayload::GetData(_) => {
+                                                        if !peer.check_getdata_rate() {
+                                                            println!(
+                                                                "Peer {} exceeded GetData rate",
+                                                                id
+                                                            );
+                                                            peer.add_ban_score(20);
+                                                        }
+                                                    }
+                                                    _ => {}
+                                                }
+
+                                                if peer.should_ban() {
+                                                    peers.remove(&id);
+                                                    continue;
+                                                }
+                                            }
+                                        }
+
+                                        // Handle Ping/Pong directly here
+                                        match &payload {
+                                            MessagePayload::Ping(ping) => {
+                                                // Auto-respond with pong
+                                                let pong = PongMessage { nonce: ping.nonce };
+                                                let encoded =
+                                                    crate::primitives::serialize::Encode::encode(
+                                                        &pong,
+                                                    );
+                                                let resp =
+                                                    crate::network::message::NetworkMessage::new(
+                                                        magic, "pong", encoded,
+                                                    );
+                                                let resp_size = resp.encoded_size();
+
+                                                let mut peers = peers_clone.lock().unwrap();
+                                                if let Some(peer) = peers.get_mut(&id) {
+                                                    let _ = peer.send(&resp);
+                                                    peer.record_sent(resp_size);
+                                                }
+                                                // Record sent stats
+                                                {
+                                                    let stats_guard = stats_clone.lock().unwrap();
+                                                    if let Some(stats) = &*stats_guard {
+                                                        stats.record_message_sent(resp_size);
+                                                    }
+                                                }
+                                            }
+                                            MessagePayload::Pong(pong) => {
+                                                let keepalive_guard =
+                                                    keepalive_clone.lock().unwrap();
+                                                if let Some(keepalive) = &*keepalive_guard {
+                                                    let _ = keepalive.handle_pong(id, pong.nonce);
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+
                                         // Dispatch to Relay
                                         {
                                             let relay_guard = relay_clone.lock().unwrap();
@@ -201,12 +519,30 @@ impl PeerManager {
                                                     }
                                                     MessagePayload::Block(block) => {
                                                         let _ = relay.handle_block(id, block);
+                                                        // Record block received
+                                                        let stats_guard =
+                                                            stats_clone.lock().unwrap();
+                                                        if let Some(stats) = &*stats_guard {
+                                                            stats.record_block_received();
+                                                        }
+                                                        // Notify recovery manager
+                                                        let recovery_guard =
+                                                            recovery_clone.lock().unwrap();
+                                                        if let Some(recovery) = &*recovery_guard {
+                                                            recovery.on_new_block();
+                                                        }
                                                     }
-                                                    MessagePayload::Tx(tx_msg) => {
+                                                    MessagePayload::Tx(tx) => {
                                                         let _ = relay.handle_transaction(
                                                             id,
-                                                            &tx_msg.transaction,
+                                                            &tx.transaction,
                                                         );
+                                                        // Record tx received
+                                                        let stats_guard =
+                                                            stats_clone.lock().unwrap();
+                                                        if let Some(stats) = &*stats_guard {
+                                                            stats.record_transaction_received();
+                                                        }
                                                     }
                                                     _ => {}
                                                 }
@@ -235,8 +571,8 @@ impl PeerManager {
                                             let discovery_guard = discovery_clone.lock().unwrap();
                                             if let Some(discovery) = &*discovery_guard {
                                                 match &payload {
-                                                    MessagePayload::Addr(addr_msg) => {
-                                                        let _ = discovery.handle_addr(addr_msg);
+                                                    MessagePayload::Addr(addr) => {
+                                                        let _ = discovery.handle_addr(addr);
                                                     }
                                                     MessagePayload::GetAddr(_) => {
                                                         let _ = discovery.handle_getaddr(id);
@@ -247,23 +583,25 @@ impl PeerManager {
                                         }
                                     }
                                     Err(e) => {
-                                        println!("Failed to parse payload from {}: {:?}", id, e)
+                                        println!("Error parsing message from peer {}: {:?}", id, e);
+                                        let stats_guard = stats_clone.lock().unwrap();
+                                        if let Some(stats) = &*stats_guard {
+                                            stats.record_invalid_message();
+                                        }
                                     }
                                 }
                             }
                             Ok(None) => {
-                                // Nothing to read
+                                // No message, continue
                             }
                             Err(e) => {
-                                println!("Error reading from peer {}: {}", id, e);
-                                // Remove peer?
-                                // peers.remove(&id); // We need lock to remove, but we dropped it?
-                                // Actually we are holding lock if we are in Err branch?
-                                // No, peer.receive() borrows peer mutably.
-                                // If we are here, we hold lock.
-                                // peers.remove(&id);
-                                // But we are iterating.
-                                // We can mark for removal.
+                                println!("Error receiving from peer {}: {:?}", id, e);
+                                peers.remove(&id); // Disconnect
+                                                   // Record failed/closed connection
+                                let stats_guard = stats_clone.lock().unwrap();
+                                if let Some(stats) = &*stats_guard {
+                                    stats.record_connection_closed();
+                                }
                             }
                         }
                     }
@@ -274,103 +612,9 @@ impl PeerManager {
         });
     }
 
-    pub fn connect_to_peer(&self, addr: SocketAddr) -> Result<u64, String> {
-        let mut peers = self.peers.lock().unwrap();
-        if peers.len() >= self.max_peers {
-            return Err("Max peers reached".to_string());
-        }
-
-        let outbound_count = peers
-            .values()
-            .filter(|p| p.connection.is_some() && p.nonce != 0)
-            .count();
-        if outbound_count >= self.max_outbound {
-            // return Err("Max outbound peers reached".to_string());
-        }
-
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
-            .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
-
-        let conn = PeerConnection::new(stream, self.magic)?;
-
-        let mut id_guard = self.next_peer_id.lock().unwrap();
-        let id = *id_guard;
-        *id_guard += 1;
-        drop(id_guard);
-
-        let mut peer = Peer::new(id, addr);
-        peer.connection = Some(conn);
-        peer.state = PeerState::Connected;
-
-        peers.insert(id, peer); // Insert temporarily
-        drop(peers);
-
-        // Spawn handshake thread
-        let peers_clone = Arc::clone(&self.peers);
-        let our_version = self.our_version;
-        let our_services = self.our_services;
-        let our_height = self.our_height;
-
-        thread::spawn(move || {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64;
-            let mut peers = peers_clone.lock().unwrap();
-
-            if let Some(mut peer) = peers.remove(&id) {
-                drop(peers);
-                println!("Starting handshake with outbound peer {}", addr);
-                match perform_handshake(&mut peer, our_version, our_services, our_height, nonce) {
-                    Ok(_) => {
-                        println!("Handshake success with {}", addr);
-                        let mut peers = peers_clone.lock().unwrap();
-                        peers.insert(id, peer);
-                    }
-                    Err(e) => {
-                        println!("Handshake failed with {}: {}", addr, e);
-                    }
-                }
-            }
-        });
-
-        Ok(id)
-    }
-
-    pub fn disconnect_peer(&self, peer_id: u64) -> Result<(), String> {
-        let mut peers = self.peers.lock().unwrap();
-        if peers.remove(&peer_id).is_some() {
-            Ok(())
-        } else {
-            Err("Peer not found".to_string())
-        }
-    }
-
-    pub fn peer_count(&self) -> usize {
-        self.peers.lock().unwrap().len()
-    }
-
-    pub fn active_peer_count(&self) -> usize {
-        self.peers
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|p| p.state == PeerState::Active)
-            .count()
-    }
-
-    pub fn get_peer_addrs(&self) -> Vec<SocketAddr> {
-        self.peers
-            .lock()
-            .unwrap()
-            .values()
-            .map(|p| p.addr)
-            .collect()
-    }
-
     pub fn broadcast(&self, message: &NetworkMessage) -> Result<(), String> {
         let mut peers = self.peers.lock().unwrap();
-        let mut dead_peers = Vec::new();
+        let mut dead_peers: Vec<u64> = Vec::new();
 
         for (id, peer) in peers.iter_mut() {
             if peer.state == PeerState::Active && peer.send(message).is_err() {
@@ -385,19 +629,6 @@ impl PeerManager {
         Ok(())
     }
 
-    pub fn send_to_peer(&self, peer_id: u64, message: &NetworkMessage) -> Result<(), String> {
-        let mut peers = self.peers.lock().unwrap();
-        if let Some(peer) = peers.get_mut(&peer_id) {
-            if peer.state == PeerState::Active {
-                peer.send(message)
-            } else {
-                Err("Peer not active".to_string())
-            }
-        } else {
-            Err("Peer not found".to_string())
-        }
-    }
-
     pub fn get_peer(&self, peer_id: u64) -> Option<PeerInfo> {
         let peers = self.peers.lock().unwrap();
         peers.get(&peer_id).map(|p| PeerInfo {
@@ -407,7 +638,7 @@ impl PeerManager {
             version: p.version,
             services: p.services,
             start_height: p.start_height,
-            inbound: true, // We don't track inbound/outbound explicitly in Peer struct yet, assuming inbound for now or adding field
+            inbound: p.inbound,
         })
     }
 }
@@ -419,7 +650,7 @@ mod tests {
 
     #[test]
     fn test_peer_manager_lifecycle() {
-        let manager = PeerManager::new(REGTEST_MAGIC, 70015, 0, 0, 10);
+        let manager = PeerManager::new(REGTEST_MAGIC, 10, 70015, 0, 0);
 
         // Start listener
         // Use a random port (0) but we can't easily know it without changing signature.
@@ -433,7 +664,7 @@ mod tests {
 
     #[test]
     fn test_peer_limits() {
-        let _manager = PeerManager::new(REGTEST_MAGIC, 70015, 0, 0, 1);
+        let _manager = PeerManager::new(REGTEST_MAGIC, 1, 70015, 0, 0);
 
         // Mocking connections would require more infrastructure.
         // We can verify limit logic by manually inserting peers if we exposed internals,

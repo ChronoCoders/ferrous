@@ -8,6 +8,7 @@ The crate root is defined in [lib.rs](file:///c:/ferrous/src/lib.rs#L1-L8) and e
 
 - [consensus](file:///c:/ferrous/src/consensus/mod.rs)
 - [mining](file:///c:/ferrous/src/mining/mod.rs)
+- [network](file:///c:/ferrous/src/network/mod.rs)
 - [primitives](file:///c:/ferrous/src/primitives/mod.rs)
 - [rpc](file:///c:/ferrous/src/rpc/mod.rs)
 - [script](file:///c:/ferrous/src/script/mod.rs)
@@ -24,6 +25,19 @@ Core blockchain logic:
 - [validation.rs](file:///c:/ferrous/src/consensus/validation.rs): Block-level consensus rules (weight, coinbase, timestamps, witness commitments).
 - [merkle.rs](file:///c:/ferrous/src/consensus/merkle.rs): Merkle and witness merkle tree construction.
 - [params.rs](file:///c:/ferrous/src/consensus/params.rs): `ChainParams` and `Network` (Mainnet/Testnet/Regtest).
+
+### network
+
+P2P Networking stack:
+
+- [manager.rs](file:///c:/ferrous/src/network/manager.rs): `PeerManager`, the central hub for P2P connections and message dispatch.
+- [peer.rs](file:///c:/ferrous/src/network/peer.rs): `Peer` state machine, connection handling, and message queues.
+- [protocol.rs](file:///c:/ferrous/src/network/protocol.rs): Wire protocol definitions, message types (`Version`, `Inv`, `Block`, etc.), and serialization.
+- [sync.rs](file:///c:/ferrous/src/network/sync.rs): `SyncManager`, handling headers-first synchronization and block downloads.
+- [relay.rs](file:///c:/ferrous/src/network/relay.rs): `BlockRelay`, managing inventory announcements and transaction propagation.
+- [discovery.rs](file:///c:/ferrous/src/network/discovery.rs): Peer discovery, address exchange (`GetAddr`/`Addr`), and bootstrapping.
+- [keepalive.rs](file:///c:/ferrous/src/network/keepalive.rs): Connection health monitoring (Ping/Pong) and dead peer detection.
+- [addrman.rs](file:///c:/ferrous/src/network/addrman.rs): `AddressManager` for storing and selecting peer addresses.
 
 ### mining
 
@@ -101,14 +115,26 @@ Defined in [server.rs](file:///c:/ferrous/src/rpc/server.rs#L8-L12), `RpcServer`
 
 - `Arc<Mutex<ChainState>>` for synchronized access to the chain.
 - `Arc<Miner>` for mining operations.
+- `Arc<PeerManager>` for P2P network control.
 - A `tiny_http::Server` instance bound to the configured address.
 
 Responsibilities:
 
 - `run()` accepts HTTP requests and dispatches JSON-RPC calls.
-- Implements `getblockchaininfo`, `mineblocks`, `getblock`, `getbestblockhash`, and `stop`.
+- Implements `getblockchaininfo`, `mineblocks`, `getblock`, `getbestblockhash`, `stop`, and `getpeerinfo`.
 
 ## Data Flow
+
+### P2P Networking
+
+1. `PeerManager` is initialized and starts listening on the configured port.
+2. `NetworkListener` accepts incoming TCP connections and spawns a thread for each.
+3. `PeerDiscovery` runs in the background, finding new peers via `getaddr` and `addr` messages.
+4. `KeepaliveManager` sends periodic `ping` messages to ensure connection health.
+5. Incoming messages are dispatched by `PeerManager` to specialized handlers:
+   - `SyncManager`: Handles `headers` and `block` downloads during Initial Block Download (IBD).
+   - `BlockRelay`: Propagates new blocks and transactions via `inv`/`getdata`.
+   - `PeerDiscovery`: Updates the address book with new peer information.
 
 ### Mining and Block Application
 
@@ -123,6 +149,7 @@ Responsibilities:
    - Validates difficulty via `validate_difficulty`.
    - Validates structure and PoW via `validate_block`.
    - Updates `UtxoSet` if the chain is extended or reorganized.
+6. If valid, the new block is relayed to peers via `BlockRelay::broadcast_block`.
 
 ### RPC Request Handling
 
@@ -131,21 +158,27 @@ Responsibilities:
 3. Depending on `method`, the server:
    - Reads from `ChainState` (e.g. `getblockchaininfo`, `getbestblockhash`, `getblock`).
    - Mutates `ChainState` via mining (`mineblocks`).
+   - Queries `PeerManager` (e.g. `getpeerinfo`, `addnode`).
 4. Responses are serialized using the structs in [methods.rs](file:///c:/ferrous/src/rpc/methods.rs) and returned as JSON.
 
 ## Thread Safety and Concurrency Model
 
-The node uses a simple concurrency model:
+The node uses a simplified concurrency model relying on `std::sync`:
 
-- `ChainState` is shared between RPC handlers and the `Miner` via `Arc<Mutex<ChainState>>`.
-- All block additions and reads that require consistency are done by locking the same `Mutex`.
-- `Miner` itself is wrapped in an `Arc` and is internally immutable aside from its configuration.
+- `ChainState` is protected by a global `Mutex`, shared between RPC, Mining, and Networking threads.
+- `PeerManager` uses internal `Mutex` locks for its peer map and component references (`Relay`, `Sync`, `Discovery`).
+- Background threads:
+  - **RPC Server**: One thread per request (via `tiny_http`).
+  - **P2P Listener**: One thread accepting connections.
+  - **Peer Threads**: One thread per connected peer for handshake and message reading.
+  - **Maintenance Threads**: Separate threads for `PeerDiscovery` (30s loop) and `KeepaliveManager` (60s loop).
+- `Miner` is stateless/immutable configuration wrapped in `Arc`.
 
 Implications:
 
-- There is no fine-grained concurrency; all state mutations are serialized through a single lock.
-- This is acceptable for a single-node test/regtest environment and greatly simplifies correctness.
-- Scaling to high throughput or multi-threaded mining would require a more sophisticated synchronization strategy.
+- **Global Lock Contention**: `ChainState` lock is the primary bottleneck. Long validation or reorganization holds the lock, blocking RPC and P2P processing.
+- **Deadlock Risk**: Care is taken to avoid holding the `PeerManager` lock while calling into `ChainState`, or vice-versa.
+- **Scaling**: Future improvements should move to `RwLock` for `ChainState` (allowing parallel reads) and asynchronous networking (Tokio) to reduce thread overhead.
 
 ## Dependencies and Rationale
 

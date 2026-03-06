@@ -530,62 +530,6 @@ impl Decode for TxMessage {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NetworkAddr {
-    pub timestamp: u32,
-    pub services: u64,
-    pub ip: [u8; 16],
-    pub port: u16,
-}
-
-impl Encode for NetworkAddr {
-    fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&self.timestamp.encode());
-        out.extend_from_slice(&self.services.encode());
-        out.extend_from_slice(&self.ip);
-        out.extend_from_slice(&self.port.to_be_bytes());
-        out
-    }
-
-    fn encoded_size(&self) -> usize {
-        4 + 8 + 16 + 2
-    }
-}
-
-impl Decode for NetworkAddr {
-    fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
-        let mut offset = 0;
-        let (timestamp, consumed) = u32::decode(&bytes[offset..])?;
-        offset += consumed;
-
-        let (services, consumed) = u64::decode(&bytes[offset..])?;
-        offset += consumed;
-
-        if bytes.len() < offset + 18 {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let mut ip = [0u8; 16];
-        ip.copy_from_slice(&bytes[offset..offset + 16]);
-        offset += 16;
-
-        let port_bytes: [u8; 2] = bytes[offset..offset + 2].try_into().unwrap();
-        let port = u16::from_be_bytes(port_bytes);
-        offset += 2;
-
-        Ok((
-            Self {
-                timestamp,
-                services,
-                ip,
-                port,
-            },
-            offset,
-        ))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct AddrMessage {
     pub addresses: Vec<NetworkAddr>,
 }
@@ -646,6 +590,62 @@ impl Decode for GetAddrMessage {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct NetworkAddr {
+    pub timestamp: u32,
+    pub services: u64,
+    pub ip: [u8; 16],
+    pub port: u16,
+}
+
+impl Encode for NetworkAddr {
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.timestamp.encode());
+        out.extend_from_slice(&self.services.encode());
+        out.extend_from_slice(&self.ip);
+        out.extend_from_slice(&self.port.to_be_bytes());
+        out
+    }
+
+    fn encoded_size(&self) -> usize {
+        4 + 8 + 16 + 2
+    }
+}
+
+impl Decode for NetworkAddr {
+    fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let mut offset = 0;
+        let (timestamp, consumed) = u32::decode(&bytes[offset..])?;
+        offset += consumed;
+
+        let (services, consumed) = u64::decode(&bytes[offset..])?;
+        offset += consumed;
+
+        if bytes.len() < offset + 18 {
+            return Err(DecodeError::UnexpectedEof);
+        }
+
+        let mut ip = [0u8; 16];
+        ip.copy_from_slice(&bytes[offset..offset + 16]);
+        offset += 16;
+
+        let port_bytes: [u8; 2] = bytes[offset..offset + 2].try_into().unwrap();
+        let port = u16::from_be_bytes(port_bytes);
+        offset += 2;
+
+        Ok((
+            Self {
+                timestamp,
+                services,
+                ip,
+                port,
+            },
+            offset,
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum MessagePayload {
     Version(VersionMessage),
     Verack(VerackMessage),
@@ -662,6 +662,11 @@ pub enum MessagePayload {
 }
 
 impl MessagePayload {
+    pub const CMD_TX: &str = "tx\0\0\0\0\0\0\0\0\0\0";
+    pub const CMD_ADDR: &str = "addr\0\0\0\0\0\0\0\0";
+    pub const CMD_GETADDR: &str = "getaddr\0\0\0\0\0";
+    pub const CMD_PING: &str = "ping\0\0\0\0\0\0\0\0";
+
     pub fn command(&self) -> &'static str {
         match self {
             MessagePayload::Version(_) => "version",

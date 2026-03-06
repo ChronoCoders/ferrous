@@ -4,6 +4,10 @@ use ferrous_node::consensus::merkle::compute_merkle_root;
 use ferrous_node::consensus::params::Network;
 use ferrous_node::consensus::transaction::{Transaction, TxInput, TxOutput, Witness};
 use ferrous_node::mining::Miner;
+use ferrous_node::network::addrman::AddressManager;
+use ferrous_node::network::manager::PeerManager;
+use ferrous_node::network::recovery::RecoveryManager;
+use ferrous_node::network::stats::NetworkStats;
 use ferrous_node::primitives::hash::Hash256;
 use ferrous_node::rpc::RpcServer;
 use ferrous_node::wallet::address::address_to_script_pubkey;
@@ -13,6 +17,18 @@ use serde_json::{json, Value};
 use std::io::Read;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
+
+fn create_network_components() -> (Arc<PeerManager>, Arc<NetworkStats>, Arc<RecoveryManager>) {
+    let peer_manager = Arc::new(PeerManager::new([0u8; 4], 8, 70001, 0, 0));
+    let network_stats = Arc::new(NetworkStats::new());
+    let addr_manager = Arc::new(Mutex::new(AddressManager::new(1000)));
+    let recovery_manager = Arc::new(RecoveryManager::new(
+        peer_manager.clone(),
+        addr_manager.clone(),
+    ));
+
+    (peer_manager, network_stats, recovery_manager)
+}
 
 fn zero_hash() -> Hash256 {
     [0u8; 32]
@@ -78,7 +94,25 @@ fn create_chain() -> (ChainState, String, u32, TempDir) {
     )
     .unwrap();
 
+    // Create a temporary wallet file
+    let wallet_path = temp_dir.path().join("test-wallet.dat");
+    // We need to initialize the wallet file since Wallet::load expects it to exist
+    use std::fs::File;
+    File::create(&wallet_path).unwrap();
+
     (chain, best_hash_hex, 0, temp_dir)
+}
+
+fn create_wallet(temp_dir: &TempDir) -> Wallet {
+    let wallet_path = temp_dir
+        .path()
+        .join(format!("wallet-{}.dat", rand::random::<u32>()));
+    // Create empty file as Wallet::load expects it to exist
+    std::fs::File::create(&wallet_path).unwrap();
+
+    Wallet::load(&wallet_path, Network::Regtest.prefix()).unwrap_or_else(|_| {
+        panic!("Failed to load wallet");
+    })
 }
 
 fn read_body(response: tiny_http::Response<std::io::Cursor<Vec<u8>>>) -> Value {
@@ -92,27 +126,46 @@ fn read_body(response: tiny_http::Response<std::io::Cursor<Vec<u8>>>) -> Value {
 
 #[test]
 fn test_rpc_server_creation() {
-    let (chain, _, _, _tmp) = create_chain();
+    let (chain, _, _, temp_dir) = create_chain();
     let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    );
     assert!(server.is_ok());
 }
 
 #[test]
 fn test_getblockchaininfo_returns_correct_data() {
-    let (chain, expected_hash, expected_height, _tmp) = create_chain();
+    let (chain, expected_hash, expected_height, temp_dir) = create_chain();
     let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -136,14 +189,24 @@ fn test_getblockchaininfo_returns_correct_data() {
 
 #[test]
 fn test_unknown_method_returns_error() {
-    let (chain, _, _, _tmp) = create_chain();
+    let (chain, _, _, temp_dir) = create_chain();
     let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -163,14 +226,24 @@ fn test_unknown_method_returns_error() {
 
 #[test]
 fn test_json_rpc_error_handling_parse_error() {
-    let (chain, _, _, _tmp) = create_chain();
+    let (chain, _, _, temp_dir) = create_chain();
     let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let response = server.handle_raw("this is not valid json");
     let body = read_body(response);
@@ -182,14 +255,24 @@ fn test_json_rpc_error_handling_parse_error() {
 
 #[test]
 fn test_mineblocks_mines_correct_count_and_returns_hashes() {
-    let (chain, _, _, _tmp) = create_chain();
+    let (chain, _, _, temp_dir) = create_chain();
     let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -215,14 +298,24 @@ fn test_mineblocks_mines_correct_count_and_returns_hashes() {
 
 #[test]
 fn test_mineblocks_extends_chain_height() {
-    let (chain, _, _, _tmp) = create_chain();
+    let (chain, _, _, temp_dir) = create_chain();
     let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain.clone(), miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain.clone(),
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let info_before = server.handle_json_rpc(json!({
         "jsonrpc": "2.0",
@@ -255,14 +348,25 @@ fn test_mineblocks_extends_chain_height() {
 
 #[test]
 fn test_mineblocks_zero_blocks_returns_error() {
-    let (chain, _, _, _tmp) = create_chain();
+    let (chain, _, _, temp_dir) = create_chain();
     let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
+    let wallet = create_wallet(&temp_dir);
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet = Arc::new(Mutex::new(wallet));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -281,14 +385,24 @@ fn test_mineblocks_zero_blocks_returns_error() {
 
 #[test]
 fn test_mineblocks_too_many_blocks_returns_error() {
-    let (chain, _, _, _tmp) = create_chain();
+    let (chain, _, _, temp_dir) = create_chain();
     let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -318,9 +432,19 @@ fn test_getblock_returns_correct_data() {
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet = Arc::new(Mutex::new(create_wallet(&_tmp)));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -349,14 +473,28 @@ fn test_getblock_returns_correct_data() {
 
 #[test]
 fn test_getblock_invalid_hash_returns_error() {
-    let (chain, _, _, _tmp) = create_chain();
+    let (chain, _, _, temp_dir) = create_chain();
     let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet_path = temp_dir.path().join("test_wallet.dat");
+    std::fs::File::create(&wallet_path).unwrap();
+    let wallet = Arc::new(Mutex::new(
+        Wallet::load(&wallet_path, Network::Regtest.prefix()).unwrap(),
+    ));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -388,8 +526,18 @@ fn test_getbestblockhash_returns_tip_hash() {
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
     let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -411,14 +559,28 @@ fn test_getbestblockhash_returns_tip_hash() {
 
 #[test]
 fn test_generatetoaddress_mines_to_wallet_address() {
-    let (chain, _, _, _tmp) = create_chain();
+    let (chain, _, _, temp_dir) = create_chain();
     let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet_path = temp_dir.path().join("test_wallet.dat");
+    std::fs::File::create(&wallet_path).unwrap();
+    let wallet = Arc::new(Mutex::new(
+        Wallet::load(&wallet_path, Network::Regtest.prefix()).unwrap(),
+    ));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let addr_req = json!({
         "jsonrpc": "2.0",
@@ -465,10 +627,24 @@ fn test_sendtoaddress_end_to_end() {
     let chain = Arc::new(Mutex::new(chain));
     let chain_for_recipient = chain.clone();
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet_path = _tmp.path().join("sender-wallet.dat");
+    std::fs::File::create(&wallet_path).unwrap();
+    let wallet = Arc::new(Mutex::new(
+        Wallet::load(&wallet_path, Network::Regtest.prefix()).unwrap(),
+    ));
     let wallet_for_inspection = wallet.clone();
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let addr_req = json!({
         "jsonrpc": "2.0",
@@ -660,9 +836,19 @@ fn test_insufficient_funds_rejection() {
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet = Arc::new(Mutex::new(wallet));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let addr_req = json!({
         "jsonrpc": "2.0",
@@ -752,14 +938,28 @@ fn test_invalid_address_rejection() {
     let err = address_to_script_pubkey(&bad_checksum_address).unwrap_err();
     assert_eq!(err, "Invalid address checksum");
 
-    let (chain, _, _, _tmp) = create_chain();
+    let (chain, _, _, temp_dir) = create_chain();
     let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
 
     let chain = Arc::new(Mutex::new(chain));
     let miner = Arc::new(miner);
-    let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
+    let wallet_path = temp_dir.path().join("test_wallet.dat");
+    std::fs::File::create(&wallet_path).unwrap();
+    let wallet = Arc::new(Mutex::new(
+        Wallet::load(&wallet_path, Network::Regtest.prefix()).unwrap(),
+    ));
+    let (peer_manager, network_stats, recovery_manager) = create_network_components();
 
-    let server = RpcServer::new(chain, miner, wallet, "127.0.0.1:0").expect("server");
+    let server = RpcServer::new(
+        chain,
+        miner,
+        wallet,
+        peer_manager,
+        network_stats,
+        recovery_manager,
+        "127.0.0.1:0",
+    )
+    .expect("server");
 
     let invalid_addresses = vec![malformed.to_string(), mainnet_address, bad_checksum_address];
 

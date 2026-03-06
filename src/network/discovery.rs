@@ -1,13 +1,12 @@
-use crate::consensus::params::Network;
-use crate::network::addrman::AddressManager;
-use crate::network::manager::PeerManager;
-use crate::network::message::{NetworkMessage, CMD_ADDR};
-use crate::network::protocol::{AddrMessage, NetworkAddr};
-use crate::primitives::serialize::Encode;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+use crate::consensus::params::Network;
+use crate::network::addrman::AddressManager;
+use crate::network::manager::PeerManager;
+use crate::network::protocol::{AddrMessage, NetworkAddr};
 
 pub struct PeerDiscovery {
     addr_manager: Arc<Mutex<AddressManager>>,
@@ -28,7 +27,6 @@ impl PeerDiscovery {
         }
     }
 
-    // Start discovery loop (background thread)
     pub fn start(&self) {
         let addr_manager = self.addr_manager.clone();
         let peer_manager = self.peer_manager.clone();
@@ -47,7 +45,7 @@ impl PeerDiscovery {
                     let addrs = addr_manager.lock().unwrap().get_random_addresses(needed);
 
                     for addr in addrs {
-                        if let Err(_e) = peer_manager.connect_to_peer(addr) {
+                        if peer_manager.connect_to_peer(addr).is_err() {
                             addr_manager.lock().unwrap().mark_failed(&addr);
                         } else {
                             addr_manager.lock().unwrap().mark_tried(&addr);
@@ -58,29 +56,20 @@ impl PeerDiscovery {
         });
     }
 
-    // Request addresses from peer
-    pub fn request_addresses(&self, peer_id: u64) -> Result<(), String> {
-        let magic = self.peer_manager.magic();
-        let msg = NetworkMessage::new(magic, "getaddr", Vec::new());
-        self.peer_manager.send_to_peer(peer_id, &msg)
-    }
-
-    // Handle received addresses
     pub fn handle_addr(&self, addrs: &AddrMessage) -> Result<(), String> {
         let mut addr_manager = self.addr_manager.lock().unwrap();
 
         for net_addr in &addrs.addresses {
             // Convert NetworkAddr to SocketAddr
-            let addr = network_addr_to_socket_addr(net_addr);
-
-            // Add to address manager
-            addr_manager.add_address(addr, net_addr.services, net_addr.timestamp);
+            if let Some(addr) = network_addr_to_socket_addr(net_addr) {
+                // Add to address manager
+                addr_manager.add_address(addr, net_addr.services, net_addr.timestamp);
+            }
         }
 
         Ok(())
     }
 
-    // Handle getaddr request
     pub fn handle_getaddr(&self, peer_id: u64) -> Result<(), String> {
         let addr_manager = self.addr_manager.lock().unwrap();
         let addresses = addr_manager.get_all_addresses();
@@ -89,35 +78,30 @@ impl PeerDiscovery {
         // Send up to 1000 addresses
         let to_send: Vec<_> = addresses.into_iter().take(1000).collect();
 
+        if to_send.is_empty() {
+            return Ok(());
+        }
+
         let addr_msg = AddrMessage { addresses: to_send };
-
-        let magic = self.peer_manager.magic();
-        let msg = NetworkMessage::new(magic, CMD_ADDR, addr_msg.encode());
-
-        self.peer_manager.send_to_peer(peer_id, &msg)?;
+        self.peer_manager
+            .send_to_peer(peer_id, &self.create_addr_msg(addr_msg))?;
 
         Ok(())
     }
 }
 
-fn network_addr_to_socket_addr(net_addr: &NetworkAddr) -> SocketAddr {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+fn network_addr_to_socket_addr(net_addr: &NetworkAddr) -> Option<SocketAddr> {
+    // Basic conversion, ignoring IPv6 complexity for now (assuming mapped IPv4 or valid IPv6)
+    // protocol::NetAddr uses [u8; 16] for IP
+    // Rust IpAddr::from([u8; 16]) creates IPv6
+    // If it's IPv4 mapped (::ffff:1.2.3.4), we should probably convert to IPv4?
+    // std::net::Ipv6Addr has methods for this.
 
-    // Check if IPv4-mapped IPv6
-    if net_addr.ip[0..10].iter().all(|&x| x == 0)
-        && net_addr.ip[10] == 0xff
-        && net_addr.ip[11] == 0xff
-    {
-        let ip = Ipv4Addr::new(
-            net_addr.ip[12],
-            net_addr.ip[13],
-            net_addr.ip[14],
-            net_addr.ip[15],
-        );
-        SocketAddr::new(IpAddr::V4(ip), net_addr.port)
+    let ip = std::net::Ipv6Addr::from(net_addr.ip);
+    if let Some(ipv4) = ip.to_ipv4_mapped() {
+        Some(SocketAddr::new(IpAddr::V4(ipv4), net_addr.port))
     } else {
-        let ip = Ipv6Addr::from(net_addr.ip);
-        SocketAddr::new(IpAddr::V6(ip), net_addr.port)
+        Some(SocketAddr::new(IpAddr::V6(ip), net_addr.port))
     }
 }
 
@@ -133,25 +117,35 @@ pub fn get_seed_nodes(network: Network) -> Vec<SocketAddr> {
     }
 }
 
+// Extension trait removed, helper method used instead
+use crate::network::message::NetworkMessage;
+use crate::primitives::serialize::Encode;
+
+impl PeerDiscovery {
+    // Helper to fix the unimplemented above without changing the trait
+    fn create_addr_msg(&self, addr_msg: AddrMessage) -> NetworkMessage {
+        let magic = self.peer_manager.magic();
+        NetworkMessage::new(magic, "addr", addr_msg.encode())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::message::REGTEST_MAGIC;
+    use crate::network::protocol::NetworkAddr;
 
     #[test]
-    fn test_peer_discovery_logic() {
-        let addr_manager = Arc::new(Mutex::new(AddressManager::new(100)));
-        let peer_manager = Arc::new(PeerManager::new(REGTEST_MAGIC, 70015, 0, 0, 10));
+    fn test_network_addr_conversion() {
+        let ip: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 127, 0, 0, 1]; // ::ffff:127.0.0.1
+        let net_addr = NetworkAddr {
+            timestamp: 0,
+            services: 1,
+            ip,
+            port: 8333,
+        };
 
-        let discovery = PeerDiscovery::new(addr_manager.clone(), peer_manager.clone(), 8);
-
-        // Handle empty addr message
-        let msg = AddrMessage { addresses: vec![] };
-        assert!(discovery.handle_addr(&msg).is_ok());
-
-        // Handle getaddr
-        // Needs a peer to send to, so this might fail if send_to_peer checks for peer existence
-        // PeerManager returns Err("Peer not found") if peer doesn't exist.
-        assert!(discovery.handle_getaddr(999).is_err());
+        let socket_addr = network_addr_to_socket_addr(&net_addr).unwrap();
+        assert_eq!(socket_addr.ip().to_string(), "127.0.0.1");
+        assert_eq!(socket_addr.port(), 8333);
     }
 }

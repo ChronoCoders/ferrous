@@ -15,6 +15,14 @@ pub enum Network {
 }
 
 impl Network {
+    pub fn prefix(&self) -> u8 {
+        match self {
+            Network::Mainnet => 0x00,
+            Network::Testnet => 0x6f,
+            Network::Regtest => 0x6f,
+        }
+    }
+
     pub fn params(&self) -> ChainParams {
         match self {
             Network::Mainnet => ChainParams {
