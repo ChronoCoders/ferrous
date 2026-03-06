@@ -62,6 +62,10 @@ curl -X POST http://127.0.0.1:8332 \
   - Block propagation (Inv/GetData/Block)
   - Transaction relay & Mempool
   - Peer discovery (Addr/GetAddr)
+  - **Network Recovery**:
+    - Automatic partition detection and reconnection.
+    - Health monitoring and stale block detection.
+    - RPC commands: `getrecoverystatus`, `forcereconnect`, `resetnetwork`.
 - **Storage**: RocksDB integration for chain state and block index.
 - **RPC**: Full suite of control commands (`getblockchaininfo`, `mineblocks`, `getpeerinfo`, etc.).
 - **UI**: Terminal User Interface (TUI) for real-time statistics.
