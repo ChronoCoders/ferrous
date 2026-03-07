@@ -16,6 +16,7 @@ use crate::network::peer::{Peer, PeerState};
 use crate::network::protocol::{InvVector, MessagePayload, PongMessage};
 use crate::network::recovery::RecoveryManager;
 use crate::network::relay::BlockRelay;
+use crate::network::security::NetworkSecurity;
 use crate::network::stats::NetworkStats;
 use crate::network::sync::SyncManager;
 use crate::network::validation::Validate;
@@ -49,6 +50,7 @@ pub struct PeerManager {
     dos_protection: Arc<Mutex<DosProtection>>,
     batcher: Arc<Mutex<MessageBatcher>>,
     broadcast_cache: Arc<Mutex<BroadcastCache>>,
+    security: Arc<Mutex<NetworkSecurity>>,
 }
 
 impl PeerManager {
@@ -76,6 +78,7 @@ impl PeerManager {
             dos_protection: Arc::new(Mutex::new(DosProtection::new())),
             batcher: Arc::new(Mutex::new(MessageBatcher::new(magic))),
             broadcast_cache: Arc::new(Mutex::new(BroadcastCache::new(1000))),
+            security: Arc::new(Mutex::new(NetworkSecurity::new())),
         }
     }
 
@@ -142,9 +145,27 @@ impl PeerManager {
             let mut cache = self.broadcast_cache.lock().unwrap();
             cache.clear_peer(peer_id);
 
+            let mut security = self.security.lock().unwrap();
+            security.remove_peer(peer_id);
+
             Ok(())
         } else {
             Err("Peer not found".to_string())
+        }
+    }
+
+    pub fn check_network_health(&self) {
+        let security = self.security.lock().unwrap();
+        if security.detect_eclipse_attempt() {
+            println!("Potential Eclipse attack detected!");
+            // Log stats
+            let (netgroups, peers, max_pct) = security.get_diversity_stats();
+            println!(
+                "Network diversity: {} netgroups, {} peers, max {:.2}%",
+                netgroups,
+                peers,
+                max_pct * 100.0
+            );
         }
     }
 
@@ -164,6 +185,9 @@ impl PeerManager {
                     batcher.clear_peer(peer_id);
                     let mut cache = self.broadcast_cache.lock().unwrap();
                     cache.clear_peer(peer_id);
+
+                    let mut security = self.security.lock().unwrap();
+                    security.remove_peer(peer_id);
                 }
             }
         }
@@ -271,6 +295,7 @@ impl PeerManager {
 
         let peers_clone = Arc::clone(&self.peers);
         let dos_protection_clone = Arc::clone(&self.dos_protection);
+        let security_clone = Arc::clone(&self.security);
         let our_version = self.our_version;
         let our_services = self.our_services;
         let our_height = self.our_height;
@@ -302,6 +327,9 @@ impl PeerManager {
                         // Record successful connection
                         let mut dos = dos_protection_clone.lock().unwrap();
                         dos.record_connection(id, ip, false);
+
+                        let mut security = security_clone.lock().unwrap();
+                        security.record_peer(id, ip);
                     }
                     Err(e) => {
                         println!("Handshake failed with {}: {}", addr, e);
@@ -367,13 +395,12 @@ impl PeerManager {
         let peers_clone = Arc::clone(&self.peers);
         let next_peer_id_clone = Arc::clone(&self.next_peer_id);
         let dos_protection_clone = Arc::clone(&self.dos_protection);
+        let security_clone = Arc::clone(&self.security);
         let max_peers = self.max_peers;
 
         listener.start(move |conn| {
             let peer_addr = conn.peer_addr();
             let ip = peer_addr.ip();
-
-            // DoS check
 
             // DoS check
             let mut dos = dos_protection_clone.lock().unwrap();
@@ -384,6 +411,15 @@ impl PeerManager {
                 return;
             }
             drop(dos);
+
+            // Diversity check
+            let security = security_clone.lock().unwrap();
+            let total_peers = peers_clone.lock().unwrap().len();
+            if !security.can_accept_for_diversity(ip, total_peers) {
+                println!("Rejected connection from {} (diversity)", ip);
+                return;
+            }
+            drop(security);
 
             if peers_clone.lock().unwrap().len() >= max_peers {
                 println!("Max peers reached. Rejecting connection from {}", peer_addr);
@@ -400,39 +436,7 @@ impl PeerManager {
             // Let's spawn a handshake thread for inbound too
             let peers_inner = Arc::clone(&peers_clone);
             let dos_protection_inner = Arc::clone(&dos_protection_clone);
-            // We need our version info for handshake
-            // But we can't easily access self here inside closure.
-            // We need to clone version info before closure.
-
-            // Wait, we are already inside closure.
-            // The closure captures variables.
-            // But `start_listener` doesn't have access to `self.our_version` unless we clone them.
-            // Let's modify `start_listener` to capture these.
-
-            // We can't change signature of `start_listener` easily as it takes `self`.
-            // But we can capture fields.
-
-            // For now, to fix the test failure where inbound peer is auto-Active but outbound waits for handshake:
-            // The outbound peer fails because it waits for Version message.
-            // The inbound peer (here) sets state to Active immediately and DOES NOT send Version.
-            // So outbound peer times out.
-
-            // FIX: Make inbound peer send Version too.
-            // We need to implement full handshake for inbound connections.
-            // But we lack `our_version` etc in this scope.
-
-            // Quick fix for now: Just send version message manually if possible?
-            // Or better: Implement proper handshake for inbound.
-
-            // Since I cannot easily change `start_listener` closure captures without rewriting it...
-            // I will assume defaults or hardcoded values for now to unblock tests,
-            // OR I will just make the outbound handshake extremely permissive?
-            // No, outbound `perform_handshake` expects "version" message.
-
-            // Let's capture the needed values outside the closure.
-            // I need to modify `start_listener` to capture `self.our_version` etc.
-
-            // But `start_listener` is defined above. I need to edit it.
+            let security_inner = Arc::clone(&security_clone);
 
             thread::spawn(move || {
                 // peer.state = PeerState::Active; // Auto-active for now as per existing logic
@@ -465,6 +469,9 @@ impl PeerManager {
 
                         let mut dos = dos_protection_inner.lock().unwrap();
                         dos.record_connection(id, ip, true);
+
+                        let mut security = security_inner.lock().unwrap();
+                        security.record_peer(id, ip);
                     }
                     Err(e) => {
                         println!("Inbound handshake failed from {}: {}", ip, e);
@@ -628,6 +635,7 @@ impl PeerManager {
         let dos_protection_clone = Arc::clone(&self.dos_protection);
         let batcher_clone = Arc::clone(&self.batcher);
         let broadcast_cache_clone = Arc::clone(&self.broadcast_cache);
+        let security_clone = Arc::clone(&self.security);
 
         // Capture magic for auto-pong (can't use self inside thread)
         let magic = self.magic;
@@ -837,6 +845,9 @@ impl PeerManager {
                             batcher.clear_peer(id);
                             let mut cache = broadcast_cache_clone.lock().unwrap();
                             cache.clear_peer(id);
+
+                            let mut security = security_clone.lock().unwrap();
+                            security.remove_peer(id);
                         }
                     }
                 }
@@ -867,6 +878,9 @@ impl PeerManager {
                 batcher.clear_peer(id);
                 let mut cache = self.broadcast_cache.lock().unwrap();
                 cache.clear_peer(id);
+
+                let mut security = self.security.lock().unwrap();
+                security.remove_peer(id);
             }
         }
 

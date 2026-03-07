@@ -15,6 +15,7 @@ pub mod protocol;
 pub mod ratelimit;
 pub mod recovery;
 pub mod relay;
+pub mod security;
 pub mod stats;
 pub mod sync;
 pub mod validation;
