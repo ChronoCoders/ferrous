@@ -206,11 +206,17 @@ impl RpcServer {
         let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
 
+        let height = tip.as_ref().map(|t| t.height as u32).unwrap_or(0);
+        let bestblockhash = tip
+            .as_ref()
+            .map(|t| hex::encode(t.block.header.hash()))
+            .unwrap_or_else(|| "00".repeat(32));
+
         let response = GetBlockchainInfoResponse {
             chain: "ferrous".to_string(),
-            blocks: tip.height,
-            headers: tip.height,
-            bestblockhash: hex::encode(tip.header.hash()),
+            blocks: height,
+            headers: height,
+            bestblockhash,
         };
 
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
@@ -322,7 +328,7 @@ impl RpcServer {
         let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
         let utxos = wallet.get_utxos(&chain)?;
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
-        let tip_height = tip.height;
+        let tip_height = tip.as_ref().map(|t| t.height).unwrap_or(0);
 
         let mut items = Vec::new();
         for u in utxos {
@@ -335,7 +341,7 @@ impl RpcServer {
                 txid: hex::encode(u.txid),
                 vout: u.vout,
                 amount: u.value as f64 / 100_000_000f64,
-                confirmations,
+                confirmations: confirmations as u32,
                 script_pubkey: hex::encode(&u.script_pubkey),
             });
         }
@@ -405,8 +411,9 @@ impl RpcServer {
 
         let block = chain
             .get_block(&hash)
-            .map_err(|e| format!("{:?}", e))?
             .ok_or("Block not found".to_string())?;
+
+        let height = chain.get_height_for_hash(&hash).unwrap_or(0) as u32;
 
         let txids: Vec<String> = block
             .transactions
@@ -416,7 +423,7 @@ impl RpcServer {
 
         let response = GetBlockResponse {
             hash: hex::encode(block.header.hash()),
-            height: block.height,
+            height,
             version: block.header.version,
             merkleroot: hex::encode(block.header.merkle_root),
             time: block.header.timestamp,
@@ -432,7 +439,11 @@ impl RpcServer {
         let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
 
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
-        Ok(json!(hex::encode(tip.header.hash())))
+        let hash = tip
+            .as_ref()
+            .map(|t| hex::encode(t.block.header.hash()))
+            .unwrap_or_default();
+        Ok(json!(hash))
     }
 
     fn success_response(&self, id: Value, result: Value) -> Response<std::io::Cursor<Vec<u8>>> {

@@ -27,12 +27,19 @@ rocksdb = "0.22"
 bincode = "1.3"
 bs58 = "0.5"
 ripemd = "0.1"
+log = "0.4"
+env_logger = "0.10"
+tempfile = "3.10"
 
 [dev-dependencies]
-tempfile = "3.10"
+criterion = "0.5"
 
 [profile.dev]
 overflow-checks = true
 
 [profile.release]
 overflow-checks = true
+
+[[bench]]
+name = "network_bench"
+harness = false

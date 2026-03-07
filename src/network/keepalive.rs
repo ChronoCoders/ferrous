@@ -34,7 +34,7 @@ impl KeepaliveManager {
             loop {
                 thread::sleep(Duration::from_secs(60)); // Ping every minute
 
-                let peer_ids = peer_manager.get_active_peer_ids();
+                let peer_ids = peer_manager.get_connected_peers();
 
                 for peer_id in peer_ids {
                     let mut state = ping_state.lock().unwrap();

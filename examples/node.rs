@@ -57,16 +57,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Network: {}", args.network);
     println!("Data directory: {}", db_path);
 
-    let chain = Arc::new(Mutex::new(ChainState::new(params.clone(), &db_path, None)?));
+    let chain = Arc::new(Mutex::new(ChainState::new(params.clone(), &db_path)?));
 
     {
-        let chain_guard = chain.lock().unwrap();
-        let tip = chain_guard.get_tip()?;
-        println!(
-            "Current tip: {} (height {})",
-            hex::encode(tip.header.hash()),
-            tip.height
-        );
+        let mut chain_guard = chain.lock().unwrap();
+
+        // Check if genesis needed
+        if chain_guard.get_height() == 0 && chain_guard.get_tip().unwrap().is_none() {
+            println!("Creating genesis block...");
+            let genesis = ferrous_node::consensus::block::create_genesis_block();
+            chain_guard.add_block(genesis)?;
+            println!("Genesis block created");
+        }
+
+        if let Some(tip) = chain_guard.get_tip().unwrap() {
+            println!(
+                "Current tip: {} (height {})",
+                hex::encode(tip.block.header.hash()),
+                tip.height
+            );
+        }
     }
 
     let mining_address = hex::decode(&args.mining_address).unwrap_or_else(|_| vec![0x51]);

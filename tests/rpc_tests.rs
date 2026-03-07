@@ -87,12 +87,22 @@ fn create_chain() -> (ChainState, String, u32, TempDir) {
     let best_hash_hex = hex::encode(header.hash());
 
     let temp_dir = TempDir::new().unwrap();
-    let chain = ChainState::new(
-        Network::Regtest.params(),
-        temp_dir.path().to_str().unwrap(),
-        Some((header, tx)),
-    )
-    .unwrap();
+    let chain =
+        ChainState::new(Network::Regtest.params(), temp_dir.path().to_str().unwrap()).unwrap();
+
+    // Manually add genesis block since we removed it from constructor
+    let genesis_block = ferrous_node::consensus::block::Block {
+        header,
+        transactions: vec![tx.clone()],
+    };
+    // We need mutable access to add block
+    // create_chain returns ChainState, so we have ownership here?
+    // But chain is immutable let binding? No, `let chain = ...`.
+    // ChainState::add_block takes &mut self.
+    let mut chain = chain;
+    chain
+        .add_block(genesis_block)
+        .expect("failed to add genesis");
 
     // Create a temporary wallet file
     let wallet_path = temp_dir.path().join("test-wallet.dat");
@@ -748,7 +758,6 @@ fn test_sendtoaddress_end_to_end() {
 
     let block = chain_guard
         .get_block(&blockhash_arr)
-        .expect("block query")
         .expect("block present");
 
     let tx = block
@@ -782,12 +791,12 @@ fn test_sendtoaddress_end_to_end() {
         .find(|o| wallet_scripts.contains(&o.script_pubkey))
         .expect("change output");
 
-    let tip_height = chain_guard.get_tip().expect("tip").height;
+    let tip_height = chain_guard.get_tip().expect("tip").unwrap().height;
     let mut input_sum = 0u64;
     for input in &tx.inputs {
         let mut found_prev = false;
         for h in 0..=tip_height {
-            if let Some(prev_block) = chain_guard.get_block_at_height(h).expect("block at height") {
+            if let Some(prev_block) = chain_guard.get_block_by_height(h) {
                 for prev_tx in &prev_block.transactions {
                     if prev_tx.txid() == input.prev_txid {
                         let prev_out = &prev_tx.outputs[input.prev_index as usize];

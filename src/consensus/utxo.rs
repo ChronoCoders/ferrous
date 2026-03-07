@@ -7,14 +7,14 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OutPoint {
     pub txid: Hash256,
-    pub index: u32,
+    pub vout: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UtxoEntry {
     pub output: TxOutput,
-    pub height: u32,
-    pub is_coinbase: bool,
+    pub coinbase: bool,
+    pub height: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ impl UtxoSet {
         for (index, output) in tx.outputs.iter().enumerate() {
             let outpoint = OutPoint {
                 txid,
-                index: index as u32,
+                vout: index as u32,
             };
 
             if self.utxos.contains_key(&outpoint) {
@@ -68,8 +68,8 @@ impl UtxoSet {
                 outpoint,
                 UtxoEntry {
                     output: output.clone(),
-                    height,
-                    is_coinbase,
+                    height: height as u64,
+                    coinbase: is_coinbase,
                 },
             );
         }
@@ -84,8 +84,8 @@ impl UtxoSet {
     ) -> Result<UtxoEntry, UtxoError> {
         let entry = self.utxos.remove(outpoint).ok_or(UtxoError::UtxoNotFound)?;
 
-        if entry.is_coinbase {
-            let confirmations = current_height.saturating_sub(entry.height);
+        if entry.coinbase {
+            let confirmations = (current_height as u64).saturating_sub(entry.height);
 
             if confirmations < crate::consensus::validation::COINBASE_MATURITY {
                 self.utxos.insert(*outpoint, entry);
@@ -116,7 +116,7 @@ impl UtxoSet {
             for input in &tx.inputs {
                 let outpoint = OutPoint {
                     txid: input.prev_txid,
-                    index: input.prev_index,
+                    vout: input.prev_index,
                 };
 
                 let entry = self.spend_input(&outpoint, height)?;

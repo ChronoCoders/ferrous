@@ -10,7 +10,7 @@ pub struct WalletUtxo {
     pub vout: u32,
     pub value: u64,
     pub script_pubkey: Vec<u8>,
-    pub height: u32,
+    pub height: u64,
 }
 
 #[derive(Debug)]
@@ -62,7 +62,7 @@ impl Wallet {
         let mut script_map: HashMap<Vec<u8>, ()> = HashMap::new();
 
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
-        let tip_height = tip.height;
+        let tip_height = tip.as_ref().map(|t| t.height).unwrap_or(0);
 
         for address in self.keystore.entries().keys() {
             let script = address_to_script_pubkey(address)?;
@@ -84,7 +84,7 @@ impl Wallet {
                 continue;
             }
 
-            if entry.is_coinbase {
+            if entry.coinbase {
                 let confirmations = if tip_height >= entry.height {
                     tip_height - entry.height + 1
                 } else {
@@ -98,7 +98,7 @@ impl Wallet {
 
             result.push(WalletUtxo {
                 txid: outpoint.txid,
-                vout: outpoint.index,
+                vout: outpoint.vout,
                 value: entry.output.value,
                 script_pubkey: entry.output.script_pubkey.clone(),
                 height: entry.height,

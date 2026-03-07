@@ -22,7 +22,7 @@ fn main() {
         .expect("Failed to start listener");
 
     println!("Listening on {}", local_addr);
-    println!("Peer count: {}", manager.peer_count());
+    println!("Peer count: {}", manager.get_peer_count());
 
     // Start a second peer manager to act as a client
     let client_manager = PeerManager::new(magic, 10, 70015, 1, 0);
@@ -39,12 +39,12 @@ fn main() {
         println!(
             "Server Active peers: {}/{}",
             manager.active_peer_count(),
-            manager.peer_count()
+            manager.get_peer_count()
         );
         println!(
             "Client Active peers: {}/{}",
             client_manager.active_peer_count(),
-            client_manager.peer_count()
+            client_manager.get_peer_count()
         );
 
         if manager.active_peer_count() > 0 && client_manager.active_peer_count() > 0 {

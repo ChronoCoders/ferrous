@@ -1,16 +1,40 @@
-use crate::consensus::transaction::Transaction;
+use crate::consensus::merkle::compute_merkle_root;
+use crate::consensus::transaction::{Transaction, TxInput, TxOutput, Witness};
 use crate::primitives::hash::{sha256d, Hash256};
 use crate::primitives::serialize::{Decode, DecodeError, Encode};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
 /// 256-bit unsigned integer used for difficulty targets and hash comparison.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct U256(pub [u8; 32]);
 
 impl U256 {
     /// Constructs a 256-bit integer from little-endian bytes.
     pub fn from_le_bytes(bytes: [u8; 32]) -> Self {
+        U256(bytes)
+    }
+
+    /// Serialize to little-endian bytes
+    pub fn to_bytes_le(&self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Deserialize from little-endian bytes (slice)
+    pub fn from_bytes_le(bytes: &[u8]) -> Self {
+        if bytes.len() < 32 {
+            return U256([0; 32]);
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes[0..32]);
+        U256(arr)
+    }
+}
+
+impl From<u64> for U256 {
+    fn from(v: u64) -> Self {
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(&v.to_le_bytes());
         U256(bytes)
     }
 }
@@ -56,11 +80,30 @@ pub struct BlockHeader {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlockData {
+pub struct Block {
     pub header: BlockHeader,
     pub transactions: Vec<Transaction>,
-    pub height: u32,
-    pub cumulative_work: u128,
+}
+
+impl Block {
+    pub fn hash(&self) -> Hash256 {
+        self.header.hash()
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        bincode::serialize(self).unwrap_or_default()
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
+        bincode::deserialize(bytes).map_err(|_| DecodeError::InvalidData)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockData {
+    pub block: Block,
+    pub height: u64,
+    pub cumulative_work: U256,
 }
 
 const HEADER_SIZE: usize = 88;
@@ -111,10 +154,20 @@ impl Decode for BlockHeader {
 }
 
 impl BlockHeader {
-    /// Computes the double SHA-256 hash of the encoded block header.
     pub fn hash(&self) -> Hash256 {
-        let encoded = self.encode();
-        sha256d(&encoded)
+        let bytes = self.encode();
+        sha256d(&bytes)
+    }
+
+    pub fn work(&self) -> U256 {
+        // Calculate work from n_bits
+        // Target = coefficient * 2^(8 * (exponent - 3))
+        // Work = 2^256 / (Target + 1)
+
+        // Simplified for now: just return 1 or parsed target
+        // For Regtest/Testnet we might use simple work
+        U256::from(1u64)
+        // TODO: Implement proper target to work conversion
     }
 
     /// Decodes the compact difficulty representation (nBits) into a 256-bit target.
@@ -186,5 +239,46 @@ impl BlockHeader {
         let hash = self.hash();
         let hash_value = U256::from_le_bytes(hash);
         Ok(hash_value <= target)
+    }
+}
+
+pub fn create_genesis_block() -> Block {
+    let coinbase = Transaction {
+        version: 1,
+        inputs: vec![TxInput {
+            prev_txid: [0u8; 32],
+            prev_index: 0xFFFF_FFFF,
+            script_sig: vec![0x04, 0x00, 0x00, 0x00, 0x00], // height 0
+            sequence: 0xFFFF_FFFF,
+        }],
+        outputs: vec![TxOutput {
+            value: 50 * 100_000_000,
+            script_pubkey: vec![0x51], // OP_1
+        }],
+        witnesses: vec![Witness {
+            stack_items: Vec::new(),
+        }],
+        locktime: 0,
+    };
+
+    let txids = vec![coinbase.txid()];
+    let merkle_root = compute_merkle_root(&txids);
+
+    let mut header = BlockHeader {
+        version: 1,
+        prev_block_hash: [0u8; 32],
+        merkle_root,
+        timestamp: 1_700_000_000,
+        n_bits: 0x207f_ffff, // Easy testnet difficulty
+        nonce: 0,
+    };
+
+    while !header.check_proof_of_work().unwrap_or(false) {
+        header.nonce = header.nonce.wrapping_add(1);
+    }
+
+    Block {
+        header,
+        transactions: vec![coinbase],
     }
 }

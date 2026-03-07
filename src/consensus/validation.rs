@@ -6,7 +6,7 @@ use crate::consensus::transaction::{Transaction, MAX_MONEY};
 use crate::primitives::hash::sha256d;
 
 pub const MAX_BLOCK_WEIGHT: u64 = 4_000_000;
-pub const COINBASE_MATURITY: u32 = 100;
+pub const COINBASE_MATURITY: u64 = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
@@ -77,6 +77,9 @@ pub fn validate_block(
         tx.check_structure()
             .map_err(|_| ValidationError::TransactionStructureInvalid)?;
     }
+
+    // Verify witness commitment
+    validate_witness_commitment(&transactions[0], transactions)?;
 
     // 7. Check for duplicate transactions
     let mut seen_txids = HashSet::new();

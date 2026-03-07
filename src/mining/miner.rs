@@ -96,15 +96,6 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_genesis(timestamp: u64, n_bits: u32) -> (BlockHeader, Transaction) {
-        let header = BlockHeader {
-            version: 1,
-            prev_block_hash: [0u8; 32],
-            merkle_root: [0u8; 32],
-            timestamp,
-            n_bits,
-            nonce: 0,
-        };
-
         let coinbase = Transaction {
             version: 1,
             inputs: vec![TxInput {
@@ -123,18 +114,41 @@ mod tests {
             locktime: 0,
         };
 
+        let txids = vec![coinbase.txid()];
+        let merkle_root = compute_merkle_root(&txids);
+
+        let mut header = BlockHeader {
+            version: 1,
+            prev_block_hash: [0u8; 32],
+            merkle_root,
+            timestamp,
+            n_bits,
+            nonce: 0,
+        };
+
+        while !header.check_proof_of_work().unwrap() {
+            header.nonce += 1;
+        }
+
         (header, coinbase)
     }
 
     fn single_block_chain(genesis_time: u64) -> (ChainState, TempDir) {
         let (genesis, tx) = make_genesis(genesis_time, 0x207f_ffff);
         let temp_dir = TempDir::new().unwrap();
-        let chain = ChainState::new(
+        let mut chain = ChainState::new(
             crate::consensus::params::Network::Regtest.params(),
-            temp_dir.path().to_str().unwrap(),
-            Some((genesis, tx)),
+            temp_dir.path(),
         )
         .unwrap();
+
+        use crate::consensus::block::Block;
+        let block = Block {
+            header: genesis,
+            transactions: vec![tx],
+        };
+        chain.add_block(block).unwrap();
+
         (chain, temp_dir)
     }
 
@@ -207,10 +221,16 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut chain = ChainState::new(
             crate::consensus::params::Network::Regtest.params(),
-            temp_dir.path().to_str().unwrap(),
-            Some((genesis, tx)),
+            temp_dir.path(),
         )
         .unwrap();
+
+        use crate::consensus::block::Block;
+        let block = Block {
+            header: genesis,
+            transactions: vec![tx],
+        };
+        chain.add_block(block).unwrap();
 
         let miner = Miner::new(
             crate::consensus::params::Network::Regtest.params(),
@@ -224,19 +244,21 @@ mod tests {
                 .expect("mine ok");
         }
 
-        let tip = chain.get_tip().unwrap();
+        let tip = chain.get_tip().unwrap().unwrap();
         let mut prev_headers = Vec::new();
-        let mut current_hash: Hash256 = tip.header.prev_block_hash;
+        let mut current_hash: Hash256 = tip.block.header.prev_block_hash;
 
-        while let Ok(Some(block)) = chain.get_block(&current_hash) {
+        while let Some(block) = chain.get_block(&current_hash) {
             prev_headers.push(block.header);
-            if prev_headers.len() == 11 || block.height == 0 {
+            if prev_headers.len() == 11 || block.header.prev_block_hash == [0u8; 32] {
+                // block.height not available in Block
                 break;
             }
             current_hash = block.header.prev_block_hash;
         }
 
-        let res = crate::consensus::validation::validate_timestamp(&tip.header, &prev_headers);
+        let res =
+            crate::consensus::validation::validate_timestamp(&tip.block.header, &prev_headers);
         match res {
             Ok(()) => {}
             Err(e) => panic!("timestamp validation failed: {:?}", e),
@@ -258,7 +280,7 @@ impl Miner {
         self
     }
 
-    fn create_coinbase_internal(
+    pub fn create_coinbase_internal(
         &self,
         height: u32,
         subsidy: u64,
@@ -297,8 +319,9 @@ impl Miner {
     ) -> Result<(BlockHeader, Vec<Transaction>), MiningError> {
         let tip = chain
             .get_tip()
-            .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?;
-        let height = tip.height + 1;
+            .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?
+            .ok_or(MiningError::ChainError("Chain tip not found".to_string()))?;
+        let height = (tip.height + 1) as u32;
 
         let subsidy = crate::consensus::validation::calculate_subsidy(height);
         let total_fees = 0u64;
@@ -313,12 +336,12 @@ impl Miner {
 
         let timestamp = next_block_timestamp(chain)?;
 
-        let target = calculate_next_target(&tip.header, timestamp, &self.params)
+        let target = calculate_next_target(&tip.block.header, timestamp, &self.params)
             .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?;
 
         let n_bits = u256_to_compact(&target);
 
-        let prev_block_hash = tip.header.hash();
+        let prev_block_hash = tip.block.header.hash();
 
         let header = BlockHeader {
             version: 1,
@@ -432,8 +455,12 @@ impl Miner {
     ) -> Result<BlockHeader, MiningError> {
         let (header, txs) = self.mine_block(chain, transactions)?;
 
+        use crate::consensus::block::Block;
         chain
-            .add_block(header, txs)
+            .add_block(Block {
+                header,
+                transactions: txs,
+            })
             .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?;
 
         Ok(header)
@@ -447,8 +474,12 @@ impl Miner {
     ) -> Result<BlockHeader, MiningError> {
         let (header, txs) = self.mine_block_to(chain, transactions, script_pubkey)?;
 
+        use crate::consensus::block::Block;
         chain
-            .add_block(header, txs)
+            .add_block(Block {
+                header,
+                transactions: txs,
+            })
             .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?;
 
         Ok(header)

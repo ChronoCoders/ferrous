@@ -16,7 +16,7 @@ pub struct SyncManager {
 #[derive(Debug, Clone, PartialEq)]
 enum SyncState {
     Idle,
-    DownloadingHeaders { from_peer: u64, highest_known: u32 },
+    DownloadingHeaders { from_peer: u64, highest_known: u64 },
     DownloadingBlocks { pending: Vec<[u8; 32]> },
     Synced,
 }
@@ -34,7 +34,10 @@ impl SyncManager {
     pub fn start_sync(&self, peer_id: u64) -> Result<(), String> {
         let chain = self.chain.lock().unwrap();
         let locator = chain.get_block_locator();
-        let our_height = chain.get_tip().map(|t| t.height).unwrap_or(0);
+        let our_height = chain
+            .get_tip()
+            .map(|t| t.map(|d| d.height).unwrap_or(0))
+            .unwrap_or(0);
         drop(chain);
 
         // Update state
@@ -69,17 +72,14 @@ impl SyncManager {
             return Ok(());
         }
 
-        let mut chain = self.chain.lock().unwrap();
+        let chain = self.chain.lock().unwrap();
 
         // Validate and store headers
         for header in &headers_msg.headers {
             // Basic validation (PoW, difficulty, etc.)
-            if !chain
+            chain
                 .validate_header_standalone(header)
-                .map_err(|e| e.to_string())?
-            {
-                return Err("Invalid header".to_string());
-            }
+                .map_err(|e| e.to_string())?;
 
             // Store header (without full block)
             chain.store_header_only(header).map_err(|e| e.to_string())?;
@@ -122,63 +122,29 @@ impl SyncManager {
             };
             drop(state);
 
-            self.request_blocks_for_headers(peer_id)?;
+            self.request_blocks_from_headers(peer_id, &headers_msg.headers)?;
         }
 
         Ok(())
     }
 
-    fn request_blocks_for_headers(&self, peer_id: u64) -> Result<(), String> {
+    fn request_blocks_from_headers(
+        &self,
+        peer_id: u64,
+        headers: &[crate::consensus::block::BlockHeader],
+    ) -> Result<(), String> {
         let chain = self.chain.lock().unwrap();
-        // We want to download blocks from block_tip + 1 to header_tip
-        // But ChainState doesn't expose easy iterator or range getter without implementation.
-        // However, we can just walk back from header_tip until we hit block_tip?
-        // Or walk forward?
-        // ChainState doesn't have "get_block_hash_by_height" public?
-        // Yes, `get_block_at_height` uses `get_hash_at_height`.
-        // I can use `get_header_at_height` to get hashes.
-
-        // We need block tip height and header tip height.
-        // I didn't expose header_tip_height getter on ChainState.
-        // But I added the field. I should probably use `get_tip` (block tip) and I need header tip.
-        // I'll add `get_header_tip` to ChainState?
-        // Or just rely on the fact that we just stored headers.
-
-        // Let's try to get hashes.
-        // For now, I'll use `get_header_at_height` assuming it works.
-        // But I need the range.
-
-        // Since I cannot modify ChainState public interface easily without another round,
-        // I will assume I can just use `get_block_locator` or similar? No.
-
-        // Wait, I updated `ChainState` but didn't add `get_header_tip` getter.
-        // `get_tip` returns BlockData.
-
-        // I will just use the headers from the message if I had them?
-        // But `handle_headers` consumed them.
-
-        // Re-reading `handle_headers`: "Request blocks for all stored headers".
-        // It calls `self.request_blocks_for_headers()?`.
-
-        // I will implement a loop checking `get_block_at_height`.
-        // If it returns None, but `get_header_at_height` returns Some, we need that block.
-
         let mut pending = Vec::new();
-        let mut height = chain.get_tip().map(|t| t.height).unwrap_or(0) + 1;
 
-        while let Some(header) = chain.get_header_at_height(height) {
-            // Check if we have the full block
-            if chain.get_block_by_hash(&header.hash()).is_none() {
-                pending.push(header.hash());
+        for header in headers {
+            let hash = header.hash();
+            if chain.get_block(&hash).is_none() {
+                pending.push(hash);
             }
-            height += 1;
-
-            // Limit pending blocks to avoid OOM or too huge message
             if pending.len() >= 500 {
                 break;
             }
         }
-
         drop(chain);
 
         if !pending.is_empty() {
@@ -201,15 +167,13 @@ impl SyncManager {
 
             // Update state
             let mut state = self.sync_state.lock().unwrap();
-            *state = SyncState::DownloadingBlocks { pending };
-        } else {
-            let mut state = self.sync_state.lock().unwrap();
-            *state = SyncState::Synced;
+            if let SyncState::DownloadingBlocks { pending: ref mut p } = *state {
+                p.extend(pending);
+            }
         }
 
         Ok(())
     }
-
     // Handle getheaders request
     pub fn handle_getheaders(&self, peer_id: u64, msg: &GetHeadersMessage) -> Result<(), String> {
         let chain = self.chain.lock().unwrap();
@@ -218,8 +182,13 @@ impl SyncManager {
         let mut start_height = 0;
         for hash in &msg.block_locator {
             if let Some(height) = chain.get_height_for_hash(hash) {
-                start_height = height + 1;
-                break;
+                // Verify this block is in the active chain
+                if let Some(active_block) = chain.get_block_by_height(height) {
+                    if active_block.hash() == *hash {
+                        start_height = height + 1;
+                        break;
+                    }
+                }
             }
         }
 
@@ -281,7 +250,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().to_str().unwrap();
         let params = Network::Regtest.params();
-        let chain = Arc::new(Mutex::new(ChainState::new(params, db_path, None).unwrap()));
+        let chain = Arc::new(Mutex::new(ChainState::new(params, db_path).unwrap()));
 
         // Setup PeerManager
         let peer_manager = Arc::new(PeerManager::new(REGTEST_MAGIC, 10, 70015, 0, 0));

@@ -1,4 +1,4 @@
-use ferrous_node::consensus::block::{BlockHeader, U256};
+use ferrous_node::consensus::block::{Block, BlockHeader, U256};
 use ferrous_node::consensus::chain::ChainState;
 use ferrous_node::consensus::merkle::compute_merkle_root;
 use ferrous_node::consensus::params::Network;
@@ -71,12 +71,15 @@ fn regtest_params() -> ferrous_node::consensus::params::ChainParams {
 fn create_test_chain() -> (ChainState, TempDir) {
     let (genesis, genesis_tx) = create_easy_genesis();
     let temp_dir = TempDir::new().unwrap();
-    let chain = ChainState::new(
-        regtest_params(),
-        temp_dir.path().to_str().unwrap(),
-        Some((genesis, genesis_tx)),
-    )
-    .unwrap();
+    let mut chain = ChainState::new(regtest_params(), temp_dir.path()).unwrap();
+
+    use ferrous_node::consensus::block::Block;
+    let block = Block {
+        header: genesis,
+        transactions: vec![genesis_tx],
+    };
+    chain.add_block(block).unwrap();
+
     (chain, temp_dir)
 }
 
@@ -108,7 +111,10 @@ fn test_mine_block_produces_valid_header() {
     assert!(header.check_proof_of_work().unwrap());
     assert_eq!(txs.len(), 1);
 
-    let result = chain.add_block(header, txs);
+    let result = chain.add_block(Block {
+        header,
+        transactions: txs,
+    });
     assert!(result.is_ok());
 }
 
@@ -122,10 +128,18 @@ fn test_mined_block_extends_chain() {
         .mine_block(&chain, Vec::new())
         .expect("mining should succeed");
 
-    let prev_tip_hash = chain.get_tip().unwrap().header.hash();
-    chain.add_block(header, txs).unwrap();
+    let prev_tip_hash = chain.get_tip().unwrap().unwrap().block.header.hash();
+    chain
+        .add_block(Block {
+            header,
+            transactions: txs,
+        })
+        .unwrap();
 
-    assert_ne!(chain.get_tip().unwrap().header.hash(), prev_tip_hash);
+    assert_ne!(
+        chain.get_tip().unwrap().unwrap().block.header.hash(),
+        prev_tip_hash
+    );
 }
 
 #[test]
@@ -196,12 +210,15 @@ fn test_mine_and_attach_convenience() {
 
     let miner = Miner::new(regtest_params(), vec![0x51]);
 
-    let old_height = chain.get_tip().unwrap().height;
+    let old_height = chain.get_tip().unwrap().unwrap().height;
 
     let header = miner
         .mine_and_attach(&mut chain, Vec::new())
-        .expect("mine and attach should succeed");
+        .expect("mining should succeed");
 
-    assert_eq!(chain.get_tip().unwrap().height, old_height + 1);
-    assert_eq!(chain.get_tip().unwrap().header.hash(), header.hash());
+    assert_eq!(chain.get_tip().unwrap().unwrap().height, old_height + 1);
+    assert_eq!(
+        chain.get_tip().unwrap().unwrap().block.header.hash(),
+        header.hash()
+    );
 }

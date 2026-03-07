@@ -205,7 +205,7 @@ impl RecoveryManager {
         println!("Force reconnecting all peers");
 
         // Get all peer IDs
-        let peer_ids = self.peer_manager.get_active_peer_ids();
+        let peer_ids = self.peer_manager.get_connected_peers();
 
         // Disconnect all
         for peer_id in peer_ids {

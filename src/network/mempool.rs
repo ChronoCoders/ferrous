@@ -47,7 +47,7 @@ impl NetworkMempool {
         for input in &tx.inputs {
             let outpoint = OutPoint {
                 txid: input.prev_txid,
-                index: input.prev_index,
+                vout: input.prev_index,
             };
             if !chain.is_utxo_unspent(&outpoint) {
                 return Err("Input already spent or doesn't exist".to_string());
@@ -123,7 +123,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().to_str().unwrap();
         let params = Network::Regtest.params();
-        let chain = Arc::new(Mutex::new(ChainState::new(params, db_path, None).unwrap()));
+        let chain = Arc::new(Mutex::new(ChainState::new(params, db_path).unwrap()));
 
         let mempool = NetworkMempool::new(chain.clone());
 

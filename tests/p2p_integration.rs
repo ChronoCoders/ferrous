@@ -28,7 +28,7 @@ impl TestNode {
         let db_path = db_dir.path().to_str().unwrap();
         let params = Network::Regtest.params();
 
-        let chain = Arc::new(Mutex::new(ChainState::new(params, db_path, None).unwrap()));
+        let chain = Arc::new(Mutex::new(ChainState::new(params, db_path).unwrap()));
 
         let peer_manager = Arc::new(PeerManager::new(
             REGTEST_MAGIC,

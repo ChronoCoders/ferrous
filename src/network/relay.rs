@@ -123,10 +123,10 @@ impl BlockRelay {
             for inv_vec in &getdata.inventory {
                 match inv_vec.inv_type {
                     INV_BLOCK => {
-                        if let Some((header, txs)) = chain.get_block_by_hash(&inv_vec.hash) {
+                        if let Some(block) = chain.get_block(&inv_vec.hash) {
                             blocks_to_send.push(BlockMessage {
-                                header,
-                                transactions: txs,
+                                header: block.header,
+                                transactions: block.transactions.clone(),
                             });
                         }
                     }
@@ -158,10 +158,25 @@ impl BlockRelay {
         let mut chain = self.chain.lock().unwrap();
 
         // Validate and add block
-        match chain.add_block(block.header, block.transactions.clone()) {
-            Ok(added) => {
-                if added {
-                    let block_hash = block.header.hash();
+        use crate::consensus::block::Block;
+        match chain.add_block(Block {
+            header: block.header,
+            transactions: block.transactions.clone(),
+        }) {
+            Ok(()) => {
+                let block_hash = block.header.hash();
+
+                // Check if it's the new tip
+                // Note: get_tip returns Option<BlockData>. We unwrap result then Option.
+                let is_tip = chain
+                    .get_tip()
+                    .map(|t| {
+                        t.map(|d| d.block.header.hash() == block_hash)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+
+                if is_tip {
                     drop(chain);
 
                     // Remove mined transactions from mempool
@@ -220,7 +235,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().to_str().unwrap();
         let params = Network::Regtest.params();
-        let chain = Arc::new(Mutex::new(ChainState::new(params, db_path, None).unwrap()));
+        let chain = Arc::new(Mutex::new(ChainState::new(params, db_path).unwrap()));
 
         // Setup PeerManager
         let peer_manager = Arc::new(PeerManager::new(REGTEST_MAGIC, 10, 70015, 0, 0));

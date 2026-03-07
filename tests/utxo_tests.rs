@@ -61,12 +61,12 @@ fn add_transaction_creates_utxos() {
     let mut utxos = UtxoSet::new();
     utxos.add_transaction(&tx, 1, true).unwrap();
 
-    let outpoint = OutPoint { txid, index: 0 };
+    let outpoint = OutPoint { txid, vout: 0 };
     let entry = utxos.get(&outpoint).expect("utxo must exist");
 
     assert_eq!(entry.output.value, 50 * 100_000_000);
     assert_eq!(entry.height, 1);
-    assert!(entry.is_coinbase);
+    assert!(entry.coinbase);
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn spend_input_removes_utxo() {
     let mut utxos = UtxoSet::new();
     utxos.add_transaction(&tx, 1, true).unwrap();
 
-    let outpoint = OutPoint { txid, index: 0 };
+    let outpoint = OutPoint { txid, vout: 0 };
 
     let entry = utxos.spend_input(&outpoint, 200).unwrap();
     assert_eq!(entry.output.value, 10_000);
@@ -89,7 +89,7 @@ fn spend_input_missing_utxo_errors() {
     let mut utxos = UtxoSet::new();
     let outpoint = OutPoint {
         txid: zero_hash(),
-        index: 0,
+        vout: 0,
     };
 
     let result = utxos.spend_input(&outpoint, 1);
@@ -115,7 +115,7 @@ fn coinbase_not_mature_errors() {
     let mut utxos = UtxoSet::new();
     utxos.add_transaction(&tx, 1, true).unwrap();
 
-    let outpoint = OutPoint { txid, index: 0 };
+    let outpoint = OutPoint { txid, vout: 0 };
 
     let result = utxos.spend_input(&outpoint, 50);
     assert_eq!(result, Err(UtxoError::CoinbaseNotMature));
@@ -130,7 +130,7 @@ fn coinbase_spendable_after_maturity() {
     let mut utxos = UtxoSet::new();
     utxos.add_transaction(&tx, 1, true).unwrap();
 
-    let outpoint = OutPoint { txid, index: 0 };
+    let outpoint = OutPoint { txid, vout: 0 };
 
     let entry = utxos.spend_input(&outpoint, 101).unwrap();
     assert_eq!(entry.output.value, 10_000);
@@ -155,17 +155,17 @@ fn apply_transaction_spend_and_add() {
 
     let spent_outpoint = OutPoint {
         txid: coinbase_txid,
-        index: 0,
+        vout: 0,
     };
     assert!(!utxos.contains(&spent_outpoint));
 
     let new_outpoint = OutPoint {
         txid: spend_txid,
-        index: 0,
+        vout: 0,
     };
     let new_entry = utxos.get(&new_outpoint).expect("new utxo must exist");
     assert_eq!(new_entry.output.value, 40_000);
-    assert!(!new_entry.is_coinbase);
+    assert!(!new_entry.coinbase);
     assert_eq!(new_entry.height, 101);
 }
 
@@ -177,13 +177,13 @@ fn get_returns_correct_entry() {
     let mut utxos = UtxoSet::new();
     utxos.add_transaction(&tx, 5, true).unwrap();
 
-    let outpoint = OutPoint { txid, index: 0 };
+    let outpoint = OutPoint { txid, vout: 0 };
     let entry = utxos.get(&outpoint).unwrap();
 
     let expected = UtxoEntry {
         output: sample_output(7_000),
         height: 5,
-        is_coinbase: true,
+        coinbase: true,
     };
 
     assert_eq!(*entry, expected);
@@ -197,8 +197,8 @@ fn contains_checks_existence() {
     let mut utxos = UtxoSet::new();
     utxos.add_transaction(&tx, 2, true).unwrap();
 
-    let existing = OutPoint { txid, index: 0 };
-    let missing = OutPoint { txid, index: 1 };
+    let existing = OutPoint { txid, vout: 0 };
+    let missing = OutPoint { txid, vout: 1 };
 
     assert!(utxos.contains(&existing));
     assert!(!utxos.contains(&missing));
@@ -220,11 +220,11 @@ fn multiple_outputs_in_one_transaction() {
     for (index, value) in [1_000u64, 2_000, 3_000].iter().enumerate() {
         let outpoint = OutPoint {
             txid,
-            index: index as u32,
+            vout: index as u32,
         };
         let entry = utxos.get(&outpoint).expect("utxo must exist");
         assert_eq!(entry.output.value, *value);
         assert_eq!(entry.height, 10);
-        assert!(entry.is_coinbase);
+        assert!(entry.coinbase);
     }
 }

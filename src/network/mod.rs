@@ -1,4 +1,5 @@
 pub mod addrman;
+pub mod batch;
 pub mod connection;
 pub mod diagnostics;
 pub mod discovery;
