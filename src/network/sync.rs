@@ -189,7 +189,9 @@ impl SyncManager {
 
         // If received 2000 headers, request more
         if headers_msg.headers.len() >= 2000 {
-            // Continue downloading headers
+            // Request blocks for this batch first
+            self.request_blocks_from_headers(peer_id, &headers_msg.headers)?;
+            // Then continue downloading headers
             self.start_sync(peer_id)?;
         } else {
             // Headers complete, start downloading blocks
@@ -235,6 +237,7 @@ impl SyncManager {
     ) -> Result<(), String> {
         let chain = self.chain.lock().unwrap();
         let mut pending = Vec::new();
+        println!("SyncManager: request_blocks_from_headers called with {} headers", headers.len());
 
         for header in headers {
             let hash = header.hash();
@@ -246,6 +249,7 @@ impl SyncManager {
             }
         }
         drop(chain);
+        println!("SyncManager: {} blocks need downloading", pending.len());
 
         if !pending.is_empty() {
             // Send GetData
@@ -264,6 +268,7 @@ impl SyncManager {
             let magic = self.peer_manager.magic();
             let msg = NetworkMessage::new(magic, "getdata", getdata.encode());
             self.peer_manager.send_to_peer(peer_id, &msg)?;
+            println!("SyncManager: Sent getdata for {} blocks to peer {}", pending.len(), peer_id);
 
             // Update state
             let mut state = self.sync_state.lock().unwrap();

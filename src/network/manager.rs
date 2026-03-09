@@ -8,7 +8,7 @@ use crate::network::batch::{BroadcastCache, MessageBatcher};
 use crate::network::connection::PeerConnection;
 use crate::network::discovery::PeerDiscovery;
 use crate::network::dos::DosProtection;
-use crate::network::handshake::perform_handshake;
+use crate::network::handshake::{perform_handshake, perform_inbound_handshake};
 use crate::network::keepalive::KeepaliveManager;
 use crate::network::listener::NetworkListener;
 use crate::network::message::NetworkMessage;
@@ -273,6 +273,14 @@ impl PeerManager {
         }
         drop(peers);
 
+        // Skip if already connected to this IP
+        let peers = self.peers.lock().unwrap();
+        let already_connected = peers.values().any(|p| p.addr.ip() == ip);
+        drop(peers);
+        if already_connected {
+            return Err(format!("Already connected to {}", ip));
+        }
+
         let stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
             Ok(s) => s,
             Err(e) => {
@@ -507,7 +515,7 @@ impl PeerManager {
                 // It does NOT take lock.
 
                 // So:
-                match perform_handshake(&mut peer, version, services, height, nonce) {
+                match perform_inbound_handshake(&mut peer, version, services, height, nonce) {
                     Ok(_) => {
                         println!("Inbound handshake success from {}", ip);
                         peer.state = PeerState::Active;

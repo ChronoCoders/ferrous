@@ -4,7 +4,7 @@ use crate::primitives::serialize::Decode;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn perform_handshake(
     peer: &mut Peer,
@@ -71,6 +71,76 @@ pub fn perform_handshake(
                     if msg.command_string() == "ping" {
                         continue;
                     }
+                    return Err(format!("Expected verack, got {}", msg.command_string()));
+                }
+            }
+            Ok(None) => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(())
+}
+
+pub fn perform_inbound_handshake(
+    peer: &mut Peer,
+    our_version: u32,
+    our_services: u64,
+    our_height: u32,
+    our_nonce: u64,
+) -> Result<(), String> {
+    let start = Instant::now();
+
+    // 1. Wait for Version from peer
+    let version_msg = loop {
+        if start.elapsed() > HANDSHAKE_TIMEOUT {
+            return Err("Handshake timeout waiting for version".to_string());
+        }
+
+        match peer.receive() {
+            Ok(Some(msg)) => {
+                if msg.command_string() == "version" {
+                    let (version_msg, _) = VersionMessage::decode(&msg.payload)
+                        .map_err(|e| format!("Failed to decode version: {:?}", e))?;
+
+                    if version_msg.nonce == our_nonce {
+                        return Err("Connected to self".to_string());
+                    }
+
+                    break version_msg;
+                } else {
+                    return Err(format!("Expected version, got {}", msg.command_string()));
+                }
+            }
+            Ok(None) => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(e),
+        }
+    };
+
+    // 2. Send our Version first (so peer receives Version before Verack)
+    peer.initiate_handshake(our_version, our_services, our_height, our_nonce)?;
+
+    // 3. Now handle peer's Version (sends Verack)
+    peer.handle_version(&version_msg)?;
+
+    // 4. Wait for Verack
+    loop {
+        if start.elapsed() > HANDSHAKE_TIMEOUT {
+            return Err("Handshake timeout waiting for verack".to_string());
+        }
+
+        match peer.receive() {
+            Ok(Some(msg)) => {
+                if msg.command_string() == "verack" {
+                    peer.handle_verack()?;
+                    break;
+                } else if msg.command_string() == "ping" {
+                    continue;
+                } else {
                     return Err(format!("Expected verack, got {}", msg.command_string()));
                 }
             }
