@@ -231,12 +231,16 @@ fn verify_signature(
 
     let pubkey = PublicKey::from_slice(pubkey_bytes).map_err(|_| ScriptError::InvalidPubkey)?;
 
-    // 2. Parse signature (64 bytes Schnorr)
-    if signature.len() != 64 {
-        return Err(ScriptError::InvalidSignature);
+    if signature.is_empty() {
+        return Ok(false);
     }
 
-    // 3. Compute sighash using tagged_hash
+    let sig_bytes = if signature.last() == Some(&0x01) {
+        &signature[..signature.len() - 1]
+    } else {
+        signature
+    };
+
     let sighash = compute_sighash(
         context.transaction,
         context.input_index,
@@ -244,14 +248,10 @@ fn verify_signature(
     )
     .map_err(|_| ScriptError::ExecutionFailed)?;
 
-    // Create message from sighash
     let message =
         Message::from_digest_slice(&sighash).map_err(|_| ScriptError::InvalidSignature)?;
 
-    // 4. Verify using secp256k1
-    // Note: For now use ECDSA verify as placeholder
-    // Real Schnorr verification requires secp256k1 v0.29+ features
-    let sig = Signature::from_compact(signature).map_err(|_| ScriptError::InvalidSignature)?;
+    let sig = Signature::from_der(sig_bytes).map_err(|_| ScriptError::InvalidSignature)?;
 
     match SECP256K1.verify_ecdsa(&message, &sig, &pubkey) {
         Ok(()) => Ok(true),
@@ -271,12 +271,11 @@ pub fn validate_p2pkh(
     // Execute scriptPubKey with resulting stack
     let final_stack = execute_script(script_pubkey, stack, context)?;
 
-    // Check result: stack must have exactly 1 item, which is true
-    if final_stack.len() != 1 {
+    if final_stack.is_empty() {
         return Ok(false);
     }
 
-    Ok(is_true(&final_stack[0]))
+    Ok(is_true(final_stack.last().unwrap()))
 }
 
 /// Validate P2WPKH script

@@ -178,8 +178,8 @@ pub fn validate_timestamp(
     const MAX_FUTURE_OFFSET: u64 = 7200;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
     if header.timestamp > now + MAX_FUTURE_OFFSET {
         return Err(ValidationError::TimestampTooFarFuture);

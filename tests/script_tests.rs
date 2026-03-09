@@ -70,7 +70,9 @@ fn create_test_signature(
     let sighash = compute_sighash(tx, input_index, spent_outputs).unwrap();
     let message = Message::from_digest_slice(&sighash).unwrap();
     let sig = secp.sign_ecdsa(&message, secret_key);
-    sig.serialize_compact().to_vec()
+    let mut der = sig.serialize_der().to_vec();
+    der.push(0x01); // SIGHASH_ALL
+    der
 }
 
 #[test]
@@ -454,8 +456,9 @@ fn test_checksig_real_fail() {
 
     let (secret_key, pubkey) = create_test_keypair();
     let mut signature = create_test_signature(&secret_key, &tx, 0, &outputs);
-    // Corrupt signature
-    signature[0] ^= 0xFF;
+    // Corrupt signature (last byte of DER body, avoid sighash type at end)
+    let len = signature.len();
+    signature[len - 2] ^= 0xFF;
 
     // PUSH sig, PUSH pubkey, CHECKSIG
     let mut script = Vec::new();
@@ -504,8 +507,9 @@ fn test_checksigverify_real_fail() {
 
     let (secret_key, pubkey) = create_test_keypair();
     let mut signature = create_test_signature(&secret_key, &tx, 0, &outputs);
-    // Corrupt signature
-    signature[0] ^= 0xFF;
+    // Corrupt signature (last byte of DER body, avoid sighash type at end)
+    let len = signature.len();
+    signature[len - 2] ^= 0xFF;
 
     // PUSH sig, PUSH pubkey, CHECKSIGVERIFY
     let mut script = Vec::new();

@@ -1,4 +1,4 @@
-use crate::consensus::chain::ChainState;
+use crate::consensus::chain::{ChainError, ChainState};
 use crate::consensus::transaction::Transaction;
 use crate::network::manager::PeerManager;
 use crate::network::mempool::NetworkMempool;
@@ -154,7 +154,14 @@ impl BlockRelay {
     }
 
     // Handle received Block message
-    pub fn handle_block(&self, _peer_id: u64, block: &BlockMessage) -> Result<(), String> {
+    pub fn handle_block(&self, peer_id: u64, block: &BlockMessage) -> Result<(), String> {
+        let block_hash = block.header.hash();
+
+        // Notify SyncManager that we received this block (to clear pending state)
+        if let Some(sync) = &*self.peer_manager.sync_manager().lock().unwrap() {
+            sync.block_received(block_hash);
+        }
+
         let mut chain = self.chain.lock().unwrap();
 
         // Validate and add block
@@ -164,7 +171,7 @@ impl BlockRelay {
             transactions: block.transactions.clone(),
         }) {
             Ok(()) => {
-                let block_hash = block.header.hash();
+                let height = chain.get_height_for_hash(&block_hash);
 
                 // Check if it's the new tip
                 // Note: get_tip returns Option<BlockData>. We unwrap result then Option.
@@ -176,14 +183,36 @@ impl BlockRelay {
                     })
                     .unwrap_or(false);
 
-                if is_tip {
-                    drop(chain);
+                drop(chain);
 
+                // Update peer height
+                if let Some(h) = height {
+                    self.peer_manager.update_peer_height(peer_id, h as u32);
+                }
+
+                if is_tip {
+                    // Check if syncing
+                    let syncing = {
+                        let sync_guard = self.peer_manager.sync_manager();
+                        let sync = sync_guard.lock().unwrap();
+                        sync.as_ref().map(|s| s.is_syncing()).unwrap_or(false)
+                    };
+
+                    if !syncing {
+                        self.announce_block(block_hash)?;
+                    }
                     // Remove mined transactions from mempool
                     self.mempool.remove_block_transactions(&block.transactions);
-
-                    // Announce to other peers
-                    self.announce_block(block_hash)?;
+                }
+                Ok(())
+            }
+            Err(ChainError::OrphanBlock) => {
+                drop(chain);
+                // Trigger header sync to find parent
+                let sync_guard = self.peer_manager.sync_manager();
+                let sync = sync_guard.lock().unwrap();
+                if let Some(sync) = &*sync {
+                    let _ = sync.request_headers_force(peer_id);
                 }
                 Ok(())
             }

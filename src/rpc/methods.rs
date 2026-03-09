@@ -64,3 +64,8 @@ pub struct SendToAddressResponse {
     pub txid: String,
     pub blockhash: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListAddressesResponse {
+    pub addresses: Vec<String>,
+}

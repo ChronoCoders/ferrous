@@ -167,7 +167,20 @@ impl Encode for Transaction {
     }
 
     fn encoded_size(&self) -> usize {
-        self.encode().len()
+        let mut size = 4; // version
+        size += crate::primitives::varint::encode(self.inputs.len() as u64).len();
+        for input in &self.inputs {
+            size += input.encoded_size();
+        }
+        size += crate::primitives::varint::encode(self.outputs.len() as u64).len();
+        for output in &self.outputs {
+            size += output.encoded_size();
+        }
+        size += 4; // locktime
+        for witness in &self.witnesses {
+            size += witness.encoded_size();
+        }
+        size
     }
 }
 

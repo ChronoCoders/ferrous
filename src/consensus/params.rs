@@ -8,6 +8,7 @@ pub struct ChainParams {
     pub allow_min_difficulty_blocks: bool,
 }
 
+#[derive(Debug, Clone)]
 pub enum Network {
     Mainnet,
     Testnet,

@@ -101,7 +101,7 @@ mod tests {
             inputs: vec![TxInput {
                 prev_txid: [0u8; 32],
                 prev_index: 0xFFFF_FFFF,
-                script_sig: vec![0x01],
+                script_sig: vec![0x04, 0x00, 0x00, 0x00, 0x00],
                 sequence: 0xFFFF_FFFF,
             }],
             outputs: vec![TxOutput {
@@ -287,6 +287,7 @@ impl Miner {
         fees: u64,
         script_pubkey: Vec<u8>,
     ) -> Transaction {
+        // Encode height in script_sig (BIP34 style: length + LE bytes)
         let mut script_sig = Vec::new();
         let height_bytes = height.to_le_bytes();
         script_sig.push(4);

@@ -145,6 +145,10 @@ impl PeerConnection {
     pub fn peer_addr(&self) -> SocketAddr {
         self.addr
     }
+
+    pub fn magic(&self) -> [u8; 4] {
+        self.magic
+    }
 }
 
 #[cfg(test)]

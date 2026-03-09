@@ -34,13 +34,18 @@ fn empty_witnesses(input_count: usize) -> Vec<Witness> {
     v
 }
 
-fn coinbase_transaction(value: u64, extra: u8) -> Transaction {
+fn coinbase_transaction(value: u64, height: u32, extra: u8) -> Transaction {
+    let height_bytes = height.to_le_bytes();
+    let mut script_sig = Vec::new();
+    script_sig.push(4);
+    script_sig.extend_from_slice(&height_bytes);
+    script_sig.push(extra);
     Transaction {
         version: 1,
         inputs: vec![TxInput {
             prev_txid: [0u8; 32],
             prev_index: 0xFFFF_FFFF,
-            script_sig: vec![extra],
+            script_sig,
             sequence: 0xFFFF_FFFF,
         }],
         outputs: vec![sample_output(value)],
@@ -65,11 +70,11 @@ fn regular_transaction(prev_txid: Hash256, prev_index: u32, output_value: u64) -
 }
 
 fn create_genesis_block() -> (BlockHeader, Transaction) {
-    let tx = coinbase_transaction(50 * 100_000_000, 0);
+    let tx = coinbase_transaction(50 * 100_000_000, 0, 0);
     let txids = vec![tx.txid()];
     let merkle_root = compute_merkle_root(&txids);
 
-    let header = BlockHeader {
+    let mut header = BlockHeader {
         version: 1,
         prev_block_hash: zero_hash(),
         merkle_root,
@@ -78,7 +83,10 @@ fn create_genesis_block() -> (BlockHeader, Transaction) {
         nonce: 0,
     };
 
-    // We don't mine it here, but we assume it's valid for genesis
+    while !header.check_proof_of_work().unwrap() {
+        header.nonce += 1;
+    }
+
     (header, tx)
 }
 
@@ -138,7 +146,7 @@ fn test_add_valid_block_extends_tip() {
     let (mut chain, _tmp) = create_test_chain();
 
     let prev_header = chain.get_tip().unwrap().unwrap().block.header;
-    let tx = coinbase_transaction(50 * 100_000_000, 1);
+    let tx = coinbase_transaction(50 * 100_000_000, 1, 0);
     let header = mine_block(
         &prev_header,
         std::slice::from_ref(&tx),
@@ -163,7 +171,7 @@ fn test_add_orphan_block_error() {
     let (mut chain, _tmp) = create_test_chain();
 
     let prev_header = chain.get_tip().unwrap().unwrap().block.header;
-    let tx = coinbase_transaction(50 * 100_000_000, 1);
+    let tx = coinbase_transaction(50 * 100_000_000, 1, 0);
 
     // Create block that points to random parent
     let _header = mine_block(
@@ -212,7 +220,7 @@ fn test_reorg_to_longer_chain() {
     let genesis_header = chain.get_tip().unwrap().unwrap().block.header;
 
     // Chain A: Genesis -> A1
-    let tx_a1 = coinbase_transaction(50 * 100_000_000, 1);
+    let tx_a1 = coinbase_transaction(50 * 100_000_000, 1, 0);
     let header_a1 = mine_block(
         &genesis_header,
         std::slice::from_ref(&tx_a1),
@@ -231,7 +239,7 @@ fn test_reorg_to_longer_chain() {
     );
 
     // Chain B: Genesis -> B1 -> B2 (Longer/Heavier)
-    let tx_b1 = coinbase_transaction(50 * 100_000_000, 2);
+    let tx_b1 = coinbase_transaction(50 * 100_000_000, 1, 1);
     let header_b1 = mine_block(
         &genesis_header,
         std::slice::from_ref(&tx_b1),
@@ -250,7 +258,7 @@ fn test_reorg_to_longer_chain() {
     );
 
     // Add B2
-    let tx_b2 = coinbase_transaction(50 * 100_000_000, 3);
+    let tx_b2 = coinbase_transaction(50 * 100_000_000, 2, 1);
     let header_b2 = mine_block(
         &header_b1,
         std::slice::from_ref(&tx_b2),
@@ -277,7 +285,7 @@ fn test_block_valid_but_not_tip() {
     let genesis_header = chain.get_tip().unwrap().unwrap().block.header;
 
     // Tip: Genesis -> A1
-    let tx_a1 = coinbase_transaction(50 * 100_000_000, 1);
+    let tx_a1 = coinbase_transaction(50 * 100_000_000, 1, 0);
     let header_a1 = mine_block(
         &genesis_header,
         std::slice::from_ref(&tx_a1),
@@ -291,7 +299,7 @@ fn test_block_valid_but_not_tip() {
         .unwrap();
 
     // Side: Genesis -> B1 (Same work, but arrived later, so not tip)
-    let tx_b1 = coinbase_transaction(50 * 100_000_000, 2);
+    let tx_b1 = coinbase_transaction(50 * 100_000_000, 1, 1);
     let header_b1 = mine_block(
         &genesis_header,
         std::slice::from_ref(&tx_b1),
@@ -315,7 +323,7 @@ fn test_get_block() {
 
     let genesis_header = chain.get_tip().unwrap().unwrap().block.header;
 
-    let tx = coinbase_transaction(50 * 100_000_000, 1);
+    let tx = coinbase_transaction(50 * 100_000_000, 1, 0);
     let header = mine_block(
         &genesis_header,
         std::slice::from_ref(&tx),
@@ -340,7 +348,7 @@ fn test_cumulative_work_calculation() {
     assert!(work_genesis > U256([0; 32]));
 
     let genesis_header = chain.get_tip().unwrap().unwrap().block.header;
-    let tx = coinbase_transaction(50 * 100_000_000, 1);
+    let tx = coinbase_transaction(50 * 100_000_000, 1, 0);
     let header = mine_block(
         &genesis_header,
         std::slice::from_ref(&tx),
@@ -366,7 +374,7 @@ fn test_deep_reorg_20_blocks() {
     // Main chain A: 20 blocks on top of genesis
     let mut prev_header = genesis_header;
     for i in 0..20 {
-        let tx = coinbase_transaction(50 * 100_000_000, (i + 1) as u8);
+        let tx = coinbase_transaction(50 * 100_000_000, (i + 1) as u32, 0);
         let header = mine_block(
             &prev_header,
             std::slice::from_ref(&tx),
@@ -390,7 +398,7 @@ fn test_deep_reorg_20_blocks() {
     let mut b_tip_hash = Hash256::default();
 
     for i in 0..25 {
-        let tx = coinbase_transaction(50 * 100_000_000, (i + 50) as u8);
+        let tx = coinbase_transaction(50 * 100_000_000, (i + 1) as u32, 1);
         let header = mine_block(&prev_b, std::slice::from_ref(&tx), prev_b.timestamp + 600);
         b_tip_hash = header.hash();
         prev_b = header;
@@ -448,7 +456,7 @@ fn test_wallet_balance_after_reorg() {
     let mut prev_header = genesis_header;
 
     // Height 1: coinbase to wallet script
-    let mut tx_wallet = coinbase_transaction(50 * 100_000_000, 1);
+    let mut tx_wallet = coinbase_transaction(50 * 100_000_000, 1, 0);
     tx_wallet.outputs[0].script_pubkey = script.clone();
     let header_wallet = mine_block(
         &prev_header,
@@ -465,7 +473,7 @@ fn test_wallet_balance_after_reorg() {
 
     // Heights 2..105: regular coinbases to non-wallet script
     for i in 2..=105 {
-        let tx = coinbase_transaction(50 * 100_000_000, i as u8);
+        let tx = coinbase_transaction(50 * 100_000_000, i as u32, 0);
         let header = mine_block(
             &prev_header,
             std::slice::from_ref(&tx),
@@ -491,7 +499,7 @@ fn test_wallet_balance_after_reorg() {
     let mut prev_b = genesis_header_again;
 
     for i in 0..110 {
-        let tx = coinbase_transaction(50 * 100_000_000, (i + 1) as u8);
+        let tx = coinbase_transaction(50 * 100_000_000, (i + 1) as u32, 1);
         let header = mine_block(&prev_b, std::slice::from_ref(&tx), prev_b.timestamp + 600);
         prev_b = header;
         let res = chain.add_block(Block {
@@ -516,7 +524,7 @@ fn test_invalid_difficulty_error() {
     let (mut chain, _tmp) = create_test_chain();
 
     let prev_header = chain.get_tip().unwrap().unwrap().block.header;
-    let tx = coinbase_transaction(50 * 100_000_000, 1);
+    let tx = coinbase_transaction(50 * 100_000_000, 1, 0);
 
     // Create header with wrong n_bits
     let mut header = mine_block(
@@ -555,7 +563,7 @@ fn test_double_spend_prevention() {
 
     for height in 1..=120 {
         if height == 1 {
-            let tx = coinbase_transaction(50 * 100_000_000, 1);
+            let tx = coinbase_transaction(50 * 100_000_000, 1, 0);
             coinbase_to_spend_txid = tx.txid();
             let header = mine_block(
                 &prev_header,
@@ -570,7 +578,7 @@ fn test_double_spend_prevention() {
                 })
                 .unwrap();
         } else if height == 120 {
-            let coinbase_tx = coinbase_transaction(50 * 100_000_000, 2);
+            let coinbase_tx = coinbase_transaction(50 * 100_000_000, height as u32, 0);
             let spend_tx = regular_transaction(coinbase_to_spend_txid, 0, 40_000);
             let txs = vec![coinbase_tx, spend_tx];
             let header = mine_block(&prev_header, &txs, prev_header.timestamp + 600);
@@ -581,7 +589,7 @@ fn test_double_spend_prevention() {
             });
             assert!(result.is_ok());
         } else {
-            let tx = coinbase_transaction(50 * 100_000_000, (height as u8).wrapping_add(10));
+            let tx = coinbase_transaction(50 * 100_000_000, height as u32, 0);
             let header = mine_block(
                 &prev_header,
                 std::slice::from_ref(&tx),
@@ -607,7 +615,7 @@ fn test_double_spend_prevention() {
     let utxos = chain.export_utxos().unwrap();
     assert!(!utxos.iter().any(|(op, _)| *op == original_outpoint));
 
-    let coinbase_tx2 = coinbase_transaction(50 * 100_000_000, 3);
+    let coinbase_tx2 = coinbase_transaction(50 * 100_000_000, 121, 0);
     let double_spend_tx = regular_transaction(coinbase_to_spend_txid, 0, 30_000);
     let txs2 = vec![coinbase_tx2, double_spend_tx];
     let header2 = mine_block(&prev_header, &txs2, prev_header.timestamp + 600);
@@ -643,7 +651,7 @@ fn test_transaction_signing_correctness() {
 
     let mut prev_header = genesis_header;
 
-    let mut tx1 = coinbase_transaction(50 * 100_000_000, 1);
+    let mut tx1 = coinbase_transaction(50 * 100_000_000, 1, 0);
     tx1.outputs[0].script_pubkey = script1;
     let header1 = mine_block(
         &prev_header,
@@ -658,7 +666,7 @@ fn test_transaction_signing_correctness() {
         })
         .unwrap();
 
-    let mut tx2 = coinbase_transaction(50 * 100_000_000, 2);
+    let mut tx2 = coinbase_transaction(50 * 100_000_000, 2, 0);
     tx2.outputs[0].script_pubkey = script2;
     let header2 = mine_block(
         &prev_header,
@@ -674,7 +682,7 @@ fn test_transaction_signing_correctness() {
         .unwrap();
 
     for i in 3..=105 {
-        let tx = coinbase_transaction(50 * 100_000_000, i as u8);
+        let tx = coinbase_transaction(50 * 100_000_000, i as u32, 0);
         let header = mine_block(
             &prev_header,
             std::slice::from_ref(&tx),
@@ -745,7 +753,7 @@ fn test_invalid_signature_rejection() {
     let genesis_header = chain.get_tip().unwrap().unwrap().block.header;
     let mut prev_header = genesis_header;
 
-    let mut tx_coinbase = coinbase_transaction(50 * 100_000_000, 1);
+    let mut tx_coinbase = coinbase_transaction(50 * 100_000_000, 1, 0);
     tx_coinbase.outputs[0].script_pubkey = script;
     let header1 = mine_block(
         &prev_header,
@@ -761,7 +769,7 @@ fn test_invalid_signature_rejection() {
         .unwrap();
 
     for i in 2..=105 {
-        let tx = coinbase_transaction(50 * 100_000_000, i as u8);
+        let tx = coinbase_transaction(50 * 100_000_000, i as u32, 0);
         let header = mine_block(
             &prev_header,
             std::slice::from_ref(&tx),
@@ -784,7 +792,7 @@ fn test_invalid_signature_rejection() {
     tx_invalid.inputs[0].script_sig[1] ^= 0xff; // Invalidate signature
 
     // The coinbase must be the first transaction
-    let coinbase = coinbase_transaction(50 * 100_000_000, 200);
+    let coinbase = coinbase_transaction(50 * 100_000_000, 106, 0);
     let txs = vec![coinbase, tx_invalid];
     
     let header = mine_block(&prev_header, &txs, prev_header.timestamp + 600);

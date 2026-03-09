@@ -2,7 +2,10 @@ use crate::consensus::block::{Block, BlockData, BlockHeader, U256};
 use crate::consensus::difficulty::{validate_difficulty, DifficultyError};
 use crate::consensus::params::ChainParams;
 use crate::consensus::utxo::{OutPoint, UtxoEntry, UtxoError};
-use crate::consensus::validation::{validate_block, ValidationError};
+use crate::consensus::validation::{
+    validate_block, validate_coinbase_height, validate_coinbase_reward, validate_timestamp,
+    ValidationError, COINBASE_MATURITY,
+};
 use crate::primitives::hash::Hash256;
 use crate::script::engine::{validate_p2pkh, ScriptContext};
 use crate::storage::{BlockStore, ChainStateStore, ChainTip, Database, UtxoStore};
@@ -22,7 +25,6 @@ pub enum ChainError {
     GenesisMismatch,
 }
 
-pub type BlockUtxoView = (Vec<(OutPoint, UtxoEntry)>, Vec<OutPoint>);
 
 impl std::fmt::Display for ChainError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -190,28 +192,28 @@ impl ChainState {
         Ok(())
     }
 
-    // #[allow(dead_code)]
     fn reorganize(&mut self, old_tip: &Hash256, new_tip: &Hash256) -> Result<(), ChainError> {
         info!("Reorganizing chain from {} to {}", hex::encode(old_tip), hex::encode(new_tip));
-        
-        // Find common ancestor
+
+        let mut old_chain = Vec::new();
+        let mut new_chain = Vec::new();
+
         let mut old_curr = *old_tip;
         let mut new_curr = *new_tip;
-        
-        let _old_height = self.blocks.get(&old_curr).map(|d| d.height).unwrap_or(0);
-        let _new_height = self.blocks.get(&new_curr).map(|d| d.height).unwrap_or(0);
-        
-        // Bring to same height
-        while self.blocks.get(&old_curr).map(|d| d.height).unwrap_or(0) > self.blocks.get(&new_curr).map(|d| d.height).unwrap_or(0) {
+
+        let old_height = self.blocks.get(&old_curr).map(|d| d.height).unwrap_or(0);
+        let new_height = self.blocks.get(&new_curr).map(|d| d.height).unwrap_or(0);
+
+        while self.blocks.get(&old_curr).map(|d| d.height).unwrap_or(0) > new_height {
+            old_chain.push(old_curr);
             if let Some(data) = self.blocks.get(&old_curr) {
-                 old_curr = data.block.header.prev_block_hash;
+                old_curr = data.block.header.prev_block_hash;
             } else {
-                 break;
+                break;
             }
         }
-        
-        let mut new_chain = Vec::new();
-        while self.blocks.get(&new_curr).map(|d| d.height).unwrap_or(0) > self.blocks.get(&old_curr).map(|d| d.height).unwrap_or(0) {
+
+        while self.blocks.get(&new_curr).map(|d| d.height).unwrap_or(0) > old_height {
             new_chain.push(new_curr);
             if let Some(data) = self.blocks.get(&new_curr) {
                 new_curr = data.block.header.prev_block_hash;
@@ -219,65 +221,79 @@ impl ChainState {
                 break;
             }
         }
-        
-        // Step back together
+
         while old_curr != new_curr {
-             // Avoid infinite loops if we hit genesis or unknown block
-             if old_curr == [0u8; 32] || new_curr == [0u8; 32] {
-                 break;
-             }
-             
-             if let Some(data) = self.blocks.get(&old_curr) {
-                 old_curr = data.block.header.prev_block_hash;
-             } else {
-                 break;
-             }
-             
-             new_chain.push(new_curr);
-             if let Some(data) = self.blocks.get(&new_curr) {
-                 new_curr = data.block.header.prev_block_hash;
-             } else {
-                 break;
-             }
-        }
-        
-        let ancestor = old_curr;
-        
-        // Disconnect old blocks (from old_tip back to ancestor)
-        let mut curr = *old_tip;
-        while curr != ancestor {
-            if let Some(data) = self.blocks.get(&curr) {
-                 let block = &data.block;
-                 // TODO: Disconnect block from UTXO set (requires undo data)
-                 let _ = block; 
-                 curr = block.header.prev_block_hash;
+            if old_curr == [0u8; 32] || new_curr == [0u8; 32] {
+                break;
+            }
+            old_chain.push(old_curr);
+            new_chain.push(new_curr);
+            if let Some(data) = self.blocks.get(&old_curr) {
+                old_curr = data.block.header.prev_block_hash;
             } else {
-                 break;
+                break;
+            }
+            if let Some(data) = self.blocks.get(&new_curr) {
+                new_curr = data.block.header.prev_block_hash;
+            } else {
+                break;
             }
         }
-        
-        // Connect new blocks (from ancestor to new_tip)
-        // new_chain is in reverse order (tip -> ancestor)
+
+        info!("Reorg: disconnecting {} blocks, reconnecting {}", old_chain.len(), new_chain.len());
+
+        for block_hash in &old_chain {
+            let block = self.blocks.get(block_hash)
+                .ok_or(ChainError::BlockNotFound)?
+                .block.clone();
+
+            let mut created_outpoints = Vec::new();
+            for tx in &block.transactions {
+                let txid = tx.txid();
+                for (vout, _) in tx.outputs.iter().enumerate() {
+                    created_outpoints.push(OutPoint { txid, vout: vout as u32 });
+                }
+            }
+
+            let restored_entries = self.utxo_store
+                .get_undo_data(block_hash)
+                .map_err(ChainError::DbError)?
+                .ok_or_else(|| ChainError::DbError(
+                    format!("Missing undo data for block {}", hex::encode(block_hash))
+                ))?;
+
+            self.utxo_store
+                .revert_block(&created_outpoints, &restored_entries)
+                .map_err(ChainError::DbError)?;
+
+            self.utxo_store
+                .delete_undo_data(block_hash)
+                .map_err(ChainError::DbError)?;
+        }
+
         for hash in new_chain.iter().rev() {
             if let Some(data) = self.blocks.get(hash) {
-                 let block = &data.block;
-                 let height = data.height;
-                 // Apply intermediate blocks to UTXO set
-                 let (created_utxos, spent_utxos) = self.apply_block_to_utxo(block, height)?;
-                 self.utxo_store.apply_block(&created_utxos, &spent_utxos).map_err(ChainError::DbError)?;
+                let block = data.block.clone();
+                let height = data.height;
+                let bh = block.hash();
+                let (created_utxos, spent_utxos, spent_entries, fees) = self.apply_block_to_utxo(&block, height)?;
+
+                validate_coinbase_reward(&block.transactions[0], fees, height as u32)
+                    .map_err(ChainError::InvalidBlock)?;
+
+                self.utxo_store.apply_block(&created_utxos, &spent_utxos).map_err(ChainError::DbError)?;
+                self.utxo_store.store_undo_data(&bh, &spent_entries).map_err(ChainError::DbError)?;
             }
         }
-        
+
         Ok(())
     }
 
     pub fn add_block(&mut self, block: Block) -> Result<(), ChainError> {
         let block_hash = block.hash();
 
-        // Validate block
         validate_block(&block.header, &block.transactions).map_err(ChainError::InvalidBlock)?;
 
-        // Calculate height and cumulative work
         let (height, cumulative_work) = if block.header.prev_block_hash == [0u8; 32] {
             (0, block.header.work())
         } else {
@@ -286,43 +302,83 @@ impl ChainState {
                 .get(&block.header.prev_block_hash)
                 .ok_or(ChainError::OrphanBlock)?;
 
-            // Validate difficulty
             validate_difficulty(Some(&prev_data.block.header), &block.header, &self.params)
                 .map_err(ChainError::InvalidDifficulty)?;
+
+            let mut prev_headers = Vec::new();
+            let mut curr = block.header.prev_block_hash;
+            for _ in 0..11 {
+                if let Some(d) = self.blocks.get(&curr) {
+                    prev_headers.push(d.block.header);
+                    if d.block.header.prev_block_hash == [0u8; 32] {
+                        break;
+                    }
+                    curr = d.block.header.prev_block_hash;
+                } else {
+                    break;
+                }
+            }
+            validate_timestamp(&block.header, &prev_headers)
+                .map_err(ChainError::InvalidBlock)?;
 
             (
                 prev_data.height + 1,
                 prev_data.cumulative_work + block.header.work(),
             )
         };
-        
-        // Update tip if this is the new best chain
+
+        if height > 0 {
+            validate_coinbase_height(&block.transactions[0], height as u32)
+                .map_err(ChainError::InvalidBlock)?;
+        }
+
+        self.blocks.insert(
+            block_hash,
+            BlockData {
+                block: block.clone(),
+                height,
+                cumulative_work,
+            },
+        );
+
         let should_update_tip = match self.tip {
             None => true,
             Some(current_tip) => {
-                let current_work = self.blocks.get(&current_tip).unwrap().cumulative_work;
+                let current_work = self.blocks.get(&current_tip)
+                    .map(|d| d.cumulative_work)
+                    .unwrap_or(U256::from(0u64));
                 cumulative_work > current_work
             }
         };
 
         if should_update_tip {
-            // Check for reorg
-            if let Some(current_tip_hash) = self.tip {
-                // If the new block does not extend the current tip, we have a reorg
+            let did_reorg = if let Some(current_tip_hash) = self.tip {
                 if block.header.prev_block_hash != current_tip_hash {
                     self.reorganize(&current_tip_hash, &block_hash)?;
+                    true
+                } else {
+                    false
                 }
+            } else {
+                false
+            };
+
+            if !did_reorg {
+                let (created_utxos, spent_utxos, spent_entries, block_fees) = self.apply_block_to_utxo(&block, height)?;
+
+                validate_coinbase_reward(&block.transactions[0], block_fees, height as u32)
+                    .map_err(ChainError::InvalidBlock)?;
+
+                self.utxo_store
+                    .apply_block(&created_utxos, &spent_utxos)
+                    .map_err(ChainError::DbError)?;
+                self.utxo_store
+                    .store_undo_data(&block_hash, &spent_entries)
+                    .map_err(ChainError::DbError)?;
             }
 
-            // Apply to UTXO set ONLY if it's the new tip
-            let (created_utxos, spent_utxos) = self.apply_block_to_utxo(&block, height)?;
-
-            // Persist everything atomically
             self.block_store
                 .store_block(&block, height, cumulative_work)
-                .map_err(ChainError::DbError)?;
-            self.utxo_store
-                .apply_block(&created_utxos, &spent_utxos)
                 .map_err(ChainError::DbError)?;
 
             let new_tip = ChainTip {
@@ -335,40 +391,29 @@ impl ChainState {
                 .map_err(ChainError::DbError)?;
             self.tip = Some(block_hash);
         } else {
-             // Side chain block: Store it but DO NOT apply to UTXO set
              self.block_store
                 .store_block(&block, height, cumulative_work)
                 .map_err(ChainError::DbError)?;
         }
 
-        // Update in-memory index
-        self.blocks.insert(
-            block_hash,
-            BlockData {
-                block,
-                height,
-                cumulative_work,
-            },
-        );
-
         Ok(())
     }
 
-    fn apply_block_to_utxo(&self, block: &Block, height: u64) -> Result<BlockUtxoView, ChainError> {
+    fn apply_block_to_utxo(&self, block: &Block, height: u64) -> Result<(Vec<(OutPoint, UtxoEntry)>, Vec<OutPoint>, Vec<(OutPoint, UtxoEntry)>, u64), ChainError> {
         let mut created = Vec::new();
         let mut spent = Vec::new();
+        let mut spent_entries = Vec::new();
+        let mut block_fees: u64 = 0;
 
-        // Process all transactions
         for (tx_idx, tx) in block.transactions.iter().enumerate() {
             let txid = tx.txid();
             let is_coinbase = tx_idx == 0;
 
-            // Spend inputs (skip coinbase)
             if !is_coinbase {
                 let mut spent_outputs = Vec::with_capacity(tx.inputs.len());
+                let mut input_sum: u64 = 0;
 
                 for input in &tx.inputs {
-                    // Check if input exists and is unspent
                     let outpoint = OutPoint {
                         txid: input.prev_txid,
                         vout: input.prev_index,
@@ -380,11 +425,28 @@ impl ChainState {
                         .map_err(ChainError::DbError)?
                         .ok_or(ChainError::UtxoError(UtxoError::UtxoNotFound))?;
 
-                    spent.push(outpoint);
+                    if utxo_entry.coinbase && height < utxo_entry.height + COINBASE_MATURITY {
+                        return Err(ChainError::UtxoError(UtxoError::ImmatureCoinbase));
+                    }
+
+                    input_sum = input_sum
+                        .checked_add(utxo_entry.output.value)
+                        .ok_or(ChainError::UtxoError(UtxoError::ValueOverflow))?;
+
+                    spent.push(outpoint.clone());
+                    spent_entries.push((outpoint, utxo_entry.clone()));
                     spent_outputs.push(utxo_entry.output);
                 }
 
-                // Validate signatures for all inputs
+                let output_sum: u64 = tx.outputs.iter().map(|o| o.value).sum();
+                if input_sum < output_sum {
+                    return Err(ChainError::UtxoError(UtxoError::InsufficientValue));
+                }
+
+                block_fees = block_fees
+                    .checked_add(input_sum - output_sum)
+                    .ok_or(ChainError::UtxoError(UtxoError::ValueOverflow))?;
+
                 for (input_idx, input) in tx.inputs.iter().enumerate() {
                     let script_pubkey = &spent_outputs[input_idx].script_pubkey;
                     let context = ScriptContext {
@@ -400,7 +462,6 @@ impl ChainState {
                 }
             }
 
-            // Create outputs
             for (vout, output) in tx.outputs.iter().enumerate() {
                 let outpoint = OutPoint {
                     txid,
@@ -415,7 +476,7 @@ impl ChainState {
             }
         }
 
-        Ok((created, spent))
+        Ok((created, spent, spent_entries, block_fees))
     }
 
     pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<Option<UtxoEntry>, String> {
@@ -492,6 +553,23 @@ impl ChainState {
 
     pub fn has_block(&self, hash: &Hash256) -> bool {
         self.block_store.has_block(hash).unwrap_or(false)
+    }
+
+    pub fn get_block_hash(&self, height: u64) -> Option<Hash256> {
+        let mut current_hash = self.tip?;
+        let mut current_data = self.blocks.get(&current_hash)?;
+        
+        if height > current_data.height {
+            return None;
+        }
+        
+        // Walk back
+        while current_data.height > height {
+            current_hash = current_data.block.header.prev_block_hash;
+            current_data = self.blocks.get(&current_hash)?;
+        }
+        
+        Some(current_hash)
     }
 
     pub fn get_block_locator(&self) -> Vec<Hash256> {

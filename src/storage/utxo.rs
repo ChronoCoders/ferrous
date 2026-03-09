@@ -1,5 +1,6 @@
 use crate::consensus::utxo::{OutPoint, UtxoEntry};
-use crate::storage::{Database, CF_UTXO};
+use crate::primitives::hash::Hash256;
+use crate::storage::{Database, CF_UNDO, CF_UTXO};
 use std::sync::Arc;
 
 /// UTXO set storage interface
@@ -91,6 +92,34 @@ impl UtxoStore {
         }
 
         batch.commit()
+    }
+
+    pub fn store_undo_data(
+        &self,
+        block_hash: &Hash256,
+        spent_entries: &[(OutPoint, UtxoEntry)],
+    ) -> Result<(), String> {
+        let value =
+            bincode::serialize(spent_entries).map_err(|e| format!("Failed to serialize undo data: {}", e))?;
+        self.db.put(CF_UNDO, block_hash, &value)
+    }
+
+    pub fn get_undo_data(
+        &self,
+        block_hash: &Hash256,
+    ) -> Result<Option<Vec<(OutPoint, UtxoEntry)>>, String> {
+        match self.db.get(CF_UNDO, block_hash)? {
+            Some(bytes) => {
+                let entries: Vec<(OutPoint, UtxoEntry)> =
+                    bincode::deserialize(&bytes).map_err(|e| format!("Failed to deserialize undo data: {}", e))?;
+                Ok(Some(entries))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn delete_undo_data(&self, block_hash: &Hash256) -> Result<(), String> {
+        self.db.delete(CF_UNDO, block_hash)
     }
 
     /// Get UTXO set size

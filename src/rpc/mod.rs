@@ -1,4 +1,4 @@
 pub mod methods;
 pub mod server;
 
-pub use server::RpcServer;
+pub use server::{RpcServer, RpcServerConfig};

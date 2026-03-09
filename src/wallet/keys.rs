@@ -68,11 +68,13 @@ impl KeyStore {
                 .next()
                 .ok_or_else(|| "Malformed wallet line: missing key".to_string())?;
 
-            let key_bytes = hex::decode(hex_key)
+            let raw_bytes = hex::decode(hex_key)
                 .map_err(|e| format!("Invalid key hex in wallet.dat: {}", e))?;
 
+            let key_bytes = Self::deobfuscate_key(&raw_bytes, address.as_bytes());
+
             let secret_key = SecretKey::from_slice(&key_bytes)
-                .map_err(|e| format!("Invalid secret key in wallet.dat: {}", e))?;
+                .map_err(|e| format!("Invalid secret key in wallet.dat (possible corruption or legacy plaintext file): {}", e))?;
 
             entries.insert(address, PrivateKey::new(secret_key));
         }
@@ -94,8 +96,9 @@ impl KeyStore {
             File::create(&self.path).map_err(|e| format!("Failed to create wallet: {}", e))?;
 
         for (address, key) in &self.entries {
-            let key_hex = hex::encode(key.inner.secret_bytes());
-            let line = format!("{},{}\n", address, key_hex);
+            let key_bytes = key.inner.secret_bytes();
+            let obfuscated = Self::obfuscate_key(&key_bytes, address.as_bytes());
+            let line = format!("{},{}\n", address, hex::encode(obfuscated));
             file.write_all(line.as_bytes())
                 .map_err(|e| format!("Failed to write wallet: {}", e))?;
         }
@@ -109,6 +112,19 @@ impl KeyStore {
 
     pub fn entries_mut(&mut self) -> &mut HashMap<String, PrivateKey> {
         &mut self.entries
+    }
+
+    fn obfuscate_key(key: &[u8], salt: &[u8]) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        let mask = Sha256::digest(salt);
+        key.iter()
+            .enumerate()
+            .map(|(i, b)| b ^ mask[i % 32])
+            .collect()
+    }
+
+    fn deobfuscate_key(obfuscated: &[u8], salt: &[u8]) -> Vec<u8> {
+        Self::obfuscate_key(obfuscated, salt)
     }
 
     pub fn generate_new(&mut self) -> Result<String, String> {

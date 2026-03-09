@@ -9,6 +9,7 @@ pub struct RecoveryManager {
     peer_manager: Arc<PeerManager>,
     addr_manager: Arc<Mutex<AddressManager>>,
     state: Arc<Mutex<RecoveryState>>,
+    network: crate::consensus::params::Network,
 }
 
 struct RecoveryState {
@@ -19,10 +20,11 @@ struct RecoveryState {
 }
 
 impl RecoveryManager {
-    pub fn new(peer_manager: Arc<PeerManager>, addr_manager: Arc<Mutex<AddressManager>>) -> Self {
+    pub fn new(peer_manager: Arc<PeerManager>, addr_manager: Arc<Mutex<AddressManager>>, network: crate::consensus::params::Network) -> Self {
         Self {
             peer_manager,
             addr_manager,
+            network,
             state: Arc::new(Mutex::new(RecoveryState {
                 last_block_time: Instant::now(),
                 last_peer_count: 0,
@@ -46,21 +48,21 @@ impl RecoveryManager {
                         eprintln!("Recovery failed: {}", e);
                     }
                 } else {
-                    // Reset recovery state if connected
                     let peer_count = manager.peer_manager.active_peer_count();
                     if peer_count > 0 {
-                        let mut state = manager.state.lock().unwrap();
-                        if state.partition_detected {
-                            println!("Network recovered - {} peers connected", peer_count);
-                            state.partition_detected = false;
-                            state.recovery_attempts = 0;
+                        if let Ok(mut state) = manager.state.lock() {
+                            if state.partition_detected {
+                                println!("Network recovered - {} peers connected", peer_count);
+                                state.partition_detected = false;
+                                state.recovery_attempts = 0;
+                            }
                         }
                     }
                 }
 
-                // Update state
-                let mut state = manager.state.lock().unwrap();
-                state.last_peer_count = manager.peer_manager.active_peer_count();
+                if let Ok(mut state) = manager.state.lock() {
+                    state.last_peer_count = manager.peer_manager.active_peer_count();
+                }
             }
         });
     }
@@ -68,7 +70,10 @@ impl RecoveryManager {
     // Check if node is partitioned from network
     pub fn check_partition(&self) -> bool {
         let peer_count = self.peer_manager.active_peer_count();
-        let state = self.state.lock().unwrap();
+        let state = match self.state.lock() {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
 
         // Signs of partition:
         // 1. Zero active peers for >5 minutes
@@ -91,7 +96,7 @@ impl RecoveryManager {
 
     // Attempt network recovery
     pub fn recover(&self) -> Result<(), String> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().map_err(|e| format!("Poisoned mutex: {}", e))?;
 
         if !state.partition_detected {
             // First detection
@@ -128,7 +133,7 @@ impl RecoveryManager {
         println!("Stage 1: Reconnecting to known peers");
 
         // Get best addresses (previously successful)
-        let addrs = self.addr_manager.lock().unwrap().get_best_addresses(8);
+        let addrs = self.addr_manager.lock().map_err(|e| format!("Poisoned mutex: {}", e))?.get_best_addresses(8);
 
         for addr in addrs {
             let _ = self.peer_manager.connect_to_peer(addr);
@@ -145,7 +150,7 @@ impl RecoveryManager {
         // Actually, peer_manager doesn't expose network easily, but we can guess or store it
         // Let's assume Regtest for now or add get_network to PeerManager
         // For now, just use hardcoded seeds logic here or import from discovery
-        let seeds = get_seed_nodes(crate::consensus::params::Network::Regtest);
+        let seeds = get_seed_nodes(self.network.clone());
 
         for seed in seeds {
             let _ = self.peer_manager.connect_to_peer(seed);
@@ -155,16 +160,17 @@ impl RecoveryManager {
     }
 
     fn aggressive_reconnect(&self) -> Result<(), String> {
+        let attempts = self.state.lock().map_err(|e| format!("Poisoned mutex: {}", e))?.recovery_attempts;
         println!(
             "Stage 3: Aggressive reconnection attempt {}",
-            self.state.lock().unwrap().recovery_attempts
+            attempts
         );
 
         // Disconnect all peers
         self.force_reconnect();
 
         // Try many addresses
-        let addrs = self.addr_manager.lock().unwrap().get_random_addresses(20);
+        let addrs = self.addr_manager.lock().map_err(|e| format!("Poisoned mutex: {}", e))?.get_random_addresses(20);
 
         for addr in addrs {
             let _ = self.peer_manager.connect_to_peer(addr);
@@ -179,19 +185,19 @@ impl RecoveryManager {
         // Disconnect everything
         self.force_reconnect();
 
-        // Clear address manager
-        self.addr_manager.lock().unwrap().clear();
+        let mut addr_mgr = self.addr_manager.lock().map_err(|e| format!("Poisoned mutex: {}", e))?;
+        addr_mgr.clear();
 
-        // Add seed nodes
-        let seeds = get_seed_nodes(crate::consensus::params::Network::Regtest);
+        let seeds = get_seed_nodes(self.network.clone());
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as u32;
+            .map(|d| d.as_secs() as u32)
+            .unwrap_or(0);
 
         for seed in &seeds {
-            self.addr_manager.lock().unwrap().add_address(*seed, 1, now);
+            addr_mgr.add_address(*seed, 1, now);
         }
+        drop(addr_mgr);
 
         // Reconnect to seeds
         for seed in seeds {
@@ -214,25 +220,24 @@ impl RecoveryManager {
     }
 
     pub fn on_new_block(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.last_block_time = Instant::now();
+        if let Ok(mut state) = self.state.lock() {
+            state.last_block_time = Instant::now();
+        }
     }
 
     pub fn is_partitioned(&self) -> bool {
-        self.state.lock().unwrap().partition_detected
+        self.state.lock().map(|s| s.partition_detected).unwrap_or(false)
     }
 
     pub fn get_attempts(&self) -> u32 {
-        self.state.lock().unwrap().recovery_attempts
+        self.state.lock().map(|s| s.recovery_attempts).unwrap_or(0)
     }
 
     pub fn get_last_block_age_secs(&self) -> u64 {
         self.state
             .lock()
-            .unwrap()
-            .last_block_time
-            .elapsed()
-            .as_secs()
+            .map(|s| s.last_block_time.elapsed().as_secs())
+            .unwrap_or(0)
     }
 }
 
@@ -243,6 +248,7 @@ impl Clone for RecoveryManager {
             peer_manager: Arc::clone(&self.peer_manager),
             addr_manager: Arc::clone(&self.addr_manager),
             state: Arc::clone(&self.state),
+            network: self.network.clone(),
         }
     }
 }

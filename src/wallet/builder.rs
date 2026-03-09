@@ -132,10 +132,12 @@ fn sign_transaction(
         let message =
             Message::from_digest_slice(&sighash).map_err(|e| format!("Message error: {}", e))?;
         let sig = secp.sign_ecdsa(&message, private_key.inner());
-        let serialized = sig.serialize_compact();
+        let der_sig = sig.serialize_der();
+        let mut sig_with_hashtype = der_sig.to_vec();
+        sig_with_hashtype.push(0x01);
         let mut script_sig = Vec::new();
-        script_sig.push(serialized.len() as u8);
-        script_sig.extend_from_slice(&serialized);
+        script_sig.push(sig_with_hashtype.len() as u8);
+        script_sig.extend_from_slice(&sig_with_hashtype);
         let pubkey = private_key.public_key_bytes();
         script_sig.push(pubkey.len() as u8);
         script_sig.extend_from_slice(&pubkey);

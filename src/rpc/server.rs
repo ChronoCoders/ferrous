@@ -2,15 +2,26 @@ use crate::consensus::chain::ChainState;
 use crate::mining::Miner;
 use crate::network::diagnostics::NetworkDiagnostics;
 use crate::network::manager::PeerManager;
+use crate::network::relay::BlockRelay;
 use crate::network::recovery::RecoveryManager;
 use crate::network::stats::NetworkStats;
 use crate::rpc::methods::*;
 use crate::wallet::builder::TransactionBuilder;
 use crate::wallet::manager::Wallet;
 use serde_json::{json, Value};
+use std::io::Read;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tiny_http::{Response, Server};
+
+pub struct RpcServerConfig {
+    pub chain: Arc<Mutex<ChainState>>,
+    pub miner: Arc<Miner>,
+    pub wallet: Arc<Mutex<Wallet>>,
+    pub peer_manager: Arc<PeerManager>,
+    pub network_stats: Arc<NetworkStats>,
+    pub recovery_manager: Arc<RecoveryManager>,
+    pub relay: Arc<BlockRelay>,
+}
 
 pub struct RpcServer {
     chain: Arc<Mutex<ChainState>>,
@@ -19,28 +30,22 @@ pub struct RpcServer {
     peer_manager: Arc<PeerManager>,
     network_stats: Arc<NetworkStats>,
     recovery_manager: Arc<RecoveryManager>,
+    relay: Arc<BlockRelay>,
     server: Server,
 }
 
 impl RpcServer {
-    pub fn new(
-        chain: Arc<Mutex<ChainState>>,
-        miner: Arc<Miner>,
-        wallet: Arc<Mutex<Wallet>>,
-        peer_manager: Arc<PeerManager>,
-        network_stats: Arc<NetworkStats>,
-        recovery_manager: Arc<RecoveryManager>,
-        addr: &str,
-    ) -> Result<Self, String> {
+    pub fn new(config: RpcServerConfig, addr: &str) -> Result<Self, String> {
         let server = Server::http(addr).map_err(|e| format!("Failed to start server: {}", e))?;
 
         Ok(Self {
-            chain,
-            miner,
-            wallet,
-            peer_manager,
-            network_stats,
-            recovery_manager,
+            chain: config.chain,
+            miner: config.miner,
+            wallet: config.wallet,
+            peer_manager: config.peer_manager,
+            network_stats: config.network_stats,
+            recovery_manager: config.recovery_manager,
+            relay: config.relay,
             server,
         })
     }
@@ -74,10 +79,13 @@ impl RpcServer {
             "getblockchaininfo" => self.getblockchaininfo(),
             "mineblocks" => self.mineblocks(params),
             "getblock" => self.getblock(params),
+            "getblockhash" => self.getblockhash(params),
             "getbestblockhash" => self.getbestblockhash(),
+            "addnode" => self.addnode(params),
             "getnewaddress" => self.getnewaddress(),
             "getbalance" => self.getbalance(),
             "listunspent" => self.listunspent(),
+            "listaddresses" => self.listaddresses(),
             "sendtoaddress" => self.sendtoaddress(params),
             "generatetoaddress" => self.generatetoaddress(params),
             "getnetworkinfo" => self.getnetworkinfo(),
@@ -101,8 +109,18 @@ impl RpcServer {
         &self,
         request: &mut tiny_http::Request,
     ) -> (Response<std::io::Cursor<Vec<u8>>>, bool) {
+        const MAX_REQUEST_BODY: usize = 1 * 1024 * 1024;
+
+        let content_length = request.body_length().unwrap_or(0);
+        if content_length > MAX_REQUEST_BODY {
+            return (
+                self.error_response(Value::Null, -32600, "Request too large"),
+                false,
+            );
+        }
+
         let mut content = String::new();
-        let mut reader = request.as_reader();
+        let mut reader = request.as_reader().take(MAX_REQUEST_BODY as u64);
         if std::io::Read::read_to_string(&mut reader, &mut content).is_err() {
             return (
                 self.error_response(Value::Null, -32700, "Parse error"),
@@ -138,29 +156,15 @@ impl RpcServer {
     }
 
     fn getpeerinfo(&self) -> Result<Value, String> {
-        let diagnostics = NetworkDiagnostics::new(self.peer_manager.clone());
-        let peers = diagnostics.get_peer_info();
-
-        let peer_list: Vec<_> = peers
-            .iter()
-            .map(|p| {
-                json!({
-                    "id": p.peer_id,
-                    "addr": p.address,
-                    "inbound": p.inbound,
-                    "conntime": p.connected_duration.as_secs(),
-                    "lastsend": p.last_message.as_secs(),
-                    "version": p.version,
-                    "startingheight": p.start_height,
-                    "bytessent": p.bytes_sent,
-                    "bytesrecv": p.bytes_received,
-                    "banscore": p.ban_score,
-                    "pingtime": p.latency.map(|d: Duration| d.as_millis()),
-                })
-            })
-            .collect();
-
-        Ok(serde_json::Value::Array(peer_list))
+        let count = self.peer_manager.get_peer_count();
+        let addrs = self.peer_manager.get_peer_addrs();
+        
+        // Return simple list for now
+        let info: Vec<_> = addrs.iter().map(|a| a.to_string()).collect();
+        Ok(json!({
+            "count": count,
+            "peers": info
+        }))
     }
 
     fn getconnectioncount(&self) -> Result<Value, String> {
@@ -233,17 +237,19 @@ impl RpcServer {
             return Err("nblocks must be between 1 and 1000".to_string());
         }
 
-        let mut chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
-
         let mut block_hashes = Vec::new();
 
         for _ in 0..nblocks {
-            let header = self
-                .miner
-                .mine_and_attach(&mut chain, Vec::new())
-                .map_err(|e| format!("Mining failed: {:?}", e))?;
-
-            block_hashes.push(hex::encode(header.hash()));
+            let hash = {
+                let mut chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+                let header = self
+                    .miner
+                    .mine_and_attach(&mut chain, Vec::new())
+                    .map_err(|e| format!("Mining failed: {:?}", e))?;
+                header.hash()
+            };
+            let _ = self.relay.announce_block(hash);
+            block_hashes.push(hex::encode(hash));
         }
 
         let response = MineBlocksResponse {
@@ -275,20 +281,22 @@ impl RpcServer {
         let script = crate::wallet::address::address_to_script_pubkey(address)
             .map_err(|e| format!("Invalid address: {}", e))?;
 
-        let mut chain = self
-            .chain
-            .lock()
-            .map_err(|_| "Chain lock failed".to_string())?;
-
         let mut block_hashes = Vec::new();
 
         for _ in 0..nblocks {
-            let header = self
-                .miner
-                .mine_and_attach_to(&mut chain, Vec::new(), script.clone())
-                .map_err(|e| format!("Mining failed: {:?}", e))?;
-
-            block_hashes.push(hex::encode(header.hash()));
+            let hash = {
+                let mut chain = self
+                    .chain
+                    .lock()
+                    .map_err(|_| "Chain lock failed".to_string())?;
+                let header = self
+                    .miner
+                    .mine_and_attach_to(&mut chain, Vec::new(), script.clone())
+                    .map_err(|e| format!("Mining failed: {:?}", e))?;
+                header.hash()
+            };
+            let _ = self.relay.announce_block(hash);
+            block_hashes.push(hex::encode(hash));
         }
 
         let response = MineBlocksResponse {
@@ -347,6 +355,18 @@ impl RpcServer {
         }
 
         let response = ListUnspentResponse { utxos: items };
+        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+    }
+
+    fn listaddresses(&self) -> Result<Value, String> {
+        let wallet = self
+            .wallet
+            .lock()
+            .map_err(|_| "Lock poisoned".to_string())?;
+        
+        let addresses = wallet.addresses();
+        let response = ListAddressesResponse { addresses };
+        
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
     }
 
@@ -435,15 +455,48 @@ impl RpcServer {
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
     }
 
+    fn getblockhash(&self, params: &Value) -> Result<Value, String> {
+        let height = params
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_u64())
+            .ok_or("Invalid params: expected [height]")?;
+
+        let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+        
+        let hash = chain
+            .get_block_hash(height)
+            .ok_or("Block height out of range".to_string())?;
+
+        Ok(json!(hex::encode(hash)))
+    }
+
     fn getbestblockhash(&self) -> Result<Value, String> {
         let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
-
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
-        let hash = tip
-            .as_ref()
-            .map(|t| hex::encode(t.block.header.hash()))
-            .unwrap_or_default();
-        Ok(json!(hash))
+        
+        match tip {
+            Some(t) => Ok(json!(hex::encode(t.block.header.hash()))),
+            None => Ok(json!(null)),
+        }
+    }
+
+    fn addnode(&self, params: &Value) -> Result<Value, String> {
+        let addr_str = params
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_str())
+            .ok_or("Invalid params: expected [address]")?;
+
+        let addr: std::net::SocketAddr = addr_str
+            .parse()
+            .map_err(|e| format!("Invalid address: {}", e))?;
+
+        self.peer_manager
+            .connect_to_peer(addr)
+            .map_err(|e| format!("Failed to connect: {}", e))?;
+
+        Ok(json!("added"))
     }
 
     fn success_response(&self, id: Value, result: Value) -> Response<std::io::Cursor<Vec<u8>>> {

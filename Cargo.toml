@@ -40,6 +40,5 @@ overflow-checks = true
 [profile.release]
 overflow-checks = true
 
-[[bench]]
-name = "network_bench"
-harness = false
+[profile.dev.package.librocksdb-sys]
+opt-level = 3

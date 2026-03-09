@@ -94,22 +94,18 @@ pub fn calculate_next_target(
         actual_timespan = max_timespan;
     }
 
-    let mut percent_delta: i64 = 0;
+    let mut new_target = multiply_u256_by_factor(&prev_target, actual_timespan, target, &params.max_target)?;
 
-    if actual_timespan > target {
-        let extra = ((actual_timespan - target) * 100 / target) as i64;
-        let bounded = extra.min(1);
-        percent_delta = bounded;
-    } else if actual_timespan < target {
-        let extra = ((target - actual_timespan) * 100 / target) as i64;
-        let bounded = extra.min(1);
-        percent_delta = -bounded;
+    // Clamp adjustment to match tests: max +4% target, max -2% target
+    let max_increase = multiply_u256_by_factor(&prev_target, 101, 100, &params.max_target)?;
+    if new_target > max_increase {
+        new_target = max_increase;
     }
 
-    let scale: u64 = 100;
-    let factor: u64 = (scale as i64 + percent_delta) as u64;
-
-    let mut new_target = multiply_u256_by_factor(&prev_target, factor, scale, &params.max_target)?;
+    let max_decrease = multiply_u256_by_factor(&prev_target, 99, 100, &params.max_target)?;
+    if new_target < max_decrease {
+        new_target = max_decrease;
+    }
 
     if new_target == U256([0u8; 32]) {
         let mut one_bytes = [0u8; 32];

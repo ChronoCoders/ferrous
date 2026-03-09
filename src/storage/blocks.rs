@@ -58,52 +58,19 @@ impl BlockStore {
         &self,
         block: &Block,
         height: u64,
-        cumulative_work: U256,
+        _cumulative_work: U256,
     ) -> Result<(), String> {
         let block_hash = block.header.hash();
 
-        // Serialize block using bincode (since BlockData implements Serialize)
         let block_bytes = bincode::serialize(block).map_err(|e| e.to_string())?;
 
-        // Create metadata
-        // Note: BlockMeta is used for internal index or maybe unused?
-        // The user code didn't use BlockMeta in store_block, but defined it.
-        // Wait, user code snippet for `store_block`:
-        /*
-        // Create metadata
-        let meta = BlockMeta { ... };
-        // Atomic write
         let mut batch = self.db.batch();
-        batch.put(CF_BLOCKS, &block_hash.0, &block_bytes)?;
-        // ...
-        */
-        // It seems `meta` is created but NOT USED in the snippet?
-        // Ah, typically `CF_BLOCK_INDEX` stores metadata or just hash?
-        // User snippet: `batch.put(CF_BLOCK_INDEX, &height.to_le_bytes(), &block_hash.0)?;`
-        // So `CF_BLOCK_INDEX` maps Height -> Hash.
-        // What about `BlockMeta`? It's defined but not used in `store_block` snippet?
-        // Maybe it's intended for another index or maybe I missed where it's used.
-        // I will follow the snippet: Create `meta` (maybe for future use?) but store what snippet stores.
-
-        let _meta = BlockMeta {
-            height,
-            hash: block_hash,
-            cumulative_work,
-        };
-
-        // Atomic write
-        let mut batch = self.db.batch();
-
-        // Store block by hash
         batch.put(CF_BLOCKS, &block_hash, &block_bytes)?;
 
-        // Store header by hash
-        // BlockHeader implements Encode
         use crate::primitives::serialize::Encode;
         let header_bytes = block.header.encode();
         batch.put(CF_HEADERS, &block_hash, &header_bytes)?;
 
-        // Store height -> hash index
         batch.put(CF_BLOCK_INDEX, &height.to_le_bytes(), &block_hash)?;
 
         batch.commit()

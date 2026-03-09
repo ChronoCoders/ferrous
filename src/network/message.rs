@@ -123,6 +123,8 @@ impl Encode for NetworkMessage {
     }
 }
 
+const MAX_PAYLOAD_SIZE: u32 = 32 * 1024 * 1024;
+
 impl Decode for NetworkMessage {
     fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
         if bytes.len() < 24 {
@@ -140,6 +142,10 @@ impl Decode for NetworkMessage {
                 .try_into()
                 .map_err(|_| DecodeError::InvalidData)?,
         );
+
+        if length > MAX_PAYLOAD_SIZE {
+            return Err(DecodeError::InvalidData);
+        }
 
         let mut checksum = [0u8; 4];
         checksum.copy_from_slice(&bytes[20..24]);

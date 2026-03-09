@@ -28,7 +28,10 @@ pub enum UtxoError {
     UtxoAlreadySpent,
     DuplicateUtxo,
     CoinbaseNotMature,
+    ImmatureCoinbase,
     ScriptValidationFailed,
+    InsufficientValue,
+    ValueOverflow,
 }
 
 impl UtxoSet {

@@ -8,6 +8,7 @@ pub const CF_BLOCK_INDEX: &str = "block_index";
 pub const CF_HEADERS: &str = "headers";
 pub const CF_UTXO: &str = "utxo";
 pub const CF_CHAIN_STATE: &str = "chain_state";
+pub const CF_UNDO: &str = "undo";
 
 pub type DbEntry = (Vec<u8>, Vec<u8>);
 
@@ -30,6 +31,7 @@ impl Database {
             CF_HEADERS,
             CF_UTXO,
             CF_CHAIN_STATE,
+            CF_UNDO,
         ];
 
         let db = DB::open_cf(&opts, path, &cfs)
@@ -90,12 +92,17 @@ impl Database {
             .ok_or_else(|| format!("Column family {} not found", cf))?;
 
         let iter = self.db.iterator_cf(cf_handle, IteratorMode::Start);
-        Ok(iter
-            .map(|item| {
-                let (key, value) = item.unwrap();
-                (key.to_vec(), value.to_vec())
-            })
-            .collect())
+        let mut result = Vec::new();
+        for item in iter {
+            match item {
+                Ok((key, value)) => result.push((key.to_vec(), value.to_vec())),
+                Err(e) => {
+                    log::error!("Database iterator error: {}", e);
+                    return Err(format!("Database iterator error: {}", e));
+                }
+            }
+        }
+        Ok(result)
     }
 }
 

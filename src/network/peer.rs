@@ -213,23 +213,9 @@ impl Peer {
 
         // Create NetworkMessage
         let payload = msg.encode();
-        // Assuming we need magic here? PeerConnection knows magic.
-        // Wait, Peer doesn't know magic. We should probably pass magic or assume connection handles it.
-        // But NetworkMessage constructor needs magic.
-        // Let's assume PeerConnection handles magic verification on read, but for write we need to provide it?
-        // Actually, NetworkMessage stores magic.
-        // Peer doesn't store magic.
-        // Let's extract magic from connection if possible, or pass it in.
-        // For now, let's just use REGTEST_MAGIC as placeholder if we don't store it.
-        // Ideally Peer should know the network magic.
-        // Let's cheat and use REGTEST_MAGIC for now, or fetch from connection if we expose it.
-        // Connection has magic private.
-        // Let's use a default for now and fix later if needed.
-        // Actually, connection.send_message takes NetworkMessage which has magic.
-        // Let's update Peer to store magic? Or just use REGTEST_MAGIC.
-        // For correctness, Peer should know magic.
-
-        let magic = crate::network::message::REGTEST_MAGIC; // TODO: make configurable
+        
+        // Use the connection's magic
+        let magic = self.connection.as_ref().ok_or("Peer not connected")?.magic();
         let net_msg = NetworkMessage::new(magic, "version", payload);
 
         self.send(&net_msg)?;
@@ -256,7 +242,7 @@ impl Peer {
 
         // Send Verack
         let verack = VerackMessage;
-        let magic = crate::network::message::REGTEST_MAGIC;
+        let magic = self.connection.as_ref().ok_or("Peer not connected")?.magic();
         let net_msg = NetworkMessage::new(magic, "verack", verack.encode());
         self.send(&net_msg)?;
 

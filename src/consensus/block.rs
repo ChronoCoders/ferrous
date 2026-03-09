@@ -160,14 +160,18 @@ impl BlockHeader {
     }
 
     pub fn work(&self) -> U256 {
-        // Calculate work from n_bits
-        // Target = coefficient * 2^(8 * (exponent - 3))
-        // Work = 2^256 / (Target + 1)
+        let target = match self.target() {
+            Ok(t) => t,
+            Err(_) => return U256::from(1u64),
+        };
 
-        // Simplified for now: just return 1 or parsed target
-        // For Regtest/Testnet we might use simple work
-        U256::from(1u64)
-        // TODO: Implement proper target to work conversion
+        let target_plus_one = u256_increment(&target);
+
+        if target_plus_one == U256([0u8; 32]) {
+            return U256::from(1u64);
+        }
+
+        u256_div_2_256(&target_plus_one)
     }
 
     /// Decodes the compact difficulty representation (nBits) into a 256-bit target.
@@ -240,6 +244,33 @@ impl BlockHeader {
         let hash_value = U256::from_le_bytes(hash);
         Ok(hash_value <= target)
     }
+}
+
+fn u256_increment(val: &U256) -> U256 {
+    let mut result = val.0;
+    for byte in result.iter_mut() {
+        let (new_val, overflow) = byte.overflowing_add(1);
+        *byte = new_val;
+        if !overflow {
+            return U256(result);
+        }
+    }
+    U256([0u8; 32])
+}
+
+fn u256_div_2_256(divisor: &U256) -> U256 {
+    let d = num_bigint::BigUint::from_bytes_le(&divisor.0);
+    if d.eq(&num_bigint::BigUint::ZERO) {
+        return U256::from(1u64);
+    }
+    let two_256 = num_bigint::BigUint::from(1u8) << 256;
+    let result: num_bigint::BigUint = two_256 / d;
+    let mut bytes = result.to_bytes_le();
+    if bytes.len() > 32 {
+        bytes.truncate(32);
+    }
+    bytes.resize(32, 0u8);
+    U256::from_le_bytes(bytes.try_into().unwrap())
 }
 
 pub fn create_genesis_block() -> Block {

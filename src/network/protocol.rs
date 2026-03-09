@@ -10,6 +10,12 @@ pub type ProtocolVersion = u32;
 pub const INV_TX: u32 = 1;
 pub const INV_BLOCK: u32 = 2;
 
+const MAX_INV_ITEMS: usize = 50_000;
+const MAX_HEADERS: usize = 2_000;
+const MAX_ADDR_ITEMS: usize = 1_000;
+const MAX_LOCATOR_HASHES: usize = 101;
+const MAX_BLOCK_TXS: usize = 100_000;
+
 fn map_varint_error(err: VarIntError) -> DecodeError {
     match err {
         VarIntError::UnexpectedEof => DecodeError::UnexpectedEof,
@@ -278,6 +284,9 @@ impl Decode for InvMessage {
     fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
         let (count_u64, mut offset) = decode_varint(bytes).map_err(map_varint_error)?;
         let count: usize = count_u64.try_into().map_err(|_| DecodeError::Overflow)?;
+        if count > MAX_INV_ITEMS {
+            return Err(DecodeError::Overflow);
+        }
 
         let mut inventory = Vec::with_capacity(count);
         for _ in 0..count {
@@ -319,6 +328,9 @@ impl Decode for GetDataMessage {
     fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
         let (count_u64, mut offset) = decode_varint(bytes).map_err(map_varint_error)?;
         let count: usize = count_u64.try_into().map_err(|_| DecodeError::Overflow)?;
+        if count > MAX_INV_ITEMS {
+            return Err(DecodeError::Overflow);
+        }
 
         let mut inventory = Vec::with_capacity(count);
         for _ in 0..count {
@@ -369,6 +381,9 @@ impl Decode for BlockMessage {
         offset += consumed;
 
         let count: usize = count_u64.try_into().map_err(|_| DecodeError::Overflow)?;
+        if count > MAX_BLOCK_TXS {
+            return Err(DecodeError::Overflow);
+        }
         let mut transactions = Vec::with_capacity(count);
 
         for _ in 0..count {
@@ -429,6 +444,9 @@ impl Decode for GetHeadersMessage {
         offset += consumed;
 
         let count: usize = count_u64.try_into().map_err(|_| DecodeError::Overflow)?;
+        if count > MAX_LOCATOR_HASHES {
+            return Err(DecodeError::Overflow);
+        }
         let mut block_locator = Vec::with_capacity(count);
 
         for _ in 0..count {
@@ -485,6 +503,9 @@ impl Decode for HeadersMessage {
     fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
         let (count_u64, mut offset) = decode_varint(bytes).map_err(map_varint_error)?;
         let count: usize = count_u64.try_into().map_err(|_| DecodeError::Overflow)?;
+        if count > MAX_HEADERS {
+            return Err(DecodeError::Overflow);
+        }
 
         let mut headers = Vec::with_capacity(count);
 
@@ -560,6 +581,9 @@ impl Decode for AddrMessage {
     fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
         let (count_u64, mut offset) = decode_varint(bytes).map_err(map_varint_error)?;
         let count: usize = count_u64.try_into().map_err(|_| DecodeError::Overflow)?;
+        if count > MAX_ADDR_ITEMS {
+            return Err(DecodeError::Overflow);
+        }
 
         let mut addresses = Vec::with_capacity(count);
         for _ in 0..count {

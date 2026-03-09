@@ -3,9 +3,14 @@ use ferrous_node::consensus::chain::ChainState;
 use ferrous_node::consensus::params::Network;
 use ferrous_node::mining::{Miner, MiningEvent};
 use ferrous_node::network::manager::PeerManager;
+use ferrous_node::network::mempool::NetworkMempool;
+use ferrous_node::network::message::{MAINNET_MAGIC, REGTEST_MAGIC, TESTNET_MAGIC};
 use ferrous_node::network::recovery::RecoveryManager;
+use ferrous_node::network::relay::BlockRelay;
 use ferrous_node::network::stats::NetworkStats;
-use ferrous_node::rpc::RpcServer;
+use ferrous_node::network::sync::SyncManager;
+use ferrous_node::rpc::{RpcServer, RpcServerConfig};
+use ferrous_node::wallet::address::address_to_script_pubkey;
 use ferrous_node::wallet::manager::Wallet;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -18,9 +23,14 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:8332")]
     rpc_addr: String,
 
+    /// P2P server address
+    #[arg(long, default_value = "0.0.0.0:8333")]
+    p2p_addr: String,
+
     /// Mining address (hex scriptPubKey)
-    #[arg(long, default_value = "51")]
-    mining_address: String,
+    /// If not provided, a new address will be generated from the wallet
+    #[arg(long)]
+    mining_address: Option<String>,
 
     #[arg(long, default_value = "mainnet")]
     network: String,
@@ -36,6 +46,14 @@ struct Args {
     /// Wallet file path (wallet.dat)
     #[arg(long, default_value = "./wallet.dat")]
     wallet: String,
+
+    /// Connect to a peer
+    #[arg(long)]
+    connect: Option<String>,
+
+    /// Seed nodes (comma separated)
+    #[arg(long, value_delimiter = ',')]
+    seed_nodes: Vec<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -79,27 +97,86 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mining_address = hex::decode(&args.mining_address).unwrap_or_else(|_| vec![0x51]);
-
-    println!("Mining address: {}", hex::encode(&mining_address));
-
     let network_prefix = match network {
         Network::Mainnet => 0x00,
         Network::Testnet | Network::Regtest => 0x6f,
+    };
+
+    let magic_bytes = match args.network.as_str() {
+        "mainnet" => MAINNET_MAGIC,
+        "testnet" => TESTNET_MAGIC,
+        "regtest" => REGTEST_MAGIC,
+        _ => MAINNET_MAGIC,
     };
 
     let wallet = Arc::new(Mutex::new(
         Wallet::load(&args.wallet, network_prefix).map_err(std::io::Error::other)?,
     ));
 
+    // Determine mining address
+    let mining_addr_str = match args.mining_address {
+        Some(addr) => addr,
+        None => {
+            let mut w = wallet.lock().unwrap();
+            let addr = w.generate_address().map_err(std::io::Error::other)?;
+            println!("Generated new mining address: {}", addr);
+            addr
+        }
+    };
+
+    let mining_address = address_to_script_pubkey(&mining_addr_str)
+        .or_else(|_| hex::decode(&mining_addr_str))
+        .unwrap_or_else(|_| {
+            eprintln!("Warning: Invalid mining address/script '{}', using default OP_1", mining_addr_str);
+            vec![0x51]
+        });
+
     // Create network components (stubs for example)
-    let peer_manager = Arc::new(PeerManager::new([0u8; 4], 8, 70001, 0, 0));
+    let peer_manager = Arc::new(PeerManager::new(magic_bytes, 8, 70001, 0, 0));
+
+    // Initialize Managers
+    let mempool = Arc::new(NetworkMempool::new(chain.clone()));
+    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool.clone()));
+    let sync_manager = Arc::new(SyncManager::new(chain.clone(), peer_manager.clone()));
+
+    peer_manager.set_relay(relay.clone());
+    peer_manager.set_sync_manager(sync_manager.clone());
+    
+    // Start P2P listener
+    if let Ok(addr) = args.p2p_addr.parse() {
+        println!("Starting P2P listener on {}...", addr);
+        peer_manager.start_listener(addr).map_err(std::io::Error::other)?;
+    } else {
+        eprintln!("Invalid P2P address: {}", args.p2p_addr);
+    }
+
+    // Start message processing loop
+    peer_manager.start_message_handler();
+
+    if let Some(connect_addr) = args.connect {
+        if let Ok(addr) = connect_addr.parse() {
+             println!("Connecting to peer {}...", addr);
+             peer_manager.connect_to_peer(addr).map_err(std::io::Error::other)?;
+        } else {
+             eprintln!("Invalid connect address: {}", connect_addr);
+        }
+    }
+
+    for seed in args.seed_nodes {
+        if let Ok(addr) = seed.parse() {
+            println!("Connecting to seed node {}...", addr);
+            let _ = peer_manager.connect_to_peer(addr);
+        } else {
+            eprintln!("Invalid seed address: {}", seed);
+        }
+    }
+
     let network_stats = Arc::new(NetworkStats::new());
     // Create AddressManager for RecoveryManager
     let addr_manager = Arc::new(Mutex::new(
         ferrous_node::network::addrman::AddressManager::new(1000),
     ));
-    let recovery_manager = Arc::new(RecoveryManager::new(peer_manager.clone(), addr_manager));
+    let recovery_manager = Arc::new(RecoveryManager::new(peer_manager.clone(), addr_manager, network.clone()));
 
     if args.dashboard {
         // Dashboard mode
@@ -110,7 +187,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let (event_sender, event_receiver) = mpsc::channel::<MiningEvent>();
 
-        let miner = Arc::new(Miner::new(params, mining_address).with_event_sender(event_sender));
+        // Initialize Miner
+        // Use the existing params
+        let miner = Arc::new(Miner::new(params.clone(), mining_address.clone()).with_event_sender(event_sender));
 
         let chain_clone = chain.clone();
         let miner_clone = miner.clone();
@@ -118,19 +197,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let peer_manager_clone = peer_manager.clone();
         let network_stats_clone = network_stats.clone();
         let recovery_manager_clone = recovery_manager.clone();
+        let relay_clone = relay.clone();
         let rpc_addr = args.rpc_addr.clone();
 
         thread::spawn(move || {
-            let server = RpcServer::new(
-                chain_clone,
-                miner_clone,
-                wallet_clone,
-                peer_manager_clone,
-                network_stats_clone,
-                recovery_manager_clone,
-                &rpc_addr,
-            )
-            .unwrap();
+            let config = RpcServerConfig {
+                chain: chain_clone,
+                miner: miner_clone,
+                wallet: wallet_clone,
+                peer_manager: peer_manager_clone,
+                network_stats: network_stats_clone,
+                recovery_manager: recovery_manager_clone,
+                relay: relay_clone,
+            };
+            let server = RpcServer::new(config, &rpc_addr).unwrap();
             server.run().ok();
         });
 
@@ -141,16 +221,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let miner = Arc::new(Miner::new(params, mining_address));
 
-        let server = RpcServer::new(
+        let config = RpcServerConfig {
             chain,
             miner,
             wallet,
             peer_manager,
             network_stats,
             recovery_manager,
-            &args.rpc_addr,
-        )
-        .map_err(std::io::Error::other)?;
+            relay: relay.clone(),
+        };
+
+        let server = RpcServer::new(config, &args.rpc_addr)
+            .map_err(std::io::Error::other)?;
 
         println!("Node running. Press Ctrl+C to stop.");
         println!("\nExample commands:");
