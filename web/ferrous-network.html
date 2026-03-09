@@ -1,1017 +1,908 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ferrous Network</title>
-<style>
-:root {
-  --bg: #0a0e1a;
-  --bg2: #0d1120;
-  --border: #1a2035;
-  --border2: #242b3d;
-  --text: #c5cdd8;
-  --dim: #4a5568;
-  --accent: #4a9eff;
-  --accent2: #2d6fd4;
-  --green: #3dffa0;
-  --yellow: #ffd84a;
-  --red: #ff4a6a;
-  --mono: 'Courier New', Courier, monospace;
-}
-
-* { margin: 0; padding: 0; box-sizing: border-box; }
-
-html { scroll-behavior: smooth; }
-
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 14px;
-  line-height: 1.6;
-  min-height: 100vh;
-  cursor: default;
-}
-
-/* scanline overlay */
-body::before {
-  content: '';
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0,0,0,0.03) 2px,
-    rgba(0,0,0,0.03) 4px
-  );
-  pointer-events: none;
-  z-index: 1000;
-}
-
-a { color: var(--accent); text-decoration: none; cursor: pointer; }
-a:hover { text-decoration: underline; }
-
-/* NAV */
-.main-nav {
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  z-index: 100;
-  background: rgba(10,14,26,0.95);
-  border-bottom: 1px solid var(--border);
-  backdrop-filter: blur(8px);
-  padding: 0 40px;
-  height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.nav-logo {
-  color: var(--accent);
-  font-size: 13px;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.nav-logo .fe {
-  font-size: 15px;
-  color: #fff;
-  letter-spacing: 0;
-  border: 1px solid var(--accent);
-  padding: 1px 6px;
-  line-height: 1.4;
-}
-
-.nav-logo .dot {
-  width: 6px; height: 6px;
-  background: var(--green);
-  border-radius: 50%;
-  animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%,100% { opacity: 1; box-shadow: 0 0 4px var(--green); }
-  50% { opacity: 0.4; box-shadow: none; }
-}
-
-.nav-links {
-  display: flex;
-  gap: 32px;
-  list-style: none;
-}
-
-.nav-links a {
-  color: var(--dim);
-  font-size: 12px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  transition: color 0.2s;
-}
-
-.nav-links a:hover,
-.nav-links a.active {
-  color: var(--text);
-  text-decoration: none;
-}
-
-.nav-github { color: var(--accent) !important; }
-
-/* PAGES */
-.page { display: none; padding-top: 48px; }
-.page.active { display: block; }
-
-/* ── HOME PAGE ── */
-.hero {
-  min-height: calc(100vh - 48px);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 80px 40px;
-  position: relative;
-  overflow: hidden;
-}
-
-.hero-grid {
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(74,158,255,0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(74,158,255,0.03) 1px, transparent 1px);
-  background-size: 60px 60px;
-  mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 40%, transparent 100%);
-}
-
-.hero-tag {
-  color: var(--dim);
-  font-size: 11px;
-  letter-spacing: 3px;
-  text-transform: uppercase;
-  margin-bottom: 24px;
-  opacity: 0;
-  animation: fadeUp 0.6s ease forwards 0.1s;
-}
-
-.hero-title {
-  font-size: clamp(32px, 5vw, 64px);
-  font-weight: normal;
-  line-height: 1.1;
-  color: #fff;
-  max-width: 800px;
-  opacity: 0;
-  animation: fadeUp 0.6s ease forwards 0.3s;
-}
-
-.hero-title .accent { color: var(--accent); }
-.hero-title .dim-line { color: var(--dim); }
-
-.hero-sub {
-  margin-top: 32px;
-  max-width: 520px;
-  color: var(--dim);
-  font-size: 13px;
-  line-height: 1.8;
-  opacity: 0;
-  animation: fadeUp 0.6s ease forwards 0.5s;
-}
-
-.hero-stats {
-  margin-top: 64px;
-  display: flex;
-  gap: 0;
-  opacity: 0;
-  animation: fadeUp 0.6s ease forwards 0.7s;
-}
-
-.stat-block {
-  border: 1px solid var(--border);
-  padding: 20px 32px;
-  min-width: 160px;
-  border-right: none;
-}
-.stat-block:last-child { border-right: 1px solid var(--border); }
-.stat-block:hover { border-color: var(--border2); background: var(--bg2); }
-
-.stat-val {
-  font-size: 24px;
-  color: #fff;
-}
-.stat-val .unit { font-size: 13px; color: var(--dim); margin-left: 4px; }
-.stat-label { font-size: 11px; color: var(--dim); letter-spacing: 1px; margin-top: 4px; text-transform: uppercase; }
-
-.hero-cta {
-  margin-top: 48px;
-  display: flex;
-  gap: 16px;
-  opacity: 0;
-  animation: fadeUp 0.6s ease forwards 0.9s;
-}
-
-.btn-primary {
-  background: var(--accent);
-  color: #0a0e1a;
-  padding: 10px 24px;
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  border: none;
-  cursor: pointer;
-  transition: background 0.2s;
-  display: inline-block;
-}
-.btn-primary:hover { background: #6ab4ff; text-decoration: none; color: #0a0e1a; }
-
-.btn-ghost {
-  border: 1px solid var(--border2);
-  color: var(--dim);
-  padding: 10px 24px;
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  background: none;
-  cursor: pointer;
-  transition: all 0.2s;
-  display: inline-block;
-}
-.btn-ghost:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
-
-/* SECTION UTILS */
-.section-wrapper {
-  border-top: 1px solid var(--border);
-}
-
-.section {
-  padding: 80px 40px;
-  max-width: 1200px;
-  margin: 0 auto;
-}
-
-.section-full {
-  padding: 40px;
-  max-width: 100%;
-}
-
-.section-narrow {
-  max-width: 800px;
-}
-
-.section-label {
-  font-size: 11px;
-  color: var(--dim);
-  letter-spacing: 3px;
-  text-transform: uppercase;
-  margin-bottom: 48px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-.section-label::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--border);
-  max-width: 200px;
-}
-
-/* PILLARS */
-.pillars {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1px;
-  background: var(--border);
-  border: 1px solid var(--border);
-}
-
-.pillar {
-  background: var(--bg);
-  padding: 40px 32px;
-  transition: background 0.2s;
-}
-.pillar:hover { background: var(--bg2); }
-
-.pillar-num {
-  font-size: 11px;
-  color: var(--dim);
-  margin-bottom: 20px;
-}
-
-.pillar-title {
-  font-size: 18px;
-  color: #fff;
-  margin-bottom: 16px;
-}
-
-.pillar-body {
-  font-size: 13px;
-  color: var(--dim);
-  line-height: 1.8;
-}
-
-.pillar-tag {
-  display: inline-block;
-  margin-top: 20px;
-  font-size: 10px;
-  letter-spacing: 1px;
-  color: var(--accent);
-  border: 1px solid var(--accent2);
-  padding: 2px 8px;
-}
-
-/* WHY NOW SECTION */
-.why-now-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1px;
-  background: var(--border);
-  border: 1px solid var(--border);
-}
-
-.why-now-content {
-  background: var(--bg);
-  padding: 40px 32px;
-}
-
-.why-now-text {
-  font-size: 13px;
-  color: var(--dim);
-  line-height: 1.9;
-}
-
-.why-now-text p {
-  margin-bottom: 16px;
-}
-.why-now-text p:last-child {
-  margin-bottom: 0;
-}
-
-.timeline-container {
-  font-size: 12px;
-  line-height: 2;
-}
-
-.timeline-label {
-  color: var(--dim);
-  margin-bottom: 16px;
-}
-
-.timeline-items {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.timeline-item {
-  display: flex;
-  gap: 16px;
-  align-items: baseline;
-}
-
-.timeline-year {
-  color: var(--dim);
-  min-width: 48px;
-}
-
-.timeline-text {
-  color: var(--text);
-}
-
-.timeline-text.highlight {
-  color: var(--accent);
-}
-
-.timeline-text.dim {
-  color: var(--dim);
-}
-
-
-/* ── NETWORK PAGE ── */
-.network-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1px;
-  background: var(--border);
-  border: 1px solid var(--border);
-  margin-bottom: 1px;
-}
-
-.network-grid.spaced {
-  margin-bottom: 40px;
-}
-
-.net-card {
-  background: var(--bg);
-  padding: 32px;
-}
-.net-card:hover { background: var(--bg2); }
-
-.net-card-title {
-  font-size: 11px;
-  color: var(--dim);
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  margin-bottom: 24px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.spec-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-}
-.spec-row:last-child { border-bottom: none; }
-.spec-key { color: var(--dim); }
-.spec-val { color: var(--text); text-align: right; }
-.spec-val.hl { color: var(--accent); }
-.spec-val.ok { color: var(--green); }
-
-/* SEED NODES TABLE */
-.seed-table-container {
-  border: 1px solid var(--border);
-}
-
-.seed-table {
-  background: var(--bg);
-  font-size: 12px;
-}
-
-.seed-row {
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr 1fr;
-  padding: 12px 24px;
-  border-bottom: 1px solid var(--border);
-}
-
-.seed-row:last-child {
-  border-bottom: none;
-}
-
-.seed-header {
-  color: var(--dim);
-  font-size: 11px;
-  letter-spacing: 1px;
-  border-bottom: 1px solid var(--border);
-}
-
-.seed-host { color: var(--text); }
-.seed-meta { color: var(--dim); }
-.seed-status { color: var(--green); }
-
-/* CODE & TERMINAL */
-.code-block {
-  background: #060912;
-  border: 1px solid var(--border);
-  padding: 24px;
-  font-size: 12px;
-  line-height: 1.8;
-  overflow-x: auto;
-  margin-top: 16px;
-}
-
-.code-comment { color: var(--dim); }
-.code-key { color: var(--accent); }
-.code-val { color: var(--green); }
-.code-str { color: var(--yellow); }
-
-/* ── NODE PAGE ── */
-.node-intro {
-  color: var(--dim);
-  font-size: 13px;
-  margin-bottom: 48px;
-  line-height: 1.8;
-}
-
-.node-steps {
-  counter-reset: step;
-}
-
-.node-step {
-  border: 1px solid var(--border);
-  padding: 32px;
-  margin-bottom: 1px;
-  display: flex;
-  gap: 32px;
-  align-items: flex-start;
-  transition: border-color 0.2s;
-}
-.node-step:hover { border-color: var(--border2); }
-
-.step-num {
-  font-size: 32px;
-  color: var(--border2);
-  min-width: 48px;
-  line-height: 1;
-}
-
-.step-title {
-  font-size: 16px;
-  color: #fff;
-  margin-bottom: 12px;
-}
-
-.step-body {
-  font-size: 13px;
-  color: var(--dim);
-  line-height: 1.8;
-}
-
-.terminal {
-  background: #060912;
-  border: 1px solid var(--border);
-  border-top: 2px solid var(--accent);
-  padding: 20px 24px;
-  margin-top: 16px;
-  font-size: 12px;
-  line-height: 2;
-}
-
-.term-prompt { color: var(--dim); }
-.term-cmd { color: var(--green); }
-.term-out { color: var(--dim); }
-.term-highlight { color: var(--accent); }
-
-/* ── ABOUT PAGE ── */
-.about-grid {
-  display: grid;
-  grid-template-columns: 1fr 2fr;
-  gap: 80px;
-  align-items: start;
-}
-
-.about-ascii {
-  color: var(--border2);
-  font-size: 10px;
-  line-height: 1.2;
-  margin-bottom: 32px;
-}
-
-.about-links { display: flex; flex-direction: column; gap: 8px; }
-.about-link {
-  font-size: 12px;
-  color: var(--dim);
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  justify-content: space-between;
-  transition: color 0.2s;
-  cursor: pointer;
-}
-.about-link:hover { color: var(--accent); }
-.about-link-arrow { color: var(--dim); }
-
-.about-statement {
-  font-size: 22px;
-  color: #fff;
-  line-height: 1.5;
-  margin-bottom: 48px;
-}
-.about-statement .accent { color: var(--accent); }
-
-.about-body {
-  font-size: 13px;
-  color: var(--dim);
-  line-height: 1.9;
-  max-width: 600px;
-}
-
-.about-body p { margin-bottom: 20px; }
-
-.about-footer-note {
-  color: var(--dim);
-  border-top: 1px solid var(--border);
-  padding-top: 20px;
-  margin-top: 8px;
-}
-
-/* FOOTER */
-.main-footer {
-  border-top: 1px solid var(--border);
-  padding: 32px 40px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 11px;
-  color: var(--dim);
-}
-
-.footer-info-separator { margin: 0 12px; }
-
-.footer-links { display: flex; gap: 24px; }
-.footer-links a { color: var(--dim); }
-.footer-links a:hover { color: var(--text); text-decoration: none; }
-
-/* TICKER */
-.ticker {
-  background: #060912;
-  border-bottom: 1px solid var(--border);
-  padding: 6px 40px;
-  font-size: 11px;
-  color: var(--dim);
-  display: flex;
-  gap: 32px;
-  overflow: hidden;
-}
-.ticker-item { white-space: nowrap; }
-.ticker-item .label { color: var(--dim); margin-right: 8px; }
-.ticker-item .value { color: var(--text); }
-.ticker-item .value.up { color: var(--green); }
-
-/* ANIMATIONS */
-@keyframes fadeUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.fade-in {
-  opacity: 0;
-  animation: fadeUp 0.5s ease forwards;
-}
-
-/* BLINK */
-.blink { animation: blink 1s step-end infinite; }
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
-
-/* SCROLLBAR */
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--border2); }
-
-/* RESPONSIVE */
-@media (max-width: 768px) {
-  .main-nav { padding: 0 20px; }
-  .nav-links { gap: 16px; }
-  .hero { padding: 40px 20px; }
-  .pillars { grid-template-columns: 1fr; }
-  .network-grid { grid-template-columns: 1fr; }
-  .why-now-grid { grid-template-columns: 1fr; }
-  .about-grid { grid-template-columns: 1fr; gap: 40px; }
-  .hero-stats { flex-wrap: wrap; }
-  .stat-block { border-right: 1px solid var(--border); }
-  .section { padding: 40px 20px; }
-  .main-footer { flex-direction: column; gap: 16px; text-align: center; }
-  .seed-row { grid-template-columns: 1fr 1fr; gap: 8px; }
-  .seed-header { display: none; }
-}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Ferrous Network - A quantum-resistant, privacy-focused Layer 1 blockchain built in Rust with SHA-256d Proof-of-Work">
+  <meta name="theme-color" content="#0a0e1a">
+  <title>Ferrous Network</title>
+  <link rel="stylesheet" href="shared-styles.css">
+  <style>
+    /* Network-specific styles */
+
+    /* Scanline overlay */
+    body.scanlines::before {
+      content: '';
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.03) 2px,
+        rgba(0,0,0,0.03) 4px
+      );
+      pointer-events: none;
+      z-index: 1000;
+    }
+
+    /* Pages */
+    .page { display: none; padding-top: 48px; }
+    .page.active { display: block; }
+
+    /* Hero */
+    .hero {
+      min-height: calc(100vh - 48px);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: var(--space-20) var(--space-10);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-grid {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(74,158,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(74,158,255,0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 40%, transparent 100%);
+    }
+
+    .hero-tag {
+      color: var(--color-text-dim);
+      font-size: var(--font-size-sm);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      margin-bottom: var(--space-6);
+      opacity: 0;
+      animation: fadeUp 0.6s ease forwards 0.1s;
+    }
+
+    .hero-title {
+      font-size: clamp(32px, 5vw, 64px);
+      font-weight: normal;
+      line-height: 1.1;
+      color: var(--color-white);
+      max-width: 800px;
+      opacity: 0;
+      animation: fadeUp 0.6s ease forwards 0.3s;
+    }
+
+    .hero-title .accent { color: var(--color-accent); }
+    .hero-title .dim-line { color: var(--color-text-dim); }
+
+    .hero-sub {
+      margin-top: var(--space-8);
+      max-width: 520px;
+      color: var(--color-text-dim);
+      font-size: var(--font-size-base);
+      line-height: var(--line-height-loose);
+      opacity: 0;
+      animation: fadeUp 0.6s ease forwards 0.5s;
+    }
+
+    .hero-stats {
+      margin-top: var(--space-16);
+      display: flex;
+      gap: 0;
+      opacity: 0;
+      animation: fadeUp 0.6s ease forwards 0.7s;
+    }
+
+    .stat-block {
+      border: 1px solid var(--color-border);
+      padding: var(--space-5) var(--space-8);
+      min-width: 160px;
+      border-right: none;
+      transition: all var(--transition-base);
+    }
+
+    .stat-block:last-child { border-right: 1px solid var(--color-border); }
+    .stat-block:hover { border-color: var(--color-border-light); background: var(--color-bg-secondary); }
+
+    .stat-val {
+      font-size: var(--font-size-2xl);
+      color: var(--color-white);
+    }
+
+    .stat-val .unit {
+      font-size: var(--font-size-base);
+      color: var(--color-text-dim);
+      margin-left: var(--space-1);
+    }
+
+    .stat-label {
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+      letter-spacing: 1px;
+      margin-top: var(--space-1);
+      text-transform: uppercase;
+    }
+
+    .hero-cta {
+      margin-top: var(--space-12);
+      display: flex;
+      gap: var(--space-4);
+      opacity: 0;
+      animation: fadeUp 0.6s ease forwards 0.9s;
+    }
+
+    /* Section */
+    .section-wrapper {
+      border-top: 1px solid var(--color-border);
+    }
+
+    .section {
+      padding: var(--space-20) var(--space-10);
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .section-full {
+      padding: var(--space-10);
+      max-width: 100%;
+    }
+
+    .section-narrow {
+      max-width: 800px;
+    }
+
+    /* Pillars */
+    .pillars {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--color-border);
+      border: 1px solid var(--color-border);
+    }
+
+    .pillar {
+      background: var(--color-bg);
+      padding: var(--space-10) var(--space-8);
+      transition: background var(--transition-base);
+    }
+
+    .pillar:hover { background: var(--color-bg-secondary); }
+
+    .pillar-num {
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+      margin-bottom: var(--space-5);
+    }
+
+    .pillar-title {
+      font-size: var(--font-size-xl);
+      color: var(--color-white);
+      margin-bottom: var(--space-4);
+    }
+
+    .pillar-body {
+      font-size: var(--font-size-base);
+      color: var(--color-text-dim);
+      line-height: var(--line-height-loose);
+    }
+
+    .pillar-tag {
+      display: inline-block;
+      margin-top: var(--space-5);
+      font-size: var(--font-size-xs);
+      letter-spacing: 1px;
+      color: var(--color-accent);
+      border: 1px solid var(--color-accent-dark);
+      padding: 2px var(--space-2);
+    }
+
+    /* Why Now Grid */
+    .why-now-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--color-border);
+      border: 1px solid var(--color-border);
+    }
+
+    .why-now-content {
+      background: var(--color-bg);
+      padding: var(--space-10) var(--space-8);
+    }
+
+    .why-now-text {
+      font-size: var(--font-size-base);
+      color: var(--color-text-dim);
+      line-height: 1.9;
+    }
+
+    .why-now-text p {
+      margin-bottom: var(--space-4);
+    }
+
+    .why-now-text p:last-child {
+      margin-bottom: 0;
+    }
+
+    .timeline-container {
+      font-size: var(--font-size-sm);
+      line-height: 2;
+    }
+
+    .timeline-label {
+      color: var(--color-text-dim);
+      margin-bottom: var(--space-4);
+    }
+
+    .timeline-items {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-3);
+    }
+
+    .timeline-item {
+      display: flex;
+      gap: var(--space-4);
+      align-items: baseline;
+    }
+
+    .timeline-year {
+      color: var(--color-text-dim);
+      min-width: 48px;
+    }
+
+    .timeline-text {
+      color: var(--color-text);
+    }
+
+    .timeline-text.highlight {
+      color: var(--color-accent);
+    }
+
+    .timeline-text.dim {
+      color: var(--color-text-dim);
+    }
+
+    /* Network Grid */
+    .network-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--color-border);
+      border: 1px solid var(--color-border);
+      margin-bottom: 1px;
+    }
+
+    .network-grid.spaced {
+      margin-bottom: var(--space-10);
+    }
+
+    .net-card {
+      background: var(--color-bg);
+      padding: var(--space-8);
+      transition: background var(--transition-base);
+    }
+
+    .net-card:hover { background: var(--color-bg-secondary); }
+
+    .net-card-title {
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-bottom: var(--space-6);
+      padding-bottom: var(--space-3);
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .spec-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: var(--space-2) 0;
+      border-bottom: 1px solid var(--color-border);
+      font-size: var(--font-size-base);
+    }
+
+    .spec-row:last-child { border-bottom: none; }
+    .spec-key { color: var(--color-text-dim); }
+    .spec-val { color: var(--color-text); text-align: right; }
+    .spec-val.hl { color: var(--color-accent); }
+    .spec-val.ok { color: var(--color-success); }
+
+    /* Seed Nodes Table */
+    .seed-table-container {
+      border: 1px solid var(--color-border);
+    }
+
+    .seed-table {
+      background: var(--color-bg);
+      font-size: var(--font-size-sm);
+    }
+
+    .seed-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr 1fr;
+      padding: var(--space-3) var(--space-6);
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .seed-row:last-child {
+      border-bottom: none;
+    }
+
+    .seed-header {
+      color: var(--color-text-dim);
+      font-size: var(--font-size-sm);
+      letter-spacing: 1px;
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .seed-host { color: var(--color-text); }
+    .seed-meta { color: var(--color-text-dim); }
+    .seed-status { color: var(--color-success); }
+
+    /* Code & Terminal */
+    .code-block {
+      background: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border);
+      padding: var(--space-6);
+      font-size: var(--font-size-sm);
+      line-height: var(--line-height-loose);
+      overflow-x: auto;
+      margin-top: var(--space-4);
+    }
+
+    .code-comment { color: var(--color-text-dim); }
+    .code-key { color: var(--color-accent); }
+    .code-val { color: var(--color-success); }
+    .code-str { color: var(--color-warning); }
+
+    /* Node Steps */
+    .node-intro {
+      color: var(--color-text-dim);
+      font-size: var(--font-size-base);
+      margin-bottom: var(--space-12);
+      line-height: var(--line-height-loose);
+    }
+
+    .node-steps {
+      counter-reset: step;
+    }
+
+    .node-step {
+      border: 1px solid var(--color-border);
+      padding: var(--space-8);
+      margin-bottom: 1px;
+      display: flex;
+      gap: var(--space-8);
+      align-items: flex-start;
+      transition: border-color var(--transition-base);
+    }
+
+    .node-step:hover { border-color: var(--color-border-light); }
+
+    .step-num {
+      font-size: var(--font-size-3xl);
+      color: var(--color-border-light);
+      min-width: 48px;
+      line-height: 1;
+    }
+
+    .step-title {
+      font-size: var(--font-size-lg);
+      color: var(--color-white);
+      margin-bottom: var(--space-3);
+    }
+
+    .step-body {
+      font-size: var(--font-size-base);
+      color: var(--color-text-dim);
+      line-height: var(--line-height-loose);
+    }
+
+    .terminal {
+      background: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border);
+      border-top: 2px solid var(--color-accent);
+      padding: var(--space-5) var(--space-6);
+      margin-top: var(--space-4);
+      font-size: var(--font-size-sm);
+      line-height: 2;
+      overflow-x: auto;
+    }
+
+    .term-prompt { color: var(--color-text-dim); }
+    .term-cmd { color: var(--color-success); }
+    .term-out { color: var(--color-text-dim); }
+    .term-highlight { color: var(--color-accent); }
+
+    /* About Grid */
+    .about-grid {
+      display: grid;
+      grid-template-columns: 1fr 2fr;
+      gap: var(--space-20);
+      align-items: start;
+    }
+
+    .about-ascii {
+      color: var(--color-border-light);
+      font-size: var(--font-size-xs);
+      line-height: 1.2;
+      margin-bottom: var(--space-8);
+    }
+
+    .about-links {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-2);
+    }
+
+    .about-link {
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+      padding: var(--space-2) 0;
+      border-bottom: 1px solid var(--color-border);
+      display: flex;
+      justify-content: space-between;
+      transition: color var(--transition-base);
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .about-link:hover {
+      color: var(--color-accent);
+      text-decoration: none;
+    }
+
+    .about-link-arrow { color: var(--color-text-dim); }
+
+    .about-statement {
+      font-size: 22px;
+      color: var(--color-white);
+      line-height: 1.5;
+      margin-bottom: var(--space-12);
+    }
+
+    .about-statement .accent { color: var(--color-accent); }
+
+    .about-body {
+      font-size: var(--font-size-base);
+      color: var(--color-text-dim);
+      line-height: 1.9;
+      max-width: 600px;
+    }
+
+    .about-body p { margin-bottom: var(--space-5); }
+
+    .about-footer-note {
+      color: var(--color-text-dim);
+      border-top: 1px solid var(--color-border);
+      padding-top: var(--space-5);
+      margin-top: var(--space-2);
+    }
+
+    /* Footer */
+    .main-footer {
+      border-top: 1px solid var(--color-border);
+      padding: var(--space-8) var(--space-10);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+    }
+
+    .footer-info-separator { margin: 0 var(--space-3); }
+
+    .footer-links {
+      display: flex;
+      gap: var(--space-6);
+    }
+
+    .footer-links a {
+      color: var(--color-text-dim);
+    }
+
+    .footer-links a:hover {
+      color: var(--color-text);
+      text-decoration: none;
+    }
+
+    /* Ticker */
+    .ticker {
+      background: var(--color-bg-tertiary);
+      border-bottom: 1px solid var(--color-border);
+      padding: var(--space-2) var(--space-10);
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+      display: flex;
+      gap: var(--space-8);
+      overflow: hidden;
+    }
+
+    .ticker-item { white-space: nowrap; }
+    .ticker-item .label { color: var(--color-text-dim); margin-right: var(--space-2); }
+    .ticker-item .value { color: var(--color-text); }
+    .ticker-item .value.up { color: var(--color-success); }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .pillars { grid-template-columns: 1fr; }
+      .network-grid { grid-template-columns: 1fr; }
+      .why-now-grid { grid-template-columns: 1fr; }
+      .about-grid { grid-template-columns: 1fr; gap: var(--space-10); }
+    }
+
+    @media (max-width: 768px) {
+      .hero { padding: var(--space-10) var(--space-5); }
+      .hero-stats { flex-wrap: wrap; }
+      .stat-block { border-right: 1px solid var(--color-border); }
+      .section { padding: var(--space-10) var(--space-5); }
+      .main-footer { flex-direction: column; gap: var(--space-4); text-align: center; }
+      .seed-row { grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+      .seed-header { display: none; }
+      .ticker { padding: var(--space-2) var(--space-4); gap: var(--space-4); flex-wrap: wrap; }
+      .node-step { flex-direction: column; gap: var(--space-4); }
+      .hero-cta { flex-direction: column; }
+    }
+  </style>
 </head>
-<body>
+<body class="scanlines">
+  <a href="#main-content" class="skip-link">Skip to main content</a>
 
-<!-- TICKER -->
-<div class="ticker" id="ticker">
-  <span class="ticker-item"><span class="label">HEIGHT</span><span class="value" id="t-height">14,923</span></span>
-  <span class="ticker-item"><span class="label">NODES</span><span class="value up" id="t-nodes">5</span></span>
-  <span class="ticker-item"><span class="label">HASHRATE</span><span class="value" id="t-hash">1.24 GH/s</span></span>
-  <span class="ticker-item"><span class="label">DIFF</span><span class="value" id="t-diff">0x1D2A</span></span>
-  <span class="ticker-item"><span class="label">LAST BLOCK</span><span class="value" id="t-last">42s ago</span></span>
-  <span class="ticker-item"><span class="label">ALGO</span><span class="value">SHA-256d</span></span>
-  <span class="ticker-item"><span class="label">SIG</span><span class="value up">CRYSTALS-Dilithium</span></span>
-  <span class="ticker-item"><span class="label">PRIVACY</span><span class="value up">Ring CT</span></span>
-</div>
-
-<!-- NAV -->
-<nav class="main-nav">
-  <div class="nav-logo">
-    <span class="fe">Fe</span>
-    FERROUS
-    <div class="dot"></div>
-  </div>
-  <ul class="nav-links">
-    <li><a href="#" data-page="home" class="nav-link active" id="nav-home">Home</a></li>
-    <li><a href="#" data-page="network" class="nav-link" id="nav-network">Network</a></li>
-    <li><a href="#" data-page="node" class="nav-link" id="nav-node">Run a Node</a></li>
-    <li><a href="#" data-page="about" class="nav-link" id="nav-about">About</a></li>
-    <li><a href="#" class="nav-github">GitHub ↗</a></li>
-  </ul>
-</nav>
-
-<!-- ══════════════════════════════════════════════ HOME -->
-<main id="page-home" class="page active">
-
-  <section class="hero">
-    <div class="hero-grid"></div>
-    <div class="hero-tag">// ferrous network — layer 1 blockchain</div>
-    <h1 class="hero-title">
-      Quantum-resistant.<br>
-      <span class="accent">Private.</span><br>
-      <span class="dim-line">Proof-of-Work.</span>
-    </h1>
-    <p class="hero-sub">
-      A layer 1 blockchain built from first principles in Rust.
-      Post-quantum signatures, confidential transactions, and a
-      consensus mechanism proven over a decade of adversarial conditions.
-    </p>
-    <div class="hero-stats">
-      <div class="stat-block">
-        <div class="stat-val" id="h-height">14,923</div>
-        <div class="stat-label">Block Height</div>
-      </div>
-      <div class="stat-block">
-        <div class="stat-val">5<span class="unit">nodes</span></div>
-        <div class="stat-label">Network Nodes</div>
-      </div>
-      <div class="stat-block">
-        <div class="stat-val">SHA<span class="unit">-256d</span></div>
-        <div class="stat-label">Algorithm</div>
-      </div>
-      <div class="stat-block">
-        <div class="stat-val">100<span class="unit">%</span></div>
-        <div class="stat-label">Rust</div>
-      </div>
-    </div>
-    <div class="hero-cta">
-      <a href="#" data-page="node" class="btn-primary">Run a Node</a>
-      <a href="#" data-page="network" class="btn-ghost">Protocol Specs</a>
-    </div>
-  </section>
-
-  <div class="section-wrapper">
-    <section class="section">
-      <div class="section-label">Core Properties</div>
-      <div class="pillars">
-        <article class="pillar">
-          <div class="pillar-num">01</div>
-          <h3 class="pillar-title">Quantum Resistant</h3>
-          <p class="pillar-body">
-            ECDSA is vulnerable to Shor's algorithm on a sufficiently powerful quantum computer.
-            Ferrous replaces it with CRYSTALS-Dilithium, a NIST-standardized lattice-based
-            signature scheme with no known quantum attack.
-          </p>
-          <div class="pillar-tag">CRYSTALS-Dilithium</div>
-        </article>
-        <article class="pillar">
-          <div class="pillar-num">02</div>
-          <h3 class="pillar-title">Private by Default</h3>
-          <p class="pillar-body">
-            Transaction amounts and sender identities are confidential on-chain.
-            Ring Confidential Transactions hide amounts using Pedersen commitments
-            and obscure the sender within a ring of decoys.
-          </p>
-          <div class="pillar-tag">Ring CT</div>
-        </article>
-        <article class="pillar">
-          <div class="pillar-num">03</div>
-          <h3 class="pillar-title">Proof-of-Work</h3>
-          <p class="pillar-body">
-            No validators, no staking, no governance tokens. SHA-256d PoW with
-            per-block difficulty adjustment. A decade of adversarial stress-testing
-            across the largest decentralized network in existence.
-          </p>
-          <div class="pillar-tag">SHA-256d</div>
-        </article>
-      </div>
-    </section>
+  <!-- Ticker -->
+  <div class="ticker" role="region" aria-label="Network statistics ticker">
+    <span class="ticker-item"><span class="label">HEIGHT</span><span class="value" id="t-height">14,923</span></span>
+    <span class="ticker-item"><span class="label">NODES</span><span class="value up" id="t-nodes">5</span></span>
+    <span class="ticker-item"><span class="label">HASHRATE</span><span class="value" id="t-hash">1.24 GH/s</span></span>
+    <span class="ticker-item"><span class="label">DIFF</span><span class="value" id="t-diff">0x1D2A</span></span>
+    <span class="ticker-item"><span class="label">LAST BLOCK</span><span class="value" id="t-last">42s ago</span></span>
+    <span class="ticker-item"><span class="label">ALGO</span><span class="value">SHA-256d</span></span>
+    <span class="ticker-item"><span class="label">SIG</span><span class="value up">CRYSTALS-Dilithium</span></span>
+    <span class="ticker-item"><span class="label">PRIVACY</span><span class="value up">Ring CT</span></span>
   </div>
 
-  <div class="section-wrapper">
-    <section class="section">
-      <div class="section-label">Why Now</div>
-      <div class="why-now-grid">
-        <div class="why-now-content">
-          <div class="why-now-text">
-            <p>NIST finalized post-quantum cryptography standards in 2024. The migration window for existing systems is now open — not theoretical.</p>
-            <p>Retrofitting quantum resistance onto a live blockchain with millions of existing keys is a coordination problem with no clean solution. A new chain has no legacy debt.</p>
-            <p>Ferrous is built for the threat that is coming, not the one that has already passed.</p>
+  <!-- Navigation -->
+  <nav class="ferrous-nav" role="navigation" aria-label="Main navigation" style="position:fixed;top:0;left:0;right:0;margin-top:32px;">
+    <div class="nav-logo">
+      <a href="index.html" style="display:flex;align-items:center;gap:var(--space-2);color:inherit;text-decoration:none;">
+        <span class="fe">Fe</span>
+        FERROUS
+        <div class="dot" aria-hidden="true"></div>
+      </a>
+    </div>
+    <div style="display:flex;gap:var(--space-3);align-items:center;">
+      <button class="theme-toggle" aria-label="Toggle theme">[ LIGHT ]</button>
+      <button class="nav-toggle" aria-expanded="false" aria-controls="nav-links">[ MENU ]</button>
+    </div>
+    <ul class="nav-links" id="nav-links">
+      <li><a href="#" data-page="home" class="nav-link active" id="nav-home">Home</a></li>
+      <li><a href="#" data-page="network" class="nav-link" id="nav-network">Network</a></li>
+      <li><a href="#" data-page="node" class="nav-link" id="nav-node">Run a Node</a></li>
+      <li><a href="#" data-page="about" class="nav-link" id="nav-about">About</a></li>
+      <li><a href="ferrous-explorer.html">Explorer</a></li>
+      <li><a href="ferrous-pool.html">Pool</a></li>
+      <li><a href="ferrous-otc.html">OTC</a></li>
+      <li><a href="https://github.com/chronocoders/ferrous" target="_blank" rel="noopener noreferrer" style="color:var(--color-accent)">GitHub <span aria-hidden="true">↗</span></a></li>
+    </ul>
+  </nav>
+
+  <div id="main-content">
+    <!-- HOME PAGE -->
+    <main id="page-home" class="page active">
+      <section class="hero">
+        <div class="hero-grid" aria-hidden="true"></div>
+        <div class="hero-tag">// ferrous network — layer 1 blockchain</div>
+        <h1 class="hero-title">
+          Quantum-resistant.<br>
+          <span class="accent">Private.</span><br>
+          <span class="dim-line">Proof-of-Work.</span>
+        </h1>
+        <p class="hero-sub">
+          A layer 1 blockchain built from first principles in Rust.
+          Post-quantum signatures, confidential transactions, and a
+          consensus mechanism proven over a decade of adversarial conditions.
+        </p>
+        <div class="hero-stats">
+          <div class="stat-block">
+            <div class="stat-val" id="h-height">14,923</div>
+            <div class="stat-label">Block Height</div>
+          </div>
+          <div class="stat-block">
+            <div class="stat-val">5<span class="unit">nodes</span></div>
+            <div class="stat-label">Network Nodes</div>
+          </div>
+          <div class="stat-block">
+            <div class="stat-val">SHA<span class="unit">-256d</span></div>
+            <div class="stat-label">Algorithm</div>
+          </div>
+          <div class="stat-block">
+            <div class="stat-val">100<span class="unit">%</span></div>
+            <div class="stat-label">Rust</div>
           </div>
         </div>
-        <div class="why-now-content">
-          <div class="timeline-container">
-            <div class="timeline-label">// timeline</div>
-            <div class="timeline-items">
-              <div class="timeline-item">
-                <span class="timeline-year">2024</span>
-                <span class="timeline-text">NIST PQC standards finalized</span>
+        <div class="hero-cta">
+          <a href="#" data-page="node" class="btn btn-primary">Run a Node</a>
+          <a href="#" data-page="network" class="btn btn-ghost">Protocol Specs</a>
+        </div>
+      </section>
+
+      <div class="section-wrapper">
+        <section class="section" aria-labelledby="core-properties">
+          <h2 class="section-label" id="core-properties">Core Properties</h2>
+          <div class="pillars">
+            <article class="pillar">
+              <div class="pillar-num" aria-hidden="true">01</div>
+              <h3 class="pillar-title">Quantum Resistant</h3>
+              <p class="pillar-body">
+                ECDSA is vulnerable to Shor's algorithm on a sufficiently powerful quantum computer.
+                Ferrous replaces it with CRYSTALS-Dilithium, a NIST-standardized lattice-based
+                signature scheme with no known quantum attack.
+              </p>
+              <div class="pillar-tag">CRYSTALS-Dilithium</div>
+            </article>
+            <article class="pillar">
+              <div class="pillar-num" aria-hidden="true">02</div>
+              <h3 class="pillar-title">Private by Default</h3>
+              <p class="pillar-body">
+                Transaction amounts and sender identities are confidential on-chain.
+                Ring Confidential Transactions hide amounts using Pedersen commitments
+                and obscure the sender within a ring of decoys.
+              </p>
+              <div class="pillar-tag">Ring CT</div>
+            </article>
+            <article class="pillar">
+              <div class="pillar-num" aria-hidden="true">03</div>
+              <h3 class="pillar-title">Proof-of-Work</h3>
+              <p class="pillar-body">
+                No validators, no staking, no governance tokens. SHA-256d PoW with
+                per-block difficulty adjustment. A decade of adversarial stress-testing
+                across the largest decentralized network in existence.
+              </p>
+              <div class="pillar-tag">SHA-256d</div>
+            </article>
+          </div>
+        </section>
+      </div>
+
+      <div class="section-wrapper">
+        <section class="section" aria-labelledby="why-now">
+          <h2 class="section-label" id="why-now">Why Now</h2>
+          <div class="why-now-grid">
+            <div class="why-now-content">
+              <div class="why-now-text">
+                <p>NIST finalized post-quantum cryptography standards in 2024. The migration window for existing systems is now open — not theoretical.</p>
+                <p>Retrofitting quantum resistance onto a live blockchain with millions of existing keys is a coordination problem with no clean solution. A new chain has no legacy debt.</p>
+                <p>Ferrous is built for the threat that is coming, not the one that has already passed.</p>
               </div>
-              <div class="timeline-item">
-                <span class="timeline-year">2026</span>
-                <span class="timeline-text highlight">Ferrous mainnet target ←</span>
+            </div>
+            <div class="why-now-content">
+              <div class="timeline-container">
+                <div class="timeline-label">// timeline</div>
+                <div class="timeline-items" role="list">
+                  <div class="timeline-item" role="listitem">
+                    <span class="timeline-year">2024</span>
+                    <span class="timeline-text">NIST PQC standards finalized</span>
+                  </div>
+                  <div class="timeline-item" role="listitem">
+                    <span class="timeline-year">2026</span>
+                    <span class="timeline-text highlight">Ferrous mainnet target <span aria-hidden="true">←</span></span>
+                  </div>
+                  <div class="timeline-item" role="listitem">
+                    <span class="timeline-year">202X</span>
+                    <span class="timeline-text dim">First practical quantum attacks</span>
+                  </div>
+                  <div class="timeline-item" role="listitem">
+                    <span class="timeline-year">202X</span>
+                    <span class="timeline-text dim">Legacy chain migration crisis</span>
+                  </div>
+                </div>
               </div>
-              <div class="timeline-item">
-                <span class="timeline-year">202X</span>
-                <span class="timeline-text dim">First practical quantum attacks</span>
-              </div>
-              <div class="timeline-item">
-                <span class="timeline-year">202X</span>
-                <span class="timeline-text dim">Legacy chain migration crisis</span>
-              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- NETWORK PAGE -->
+    <section id="page-network" class="page" aria-labelledby="network-title">
+      <div class="section section-full">
+        <h1 class="section-label" id="network-title">Protocol Specification</h1>
+
+        <div class="network-grid">
+          <div class="net-card">
+            <h2 class="net-card-title">Consensus</h2>
+            <div class="spec-row"><span class="spec-key">algorithm</span><span class="spec-val hl">Proof-of-Work</span></div>
+            <div class="spec-row"><span class="spec-key">hash function</span><span class="spec-val">SHA-256d</span></div>
+            <div class="spec-row"><span class="spec-key">block time target</span><span class="spec-val">150 seconds</span></div>
+            <div class="spec-row"><span class="spec-key">difficulty adjustment</span><span class="spec-val">per-block, ±1%</span></div>
+            <div class="spec-row"><span class="spec-key">block reward</span><span class="spec-val">50 FRR</span></div>
+            <div class="spec-row"><span class="spec-key">coinbase maturity</span><span class="spec-val">100 blocks</span></div>
+            <div class="spec-row"><span class="spec-key">ledger model</span><span class="spec-val">UTXO</span></div>
+          </div>
+          <div class="net-card">
+            <h2 class="net-card-title">Cryptography</h2>
+            <div class="spec-row"><span class="spec-key">signature scheme</span><span class="spec-val ok">CRYSTALS-Dilithium</span></div>
+            <div class="spec-row"><span class="spec-key">nist standard</span><span class="spec-val ok">FIPS 204</span></div>
+            <div class="spec-row"><span class="spec-key">security level</span><span class="spec-val">Category 3 (AES-192)</span></div>
+            <div class="spec-row"><span class="spec-key">privacy</span><span class="spec-val ok">Ring CT</span></div>
+            <div class="spec-row"><span class="spec-key">commitments</span><span class="spec-val">Pedersen</span></div>
+            <div class="spec-row"><span class="spec-key">address format</span><span class="spec-val">Base58Check</span></div>
+            <div class="spec-row"><span class="spec-key">quantum safe</span><span class="spec-val ok">Yes</span></div>
+          </div>
+        </div>
+
+        <div class="network-grid spaced">
+          <div class="net-card">
+            <h2 class="net-card-title">Network</h2>
+            <div class="spec-row"><span class="spec-key">protocol</span><span class="spec-val">TCP / Bitcoin-style framing</span></div>
+            <div class="spec-row"><span class="spec-key">message checksum</span><span class="spec-val">SHA-256d</span></div>
+            <div class="spec-row"><span class="spec-key">handshake</span><span class="spec-val">Version / Verack</span></div>
+            <div class="spec-row"><span class="spec-key">sync</span><span class="spec-val">Headers-first</span></div>
+            <div class="spec-row"><span class="spec-key">seed nodes</span><span class="spec-val">5 (global)</span></div>
+            <div class="spec-row"><span class="spec-key">default port</span><span class="spec-val">8333</span></div>
+          </div>
+          <div class="net-card">
+            <h2 class="net-card-title">Implementation</h2>
+            <div class="spec-row"><span class="spec-key">language</span><span class="spec-val hl">Rust</span></div>
+            <div class="spec-row"><span class="spec-key">storage</span><span class="spec-val">RocksDB</span></div>
+            <div class="spec-row"><span class="spec-key">rpc</span><span class="spec-val">JSON-RPC (10 methods)</span></div>
+            <div class="spec-row"><span class="spec-key">unsafe code</span><span class="spec-val ok">Zero</span></div>
+            <div class="spec-row"><span class="spec-key">warnings</span><span class="spec-val ok">Zero</span></div>
+            <div class="spec-row"><span class="spec-key">license</span><span class="spec-val">MIT</span></div>
+          </div>
+        </div>
+
+        <h2 class="section-label">Seed Nodes</h2>
+        <div class="seed-table-container" role="table" aria-label="Seed nodes">
+          <div class="seed-table">
+            <div class="seed-row seed-header" role="row">
+              <span role="columnheader">HOST</span>
+              <span role="columnheader">PROVIDER</span>
+              <span role="columnheader">LOCATION</span>
+              <span role="columnheader">STATUS</span>
+            </div>
+            <div class="seed-row" role="row">
+              <span class="seed-host" role="cell">seed1.ferrous.network:8333</span>
+              <span class="seed-meta" role="cell">Vultr</span>
+              <span class="seed-meta" role="cell">New York</span>
+              <span class="seed-status" role="cell"><span aria-hidden="true">●</span> ONLINE</span>
+            </div>
+            <div class="seed-row" role="row">
+              <span class="seed-host" role="cell">seed2.ferrous.network:8333</span>
+              <span class="seed-meta" role="cell">Akamai</span>
+              <span class="seed-meta" role="cell">Atlanta</span>
+              <span class="seed-status" role="cell"><span aria-hidden="true">●</span> ONLINE</span>
+            </div>
+            <div class="seed-row" role="row">
+              <span class="seed-host" role="cell">seed3.ferrous.network:8333</span>
+              <span class="seed-meta" role="cell">DigitalOcean</span>
+              <span class="seed-meta" role="cell">San Francisco</span>
+              <span class="seed-status" role="cell"><span aria-hidden="true">●</span> ONLINE</span>
+            </div>
+            <div class="seed-row" role="row">
+              <span class="seed-host" role="cell">seed4.ferrous.network:8333</span>
+              <span class="seed-meta" role="cell">Vultr</span>
+              <span class="seed-meta" role="cell">Frankfurt</span>
+              <span class="seed-status" role="cell"><span aria-hidden="true">●</span> ONLINE</span>
+            </div>
+            <div class="seed-row" role="row">
+              <span class="seed-host" role="cell">seed5.ferrous.network:8333</span>
+              <span class="seed-meta" role="cell">Akamai</span>
+              <span class="seed-meta" role="cell">Singapore</span>
+              <span class="seed-status" role="cell"><span aria-hidden="true">●</span> ONLINE</span>
             </div>
           </div>
         </div>
       </div>
     </section>
-  </div>
 
-</main>
+    <!-- NODE PAGE -->
+    <section id="page-node" class="page" aria-labelledby="node-title">
+      <div class="section section-narrow">
+        <h1 class="section-label" id="node-title">Run a Node</h1>
 
-<!-- ══════════════════════════════════════════════ NETWORK -->
-<section id="page-network" class="page">
-  <div class="section section-full">
+        <p class="node-intro">
+          A Ferrous full node validates the chain independently, relays transactions,
+          and strengthens network decentralization. No registration required.
+        </p>
 
-    <div class="section-label">Protocol Specification</div>
+        <div class="node-steps">
+          <article class="node-step">
+            <div class="step-num" aria-hidden="true">01</div>
+            <div>
+              <h2 class="step-title">Requirements</h2>
+              <div class="step-body">
+                Linux x86_64. 2GB RAM minimum, 4GB recommended. 50GB disk for initial sync.
+                A stable internet connection with a publicly reachable IP on port 8333.
+              </div>
+            </div>
+          </article>
 
-    <div class="network-grid">
-      <div class="net-card">
-        <div class="net-card-title">Consensus</div>
-        <div class="spec-row"><span class="spec-key">algorithm</span><span class="spec-val hl">Proof-of-Work</span></div>
-        <div class="spec-row"><span class="spec-key">hash function</span><span class="spec-val">SHA-256d</span></div>
-        <div class="spec-row"><span class="spec-key">block time target</span><span class="spec-val">150 seconds</span></div>
-        <div class="spec-row"><span class="spec-key">difficulty adjustment</span><span class="spec-val">per-block, ±1%</span></div>
-        <div class="spec-row"><span class="spec-key">block reward</span><span class="spec-val">50 FRR</span></div>
-        <div class="spec-row"><span class="spec-key">coinbase maturity</span><span class="spec-val">100 blocks</span></div>
-        <div class="spec-row"><span class="spec-key">ledger model</span><span class="spec-val">UTXO</span></div>
+          <article class="node-step">
+            <div class="step-num" aria-hidden="true">02</div>
+            <div>
+              <h2 class="step-title">Download</h2>
+              <div class="step-body">Grab the latest binary from GitHub releases. Verify the checksum.</div>
+              <div class="terminal" role="region" aria-label="Terminal commands">
+                <div><span class="term-prompt">$ </span><span class="term-cmd">wget https://github.com/chronocoders/ferrous/releases/latest/ferrous-linux-x86_64.tar.gz</span></div>
+                <div><span class="term-prompt">$ </span><span class="term-cmd">sha256sum -c ferrous-linux-x86_64.tar.gz.sha256</span></div>
+                <div><span class="term-out">ferrous-linux-x86_64.tar.gz: </span><span class="term-highlight">OK</span></div>
+                <div><span class="term-prompt">$ </span><span class="term-cmd">tar -xzf ferrous-linux-x86_64.tar.gz && chmod +x ferrous</span></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="node-step">
+            <div class="step-num" aria-hidden="true">03</div>
+            <div>
+              <h2 class="step-title">Configure</h2>
+              <div class="step-body">Create a minimal config file. Most defaults are production-ready.</div>
+              <div class="code-block" role="region" aria-label="Configuration file">
+                <div><span class="code-comment"># ferrous.toml</span></div>
+                <div></div>
+                <div><span class="code-key">network</span> = <span class="code-str">"mainnet"</span></div>
+                <div><span class="code-key">data_dir</span> = <span class="code-str">"~/.ferrous"</span></div>
+                <div><span class="code-key">bind</span> = <span class="code-str">"0.0.0.0:8333"</span></div>
+                <div><span class="code-key">max_peers</span> = <span class="code-val">125</span></div>
+                <div><span class="code-key">rpc_bind</span> = <span class="code-str">"127.0.0.1:8332"</span></div>
+                <div></div>
+                <div><span class="code-comment"># Optional: enable mining</span></div>
+                <div><span class="code-key">mine</span> = <span class="code-val">false</span></div>
+                <div><span class="code-key">coinbase_address</span> = <span class="code-str">""</span></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="node-step">
+            <div class="step-num" aria-hidden="true">04</div>
+            <div>
+              <h2 class="step-title">Run</h2>
+              <div class="step-body">Start the node. It will connect to seed nodes and begin syncing.</div>
+              <div class="terminal" role="region" aria-label="Terminal output">
+                <div><span class="term-prompt">$ </span><span class="term-cmd">./ferrous --config ferrous.toml</span></div>
+                <div><span class="term-highlight">[2026-03-03 12:00:01]</span><span class="term-out"> INFO  ferrous starting — mainnet</span></div>
+                <div><span class="term-highlight">[2026-03-03 12:00:01]</span><span class="term-out"> INFO  connecting to seed1.ferrous.network:8333</span></div>
+                <div><span class="term-highlight">[2026-03-03 12:00:02]</span><span class="term-out"> INFO  connected to 5 peers</span></div>
+                <div><span class="term-highlight">[2026-03-03 12:00:02]</span><span class="term-out"> INFO  syncing headers from height 0...</span></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="node-step">
+            <div class="step-num" aria-hidden="true">05</div>
+            <div>
+              <h2 class="step-title">Run as a Service (Optional)</h2>
+              <div class="step-body">Use systemd for automatic startup and restart on failure.</div>
+              <div class="terminal" role="region" aria-label="Systemd configuration">
+                <div><span class="term-prompt">$ </span><span class="term-cmd">sudo nano /etc/systemd/system/ferrous.service</span></div>
+                <div></div>
+                <div><span class="term-out">[Unit]</span></div>
+                <div><span class="term-out">Description=Ferrous Network Node</span></div>
+                <div><span class="term-out">After=network.target</span></div>
+                <div></div>
+                <div><span class="term-out">[Service]</span></div>
+                <div><span class="term-out">ExecStart=/usr/local/bin/ferrous --config /etc/ferrous/ferrous.toml</span></div>
+                <div><span class="term-out">Restart=always</span></div>
+                <div></div>
+                <div><span class="term-out">[Install]</span></div>
+                <div><span class="term-out">WantedBy=multi-user.target</span></div>
+                <div></div>
+                <div><span class="term-prompt">$ </span><span class="term-cmd">sudo systemctl enable --now ferrous</span></div>
+              </div>
+            </div>
+          </article>
+        </div>
       </div>
-      <div class="net-card">
-        <div class="net-card-title">Cryptography</div>
-        <div class="spec-row"><span class="spec-key">signature scheme</span><span class="spec-val ok">CRYSTALS-Dilithium</span></div>
-        <div class="spec-row"><span class="spec-key">nist standard</span><span class="spec-val ok">FIPS 204</span></div>
-        <div class="spec-row"><span class="spec-key">security level</span><span class="spec-val">Category 3 (AES-192)</span></div>
-        <div class="spec-row"><span class="spec-key">privacy</span><span class="spec-val ok">Ring CT</span></div>
-        <div class="spec-row"><span class="spec-key">commitments</span><span class="spec-val">Pedersen</span></div>
-        <div class="spec-row"><span class="spec-key">address format</span><span class="spec-val">Base58Check</span></div>
-        <div class="spec-row"><span class="spec-key">quantum safe</span><span class="spec-val ok">Yes</span></div>
-      </div>
-    </div>
+    </section>
 
-    <div class="network-grid spaced">
-      <div class="net-card">
-        <div class="net-card-title">Network</div>
-        <div class="spec-row"><span class="spec-key">protocol</span><span class="spec-val">TCP / Bitcoin-style framing</span></div>
-        <div class="spec-row"><span class="spec-key">message checksum</span><span class="spec-val">SHA-256d</span></div>
-        <div class="spec-row"><span class="spec-key">handshake</span><span class="spec-val">Version / Verack</span></div>
-        <div class="spec-row"><span class="spec-key">sync</span><span class="spec-val">Headers-first</span></div>
-        <div class="spec-row"><span class="spec-key">seed nodes</span><span class="spec-val">5 (global)</span></div>
-        <div class="spec-row"><span class="spec-key">default port</span><span class="spec-val">8333</span></div>
-      </div>
-      <div class="net-card">
-        <div class="net-card-title">Implementation</div>
-        <div class="spec-row"><span class="spec-key">language</span><span class="spec-val hl">Rust</span></div>
-        <div class="spec-row"><span class="spec-key">storage</span><span class="spec-val">RocksDB</span></div>
-        <div class="spec-row"><span class="spec-key">rpc</span><span class="spec-val">JSON-RPC (10 methods)</span></div>
-        <div class="spec-row"><span class="spec-key">unsafe code</span><span class="spec-val ok">Zero</span></div>
-        <div class="spec-row"><span class="spec-key">warnings</span><span class="spec-val ok">Zero</span></div>
-        <div class="spec-row"><span class="spec-key">license</span><span class="spec-val">MIT</span></div>
-      </div>
-    </div>
-
-    <div class="section-label">Seed Nodes</div>
-    <div class="seed-table-container">
-      <div class="seed-table">
-        <div class="seed-row seed-header">
-          <span>HOST</span><span>PROVIDER</span><span>LOCATION</span><span>STATUS</span>
-        </div>
-        <div class="seed-row">
-          <span class="seed-host">seed1.ferrous.network:8333</span>
-          <span class="seed-meta">Vultr</span>
-          <span class="seed-meta">New York</span>
-          <span class="seed-status">● ONLINE</span>
-        </div>
-        <div class="seed-row">
-          <span class="seed-host">seed2.ferrous.network:8333</span>
-          <span class="seed-meta">Akamai</span>
-          <span class="seed-meta">Atlanta</span>
-          <span class="seed-status">● ONLINE</span>
-        </div>
-        <div class="seed-row">
-          <span class="seed-host">seed3.ferrous.network:8333</span>
-          <span class="seed-meta">DigitalOcean</span>
-          <span class="seed-meta">San Francisco</span>
-          <span class="seed-status">● ONLINE</span>
-        </div>
-        <div class="seed-row">
-          <span class="seed-host">seed4.ferrous.network:8333</span>
-          <span class="seed-meta">Vultr</span>
-          <span class="seed-meta">Frankfurt</span>
-          <span class="seed-status">● ONLINE</span>
-        </div>
-        <div class="seed-row">
-          <span class="seed-host">seed5.ferrous.network:8333</span>
-          <span class="seed-meta">Akamai</span>
-          <span class="seed-meta">Singapore</span>
-          <span class="seed-status">● ONLINE</span>
-        </div>
-      </div>
-    </div>
-
-  </div>
-</section>
-
-<!-- ══════════════════════════════════════════════ NODE -->
-<section id="page-node" class="page">
-  <div class="section section-narrow">
-
-    <div class="section-label">Run a Node</div>
-
-    <p class="node-intro">
-      A Ferrous full node validates the chain independently, relays transactions,
-      and strengthens network decentralization. No registration required.
-    </p>
-
-    <div class="node-steps">
-
-      <article class="node-step">
-        <div class="step-num">01</div>
-        <div>
-          <h3 class="step-title">Requirements</h3>
-          <div class="step-body">
-            Linux x86_64. 2GB RAM minimum, 4GB recommended. 50GB disk for initial sync.
-            A stable internet connection with a publicly reachable IP on port 8333.
-          </div>
-        </div>
-      </article>
-
-      <article class="node-step">
-        <div class="step-num">02</div>
-        <div>
-          <h3 class="step-title">Download</h3>
-          <div class="step-body">Grab the latest binary from GitHub releases. Verify the checksum.</div>
-          <div class="terminal">
-            <div><span class="term-prompt">$ </span><span class="term-cmd">wget https://github.com/chronocoders/ferrous/releases/latest/ferrous-linux-x86_64.tar.gz</span></div>
-            <div><span class="term-prompt">$ </span><span class="term-cmd">sha256sum -c ferrous-linux-x86_64.tar.gz.sha256</span></div>
-            <div><span class="term-out">ferrous-linux-x86_64.tar.gz: </span><span class="term-highlight">OK</span></div>
-            <div><span class="term-prompt">$ </span><span class="term-cmd">tar -xzf ferrous-linux-x86_64.tar.gz && chmod +x ferrous</span></div>
-          </div>
-        </div>
-      </article>
-
-      <article class="node-step">
-        <div class="step-num">03</div>
-        <div>
-          <h3 class="step-title">Configure</h3>
-          <div class="step-body">Create a minimal config file. Most defaults are production-ready.</div>
-          <div class="code-block">
-            <div><span class="code-comment"># ferrous.toml</span></div>
-            <div></div>
-            <div><span class="code-key">network</span> = <span class="code-str">"mainnet"</span></div>
-            <div><span class="code-key">data_dir</span> = <span class="code-str">"~/.ferrous"</span></div>
-            <div><span class="code-key">bind</span> = <span class="code-str">"0.0.0.0:8333"</span></div>
-            <div><span class="code-key">max_peers</span> = <span class="code-val">125</span></div>
-            <div><span class="code-key">rpc_bind</span> = <span class="code-str">"127.0.0.1:8332"</span></div>
-            <div></div>
-            <div><span class="code-comment"># Optional: enable mining</span></div>
-            <div><span class="code-key">mine</span> = <span class="code-val">false</span></div>
-            <div><span class="code-key">coinbase_address</span> = <span class="code-str">""</span></div>
-          </div>
-        </div>
-      </article>
-
-      <article class="node-step">
-        <div class="step-num">04</div>
-        <div>
-          <h3 class="step-title">Run</h3>
-          <div class="step-body">Start the node. It will connect to seed nodes and begin syncing.</div>
-          <div class="terminal">
-            <div><span class="term-prompt">$ </span><span class="term-cmd">./ferrous --config ferrous.toml</span></div>
-            <div><span class="term-highlight">[2026-03-03 12:00:01]</span><span class="term-out"> INFO  ferrous starting — mainnet</span></div>
-            <div><span class="term-highlight">[2026-03-03 12:00:01]</span><span class="term-out"> INFO  connecting to seed1.ferrous.network:8333</span></div>
-            <div><span class="term-highlight">[2026-03-03 12:00:02]</span><span class="term-out"> INFO  connected to 5 peers</span></div>
-            <div><span class="term-highlight">[2026-03-03 12:00:02]</span><span class="term-out"> INFO  syncing headers from height 0...</span></div>
-          </div>
-        </div>
-      </article>
-
-      <article class="node-step">
-        <div class="step-num">05</div>
-        <div>
-          <h3 class="step-title">Run as a Service (Optional)</h3>
-          <div class="step-body">Use systemd for automatic startup and restart on failure.</div>
-          <div class="terminal">
-            <div><span class="term-prompt">$ </span><span class="term-cmd">sudo nano /etc/systemd/system/ferrous.service</span></div>
-            <div></div>
-            <div><span class="term-out">[Unit]</span></div>
-            <div><span class="term-out">Description=Ferrous Network Node</span></div>
-            <div><span class="term-out">After=network.target</span></div>
-            <div></div>
-            <div><span class="term-out">[Service]</span></div>
-            <div><span class="term-out">ExecStart=/usr/local/bin/ferrous --config /etc/ferrous/ferrous.toml</span></div>
-            <div><span class="term-out">Restart=always</span></div>
-            <div></div>
-            <div><span class="term-out">[Install]</span></div>
-            <div><span class="term-out">WantedBy=multi-user.target</span></div>
-            <div></div>
-            <div><span class="term-prompt">$ </span><span class="term-cmd">sudo systemctl enable --now ferrous</span></div>
-          </div>
-        </div>
-      </article>
-
-    </div>
-  </div>
-</section>
-
-<!-- ══════════════════════════════════════════════ ABOUT -->
-<section id="page-about" class="page">
-  <div class="section">
-
-    <div class="about-grid">
-      <div class="about-sidebar">
-        <pre class="about-ascii">
+    <!-- ABOUT PAGE -->
+    <section id="page-about" class="page" aria-labelledby="about-title">
+      <div class="section">
+        <h1 class="sr-only" id="about-title">About Ferrous</h1>
+        <div class="about-grid">
+          <aside class="about-sidebar">
+            <pre class="about-ascii" aria-hidden="true">
  ___
 |  _|
 | |_
@@ -1019,127 +910,162 @@ a:hover { text-decoration: underline; }
 | |
 |_|
 ERROUS</pre>
-        <div class="about-links">
-          <a class="about-link"><span>Whitepaper</span><span class="about-link-arrow">↗</span></a>
-          <a class="about-link"><span>GitHub</span><span class="about-link-arrow">↗</span></a>
-          <a class="about-link"><span>Mining Pool</span><span class="about-link-arrow">↗</span></a>
-          <a class="about-link"><span>Block Explorer</span><span class="about-link-arrow">↗</span></a>
-          <a class="about-link"><span>Contact</span><span class="about-link-arrow">↗</span></a>
-        </div>
-      </div>
+            <nav class="about-links" aria-label="Quick links">
+              <a class="about-link" href="#"><span>Whitepaper</span><span class="about-link-arrow" aria-hidden="true">↗</span></a>
+              <a class="about-link" href="https://github.com/chronocoders/ferrous" target="_blank" rel="noopener noreferrer"><span>GitHub</span><span class="about-link-arrow" aria-hidden="true">↗</span></a>
+              <a class="about-link" href="ferrous-pool.html"><span>Mining Pool</span><span class="about-link-arrow" aria-hidden="true">↗</span></a>
+              <a class="about-link" href="ferrous-explorer.html"><span>Block Explorer</span><span class="about-link-arrow" aria-hidden="true">↗</span></a>
+              <a class="about-link" href="#"><span>Contact</span><span class="about-link-arrow" aria-hidden="true">↗</span></a>
+            </nav>
+          </aside>
 
-      <div class="about-content">
-        <div class="about-statement">
-          A blockchain built for the <span class="accent">next decade</span>,
-          not the last one.
-        </div>
-        <div class="about-body">
-          <p>
-            Every major blockchain in production today relies on ECDSA for transaction signing.
-            ECDSA is broken by Shor's algorithm on a cryptographically relevant quantum computer.
-            The question is not whether this happens, but when.
-          </p>
-          <p>
-            Ferrous was built from scratch in Rust with post-quantum cryptography as a core
-            requirement, not an afterthought. CRYSTALS-Dilithium replaces ECDSA at the protocol
-            level. There are no legacy keys to migrate, no governance proposals to pass,
-            no community coordination required.
-          </p>
-          <p>
-            Privacy is the second pillar. On a transparent ledger, every transaction
-            is permanently public. Ring Confidential Transactions make amounts and
-            sender identities confidential by default, without opt-in or separate
-            shielded pools.
-          </p>
-          <p>
-            Proof-of-Work is the consensus mechanism because it works. Fifteen years
-            of adversarial conditions on the largest decentralized network in existence
-            is a stronger argument than any whitepaper.
-          </p>
-          <p class="about-footer-note">
-            Built by a solo developer. Open source. No venture funding.
-            No token sale. No foundation.
-          </p>
+          <article class="about-content">
+            <p class="about-statement">
+              A blockchain built for the <span class="accent">next decade</span>,
+              not the last one.
+            </p>
+            <div class="about-body">
+              <p>
+                Every major blockchain in production today relies on ECDSA for transaction signing.
+                ECDSA is broken by Shor's algorithm on a cryptographically relevant quantum computer.
+                The question is not whether this happens, but when.
+              </p>
+              <p>
+                Ferrous was built from scratch in Rust with post-quantum cryptography as a core
+                requirement, not an afterthought. CRYSTALS-Dilithium replaces ECDSA at the protocol
+                level. There are no legacy keys to migrate, no governance proposals to pass,
+                no community coordination required.
+              </p>
+              <p>
+                Privacy is the second pillar. On a transparent ledger, every transaction
+                is permanently public. Ring Confidential Transactions make amounts and
+                sender identities confidential by default, without opt-in or separate
+                shielded pools.
+              </p>
+              <p>
+                Proof-of-Work is the consensus mechanism because it works. Fifteen years
+                of adversarial conditions on the largest decentralized network in existence
+                is a stronger argument than any whitepaper.
+              </p>
+              <p class="about-footer-note">
+                Built by a solo developer. Open source. No venture funding.
+                No token sale. No foundation.
+              </p>
+            </div>
+          </article>
         </div>
       </div>
+    </section>
+  </div>
+
+  <!-- Footer -->
+  <footer class="main-footer" role="contentinfo">
+    <div style="color:var(--color-text-dim)">
+      ferrous.network <span class="footer-info-separator" aria-hidden="true">·</span>
+      <span id="footer-height">block #14,923</span> <span class="blink" aria-hidden="true">_</span>
     </div>
+    <nav class="footer-links" aria-label="Footer navigation">
+      <a href="https://github.com/chronocoders/ferrous" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="#">Whitepaper</a>
+      <a href="ferrous-pool.html">Pool</a>
+      <a href="ferrous-explorer.html">Explorer</a>
+    </nav>
+  </footer>
 
-  </div>
-</section>
+  <script src="shared-utils.js"></script>
+  <script>
+    // ═══════════════════════════════════════════════════════════
+    // PAGE NAVIGATION
+    // ═══════════════════════════════════════════════════════════
 
-<!-- FOOTER -->
-<footer class="main-footer">
-  <div style="color:var(--dim)">
-    ferrous.network <span class="footer-info-separator">·</span>
-    <span id="footer-height">block #14,923</span> <span class="blink">_</span>
-  </div>
-  <div class="footer-links">
-    <a href="#">GitHub</a>
-    <a href="#">Whitepaper</a>
-    <a href="#">Pool</a>
-    <a href="#">Explorer</a>
-  </div>
-</footer>
+    document.addEventListener('DOMContentLoaded', function() {
+      var links = document.querySelectorAll('a[data-page]');
+      
+      links.forEach(function(link) {
+        link.addEventListener('click', function(e) {
+          e.preventDefault();
+          var pageId = link.getAttribute('data-page');
+          showPage(pageId);
+        });
+      });
 
-<script>
-// ── PAGE NAVIGATION ───────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
-  const links = document.querySelectorAll('a[data-page]');
-  
-  links.forEach(link => {
-    link.addEventListener('click', (e) => {
-      e.preventDefault();
-      const pageId = link.getAttribute('data-page');
-      showPage(pageId);
+      // Register keyboard shortcuts
+      Ferrous.registerShortcut('1', function() { showPage('home'); }, 'Go to Home');
+      Ferrous.registerShortcut('2', function() { showPage('network'); }, 'Go to Network');
+      Ferrous.registerShortcut('3', function() { showPage('node'); }, 'Go to Node');
+      Ferrous.registerShortcut('4', function() { showPage('about'); }, 'Go to About');
     });
-  });
-});
 
-function showPage(id) {
-  // Hide all pages
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  // Deactivate all nav links
-  document.querySelectorAll('.nav-links a').forEach(a => a.classList.remove('active'));
-  
-  // Show target page
-  const pageElement = document.getElementById('page-' + id);
-  if (pageElement) pageElement.classList.add('active');
-  
-  // Activate nav link
-  const navLink = document.getElementById('nav-' + id);
-  if (navLink) navLink.classList.add('active');
-  
-  window.scrollTo(0, 0);
-}
+    function showPage(id) {
+      // Hide all pages
+      document.querySelectorAll('.page').forEach(function(p) {
+        p.classList.remove('active');
+      });
+      
+      // Deactivate all nav links
+      document.querySelectorAll('.nav-links a[data-page]').forEach(function(a) {
+        a.classList.remove('active');
+        a.removeAttribute('aria-current');
+      });
+      
+      // Show target page
+      var pageElement = document.getElementById('page-' + id);
+      if (pageElement) {
+        pageElement.classList.add('active');
+      }
+      
+      // Activate nav link
+      var navLink = document.getElementById('nav-' + id);
+      if (navLink) {
+        navLink.classList.add('active');
+        navLink.setAttribute('aria-current', 'page');
+      }
+      
+      window.scrollTo(0, 0);
 
-// ── LIVE TICKER ───────────────────────────────────────────
-let height = 14923;
-let lastBlock = 0;
+      // Announce page change for screen readers
+      var announcement = document.createElement('div');
+      announcement.setAttribute('role', 'status');
+      announcement.setAttribute('aria-live', 'polite');
+      announcement.className = 'sr-only';
+      announcement.textContent = 'Navigated to ' + id + ' page';
+      document.body.appendChild(announcement);
+      setTimeout(function() {
+        document.body.removeChild(announcement);
+      }, 1000);
+    }
 
-function updateTicker() {
-  lastBlock++;
-  if (lastBlock > 180 || Math.random() < 0.02) {
-    height++;
-    lastBlock = 0;
-  }
-  const hash = (1.1 + Math.random() * 0.3).toFixed(2);
-  
-  const els = {
-    tHeight: document.getElementById('t-height'),
-    tHash: document.getElementById('t-hash'),
-    tLast: document.getElementById('t-last'),
-    hHeight: document.getElementById('h-height'),
-    fHeight: document.getElementById('footer-height')
-  };
-  
-  if (els.tHeight) els.tHeight.textContent = height.toLocaleString();
-  if (els.tHash) els.tHash.textContent = hash + ' GH/s';
-  if (els.tLast) els.tLast.textContent = lastBlock + 's ago';
-  if (els.hHeight) els.hHeight.textContent = height.toLocaleString();
-  if (els.fHeight) els.fHeight.textContent = 'block #' + height.toLocaleString();
-}
+    // ═══════════════════════════════════════════════════════════
+    // LIVE TICKER
+    // ═══════════════════════════════════════════════════════════
 
-setInterval(updateTicker, 1000);
-</script>
+    var height = 14923;
+    var lastBlock = 0;
+
+    var updateTicker = Ferrous.throttle(function() {
+      lastBlock++;
+      if (lastBlock > 180 || Math.random() < 0.02) {
+        height++;
+        lastBlock = 0;
+      }
+      var hash = Ferrous.randomFloat(1.1, 1.4).toFixed(2);
+      
+      var els = {
+        tHeight: document.getElementById('t-height'),
+        tHash: document.getElementById('t-hash'),
+        tLast: document.getElementById('t-last'),
+        hHeight: document.getElementById('h-height'),
+        fHeight: document.getElementById('footer-height')
+      };
+      
+      if (els.tHeight) els.tHeight.textContent = Ferrous.formatNumber(height);
+      if (els.tHash) els.tHash.textContent = hash + ' GH/s';
+      if (els.tLast) els.tLast.textContent = lastBlock + 's ago';
+      if (els.hHeight) els.hHeight.textContent = Ferrous.formatNumber(height);
+      if (els.fHeight) els.fHeight.textContent = 'block #' + Ferrous.formatNumber(height);
+    }, 1000);
+
+    setInterval(updateTicker, 1000);
+  </script>
 </body>
 </html>

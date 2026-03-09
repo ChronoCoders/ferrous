@@ -1,506 +1,833 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ferrous Explorer</title>
-<style>
-:root {
-  --bg: #0a0e1a;
-  --bg2: #0d1120;
-  --bg3: #060912;
-  --border: #1a2035;
-  --border2: #242b3d;
-  --text: #c5cdd8;
-  --dim: #4a5568;
-  --accent: #4a9eff;
-  --green: #3dffa0;
-  --red: #ff4a6a;
-  --yellow: #ffd84a;
-  --mono: 'Courier New', Courier, monospace;
-}
-* { margin:0; padding:0; box-sizing:border-box; }
-body { background:var(--bg); color:var(--text); font-family:var(--mono); font-size:13px; min-height:100vh; }
-a { color:var(--accent); text-decoration:none; }
-a:hover { text-decoration:underline; }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Ferrous Block Explorer - Browse blocks, transactions, and addresses on the Ferrous blockchain">
+  <meta name="theme-color" content="#0a0e1a">
+  <title>Ferrous Explorer</title>
+  <link rel="stylesheet" href="shared-styles.css">
+  <style>
+    /* Explorer-specific styles */
+    .search-wrap {
+      display: flex;
+      gap: 0;
+    }
 
-/* NAV */
-nav {
-  background:rgba(10,14,26,0.97);
-  border-bottom:1px solid var(--border);
-  padding:0 32px;
-  height:44px;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  position:sticky;
-  top:0;
-  z-index:100;
-}
-.nav-logo { color:var(--accent); letter-spacing:2px; font-size:12px; display:flex; align-items:center; gap:8px; }
-.fe { border:1px solid var(--accent); padding:1px 6px; color:#fff; font-size:13px; }
-.dot { width:5px;height:5px;background:var(--green);border-radius:50%;animation:pulse 2s ease-in-out infinite; }
-@keyframes pulse { 0%,100%{opacity:1;box-shadow:0 0 4px var(--green)}50%{opacity:.4;box-shadow:none} }
+    .search-input {
+      background: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border-light);
+      border-right: none;
+      color: var(--color-text);
+      font-family: var(--font-mono);
+      font-size: var(--font-size-sm);
+      padding: var(--space-2) var(--space-3);
+      width: 360px;
+      outline: none;
+      transition: border-color var(--transition-base);
+    }
 
-/* SEARCH */
-.search-wrap { display:flex; gap:0; }
-.search-input {
-  background:var(--bg3);
-  border:1px solid var(--border2);
-  border-right:none;
-  color:var(--text);
-  font-family:var(--mono);
-  font-size:12px;
-  padding:6px 14px;
-  width:360px;
-  outline:none;
-}
-.search-input:focus { border-color:var(--accent); }
-.search-input::placeholder { color:var(--dim); }
-.search-btn {
-  background:var(--accent);
-  color:#0a0e1a;
-  border:none;
-  padding:6px 16px;
-  font-family:var(--mono);
-  font-size:11px;
-  letter-spacing:1px;
-  cursor:pointer;
-}
-.search-btn:hover { background:#6ab4ff; }
+    .search-input:focus {
+      border-color: var(--color-accent);
+    }
 
-/* STATS BAR */
-.stats-bar {
-  display:flex;
-  background:var(--bg3);
-  border-bottom:1px solid var(--border);
-}
-.stat { padding:10px 24px; border-right:1px solid var(--border); font-size:11px; }
-.stat-l { color:var(--dim); margin-bottom:2px; font-size:10px; letter-spacing:1px; text-transform:uppercase; }
-.stat-v { color:var(--text); }
-.stat-v.hl { color:var(--accent); }
-.stat-v.ok { color:var(--green); }
+    .search-input::placeholder {
+      color: var(--color-text-dim);
+    }
 
-/* MAIN LAYOUT */
-.container { max-width:1200px; margin:0 auto; padding:32px; }
+    .search-btn {
+      background: var(--color-accent);
+      color: var(--color-bg);
+      border: none;
+      padding: var(--space-2) var(--space-4);
+      font-family: var(--font-mono);
+      font-size: var(--font-size-sm);
+      letter-spacing: 1px;
+      cursor: pointer;
+      transition: background var(--transition-base);
+    }
 
-/* SECTION LABEL */
-.section-label {
-  font-size:10px;
-  color:var(--dim);
-  letter-spacing:3px;
-  text-transform:uppercase;
-  margin-bottom:16px;
-  display:flex;
-  align-items:center;
-  gap:12px;
-}
-.section-label::after { content:''; flex:1; height:1px; background:var(--border); max-width:120px; }
+    .search-btn:hover {
+      background: #6ab4ff;
+    }
 
-/* TABLE */
-.data-table { width:100%; border-collapse:collapse; border:1px solid var(--border); }
-.data-table th {
-  padding:8px 16px;
-  font-size:10px;
-  color:var(--dim);
-  font-weight:normal;
-  letter-spacing:1px;
-  text-transform:uppercase;
-  border-bottom:1px solid var(--border);
-  text-align:left;
-  background:var(--bg3);
-}
-.data-table td { padding:9px 16px; border-bottom:1px solid var(--border); font-size:12px; }
-.data-table tr:last-child td { border-bottom:none; }
-.data-table tr:hover td { background:var(--bg2); cursor:pointer; }
+    .search-btn:focus-visible {
+      outline: 2px solid var(--color-white);
+      outline-offset: -2px;
+    }
 
-.hash { color:var(--accent); font-size:11px; }
-.hash-short { max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:inline-block; vertical-align:bottom; }
+    /* Container */
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: var(--space-8);
+    }
 
-/* DETAIL VIEW */
-.detail-panel {
-  border:1px solid var(--border);
-  margin-bottom:24px;
-  display:none;
-}
-.detail-panel.visible { display:block; }
-.detail-head {
-  background:var(--bg3);
-  padding:12px 20px;
-  border-bottom:1px solid var(--border);
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-}
-.detail-head-title { font-size:11px; color:var(--dim); letter-spacing:2px; text-transform:uppercase; }
-.detail-close { font-size:11px; color:var(--dim); cursor:pointer; padding:2px 8px; border:1px solid var(--border); }
-.detail-close:hover { color:var(--red); border-color:var(--red); }
+    /* Detail Panel */
+    .detail-panel {
+      border: 1px solid var(--color-border);
+      margin-bottom: var(--space-6);
+      display: none;
+    }
 
-.detail-grid { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--border); }
-.detail-card { background:var(--bg); padding:20px 24px; }
-.detail-row { display:flex; justify-content:space-between; align-items:baseline; padding:7px 0; border-bottom:1px solid var(--border); font-size:12px; }
-.detail-row:last-child { border-bottom:none; }
-.detail-key { color:var(--dim); min-width:140px; }
-.detail-val { color:var(--text); text-align:right; word-break:break-all; }
-.detail-val.hl { color:var(--accent); }
-.detail-val.ok { color:var(--green); }
-.detail-val.warn { color:var(--yellow); }
+    .detail-panel.visible {
+      display: block;
+      animation: fadeIn 0.2s ease;
+    }
 
-/* TX LIST IN BLOCK */
-.tx-list { padding:0; }
-.tx-row {
-  display:grid;
-  grid-template-columns:auto 1fr auto auto;
-  gap:16px;
-  align-items:center;
-  padding:10px 24px;
-  border-bottom:1px solid var(--border);
-  font-size:12px;
-  transition:background .1s;
-}
-.tx-row:last-child { border-bottom:none; }
-.tx-row:hover { background:var(--bg2); cursor:pointer; }
-.tx-type { font-size:10px; letter-spacing:1px; padding:2px 6px; border:1px solid var(--border2); color:var(--dim); }
-.tx-type.coinbase { color:var(--yellow); border-color:rgba(255,216,74,0.3); }
-.tx-type.regular { color:var(--accent); border-color:rgba(74,158,255,0.3); }
+    .detail-head {
+      background: var(--color-bg-tertiary);
+      padding: var(--space-3) var(--space-5);
+      border-bottom: 1px solid var(--color-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
 
-/* BADGE */
-.badge { font-size:10px; padding:1px 6px; letter-spacing:1px; }
-.badge-confirmed { color:var(--green); border:1px solid rgba(61,255,160,0.3); }
-.badge-pending { color:var(--yellow); border:1px solid rgba(255,216,74,0.3); }
+    .detail-head-title {
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
 
-/* GRID TOP */
-.top-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:32px; }
+    .detail-close {
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+      cursor: pointer;
+      padding: 2px var(--space-2);
+      border: 1px solid var(--color-border);
+      background: none;
+      font-family: var(--font-mono);
+      transition: all var(--transition-fast);
+    }
 
-/* SCROLLBAR */
-::-webkit-scrollbar{width:3px;height:3px}
-::-webkit-scrollbar-track{background:var(--bg)}
-::-webkit-scrollbar-thumb{background:var(--border2)}
+    .detail-close:hover {
+      color: var(--color-error);
+      border-color: var(--color-error);
+    }
 
-/* BLINK */
-.blink { animation:blink 1s step-end infinite; }
-@keyframes blink { 0%,100%{opacity:1}50%{opacity:0} }
-</style>
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--color-border);
+    }
+
+    .detail-card {
+      background: var(--color-bg);
+      padding: var(--space-5) var(--space-6);
+    }
+
+    .detail-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: var(--space-2) 0;
+      border-bottom: 1px solid var(--color-border);
+      font-size: var(--font-size-sm);
+    }
+
+    .detail-row:last-child {
+      border-bottom: none;
+    }
+
+    .detail-key {
+      color: var(--color-text-dim);
+      min-width: 140px;
+    }
+
+    .detail-val {
+      color: var(--color-text);
+      text-align: right;
+      word-break: break-all;
+    }
+
+    .detail-val.hl { color: var(--color-accent); }
+    .detail-val.ok { color: var(--color-success); }
+    .detail-val.warn { color: var(--color-warning); }
+
+    /* Transaction list in block detail */
+    .tx-list {
+      padding: 0;
+    }
+
+    .tx-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto auto;
+      gap: var(--space-4);
+      align-items: center;
+      padding: var(--space-2) var(--space-6);
+      border-bottom: 1px solid var(--color-border);
+      font-size: var(--font-size-sm);
+      transition: background var(--transition-fast);
+      cursor: pointer;
+    }
+
+    .tx-row:last-child {
+      border-bottom: none;
+    }
+
+    .tx-row:hover {
+      background: var(--color-bg-secondary);
+    }
+
+    .tx-type {
+      font-size: var(--font-size-xs);
+      letter-spacing: 1px;
+      padding: 2px 6px;
+      border: 1px solid var(--color-border-light);
+      color: var(--color-text-dim);
+    }
+
+    .tx-type.coinbase {
+      color: var(--color-warning);
+      border-color: rgba(255, 216, 74, 0.3);
+    }
+
+    .tx-type.regular {
+      color: var(--color-accent);
+      border-color: rgba(74, 158, 255, 0.3);
+    }
+
+    /* Top Grid */
+    .top-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-6);
+      margin-bottom: var(--space-8);
+    }
+
+    .top-grid > div {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Copy button */
+    .copy-btn {
+      background: none;
+      border: none;
+      color: var(--color-text-dim);
+      cursor: pointer;
+      padding: 2px;
+      font-size: var(--font-size-xs);
+      margin-left: var(--space-2);
+      opacity: 0;
+      transition: all var(--transition-fast);
+    }
+
+    .detail-row:hover .copy-btn,
+    .hash-wrap:hover .copy-btn {
+      opacity: 1;
+    }
+
+    .copy-btn:hover {
+      color: var(--color-accent);
+    }
+
+    /* Export button */
+    .export-btn {
+      font-size: var(--font-size-xs);
+      padding: var(--space-1) var(--space-2);
+      background: none;
+      border: 1px solid var(--color-border);
+      color: var(--color-text-dim);
+      cursor: pointer;
+      font-family: var(--font-mono);
+      letter-spacing: 1px;
+      transition: all var(--transition-base);
+    }
+
+    .export-btn:hover {
+      border-color: var(--color-accent);
+      color: var(--color-accent);
+    }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .search-input {
+        width: 280px;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .top-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .detail-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .search-wrap {
+        display: none;
+      }
+
+      .container {
+        padding: var(--space-4);
+      }
+
+      .tx-row {
+        grid-template-columns: auto 1fr auto;
+        gap: var(--space-2);
+      }
+
+      .tx-row > span:nth-child(3) {
+        display: none;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .detail-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: var(--space-1);
+      }
+
+      .detail-val {
+        text-align: left;
+      }
+    }
+  </style>
 </head>
 <body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
 
-<!-- NAV -->
-<nav>
-  <div class="nav-logo">
-    <span class="fe">Fe</span>
-    FERROUS EXPLORER
-    <div class="dot"></div>
-  </div>
-  <div class="search-wrap">
-    <input class="search-input" id="search-input" placeholder="Search block height, hash, tx id, address..." onkeydown="if(event.key==='Enter')doSearch()">
-    <button class="search-btn" onclick="doSearch()">SEARCH</button>
-  </div>
-</nav>
-
-<!-- STATS BAR -->
-<div class="stats-bar">
-  <div class="stat"><div class="stat-l">Height</div><div class="stat-v hl" id="s-height">14,923</div></div>
-  <div class="stat"><div class="stat-l">Transactions</div><div class="stat-v" id="s-txcount">38,241</div></div>
-  <div class="stat"><div class="stat-l">Difficulty</div><div class="stat-v" id="s-diff">0x1D2AFF</div></div>
-  <div class="stat"><div class="stat-l">Hashrate</div><div class="stat-v" id="s-hash">1.24 GH/s</div></div>
-  <div class="stat"><div class="stat-l">Block Time</div><div class="stat-v">150s target</div></div>
-  <div class="stat"><div class="stat-l">Circulating</div><div class="stat-v" id="s-supply">746,150 FRR</div></div>
-  <div class="stat"><div class="stat-l">Network</div><div class="stat-v warn" style="color:var(--yellow)">TESTNET</div></div>
-</div>
-
-<div class="container">
-
-  <!-- DETAIL PANEL -->
-  <div class="detail-panel" id="detail-panel">
-    <div class="detail-head">
-      <div class="detail-head-title" id="detail-title">Block Detail</div>
-      <div class="detail-close" onclick="closeDetail()">CLOSE ✕</div>
+  <!-- Navigation -->
+  <nav class="ferrous-nav" role="navigation" aria-label="Main navigation">
+    <div class="nav-logo">
+      <a href="index.html" style="display:flex;align-items:center;gap:var(--space-2);color:inherit;text-decoration:none;">
+        <span class="fe">Fe</span>
+        FERROUS EXPLORER
+        <div class="dot" aria-hidden="true"></div>
+      </a>
     </div>
-    <div id="detail-content"></div>
+    <div class="search-wrap" role="search">
+      <label for="search-input" class="sr-only">Search blocks, transactions, or addresses</label>
+      <input 
+        class="search-input" 
+        id="search-input" 
+        type="search"
+        placeholder="Search block height, hash, tx id, address..."
+        aria-describedby="search-hint"
+      >
+      <button class="search-btn" id="search-btn" aria-label="Search">SEARCH</button>
+      <span id="search-hint" class="sr-only">Enter a block height, block hash, transaction ID, or address</span>
+    </div>
+    <div style="display:flex;gap:var(--space-3);align-items:center;">
+      <button class="theme-toggle" aria-label="Toggle theme">[ LIGHT ]</button>
+      <button class="nav-toggle" aria-expanded="false" aria-controls="nav-links">[ MENU ]</button>
+    </div>
+    <ul class="nav-links" id="nav-links">
+      <li><a href="index.html">Home</a></li>
+      <li><a href="ferrous-network.html">Network</a></li>
+      <li><a href="ferrous-explorer.html" aria-current="page" class="active">Explorer</a></li>
+      <li><a href="ferrous-pool.html">Pool</a></li>
+      <li><a href="ferrous-otc.html">OTC</a></li>
+    </ul>
+  </nav>
+
+  <!-- Stats Bar -->
+  <div class="stats-bar" role="region" aria-label="Network statistics">
+    <div class="stat">
+      <div class="stat-label">Height</div>
+      <div class="stat-value highlight" id="s-height">14,923</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Transactions</div>
+      <div class="stat-value" id="s-txcount">38,241</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Difficulty</div>
+      <div class="stat-value" id="s-diff">0x1D2AFF</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Hashrate</div>
+      <div class="stat-value" id="s-hash">1.24 GH/s</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Block Time</div>
+      <div class="stat-value">150s target</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Circulating</div>
+      <div class="stat-value" id="s-supply">746,150 FRR</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Network</div>
+      <div class="stat-value warning">TESTNET</div>
+    </div>
   </div>
 
-  <!-- TOP GRID -->
-  <div class="top-grid" style="align-items:stretch;">
+  <main id="main-content" class="container">
+    <!-- Detail Panel -->
+    <div class="detail-panel" id="detail-panel" role="dialog" aria-labelledby="detail-title" aria-modal="false">
+      <div class="detail-head">
+        <div class="detail-head-title" id="detail-title">Block Detail</div>
+        <button class="detail-close" id="detail-close" aria-label="Close detail panel">CLOSE ×</button>
+      </div>
+      <div id="detail-content"></div>
+    </div>
 
-    <!-- LATEST BLOCKS -->
-    <div style="display:flex;flex-direction:column;">
-      <div class="section-label">Latest Blocks</div>
-      <table class="data-table" style="flex:1;">
+    <!-- Top Grid: Latest Blocks & Transactions -->
+    <div class="top-grid">
+      <!-- Latest Blocks -->
+      <section aria-labelledby="blocks-label">
+        <div class="section-label" id="blocks-label">Latest Blocks</div>
+        <table class="data-table" aria-describedby="blocks-label">
+          <thead>
+            <tr>
+              <th scope="col">Height</th>
+              <th scope="col">Hash</th>
+              <th scope="col">Txs</th>
+              <th scope="col">Size</th>
+              <th scope="col">Time</th>
+              <th scope="col">Miner</th>
+            </tr>
+          </thead>
+          <tbody id="blocks-table"></tbody>
+        </table>
+      </section>
+
+      <!-- Latest Transactions -->
+      <section aria-labelledby="tx-label">
+        <div class="section-label" id="tx-label">Latest Transactions</div>
+        <table class="data-table" aria-describedby="tx-label">
+          <thead>
+            <tr>
+              <th scope="col">TxID</th>
+              <th scope="col">From</th>
+              <th scope="col">Amount</th>
+              <th scope="col">Status</th>
+            </tr>
+          </thead>
+          <tbody id="tx-table"></tbody>
+        </table>
+      </section>
+    </div>
+
+    <!-- All Blocks -->
+    <section aria-labelledby="history-label">
+      <div class="section-label" id="history-label">
+        Block History
+        <button class="export-btn" id="export-blocks" aria-label="Export block history as CSV">EXPORT CSV</button>
+      </div>
+      <table class="data-table" aria-describedby="history-label">
         <thead>
           <tr>
-            <th>Height</th>
-            <th>Hash</th>
-            <th>Txs</th>
-            <th>Size</th>
-            <th>Time</th>
-            <th>Miner</th>
+            <th scope="col">Height</th>
+            <th scope="col">Block Hash</th>
+            <th scope="col">Merkle Root</th>
+            <th scope="col">Transactions</th>
+            <th scope="col">Nonce</th>
+            <th scope="col">Bits</th>
+            <th scope="col">Timestamp</th>
+            <th scope="col">Status</th>
           </tr>
         </thead>
-        <tbody id="blocks-table"></tbody>
+        <tbody id="all-blocks"></tbody>
       </table>
-    </div>
+    </section>
+  </main>
 
-    <!-- LATEST TRANSACTIONS -->
-    <div style="display:flex;flex-direction:column;">
-      <div class="section-label">Latest Transactions</div>
-      <table class="data-table" style="flex:1;">
-        <thead>
-          <tr>
-            <th>TxID</th>
-            <th>From</th>
-            <th>Amount</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody id="tx-table"></tbody>
-      </table>
-    </div>
+  <script src="shared-utils.js"></script>
+  <script>
+    // ═══════════════════════════════════════════════════════════
+    // DATA GENERATION
+    // ═══════════════════════════════════════════════════════════
 
-  </div>
+    let blockHeight = 14923;
+    const miners = ['1Fe3rX...a92b', '1Ax2mP...f31c', '1Bc9kL...d77e', '1Zq8nR...b44f'];
 
-  <!-- ALL BLOCKS -->
-  <div class="section-label">Block History</div>
-  <table class="data-table" style="margin-bottom:32px;">
-    <thead>
-      <tr>
-        <th>Height</th>
-        <th>Block Hash</th>
-        <th>Merkle Root</th>
-        <th>Transactions</th>
-        <th>Nonce</th>
-        <th>Bits</th>
-        <th>Timestamp</th>
-        <th>Status</th>
-      </tr>
-    </thead>
-    <tbody id="all-blocks"></tbody>
-  </table>
+    function makeBlock(height, ageSeconds) {
+      return {
+        height: height,
+        hash: Ferrous.randomHex(64),
+        prevHash: Ferrous.randomHex(64),
+        merkleRoot: Ferrous.randomHex(64),
+        txCount: Ferrous.randomInt(1, 8),
+        size: Ferrous.randomInt(8000, 48000),
+        nonce: Ferrous.randomInt(0, 0xffffffff),
+        bits: '1d2aff' + Ferrous.randomHex(2),
+        timestamp: Math.floor(Date.now() / 1000) - ageSeconds,
+        miner: miners[Ferrous.randomInt(0, miners.length - 1)],
+        confirmed: ageSeconds > 150,
+        txs: []
+      };
+    }
 
-</div>
+    function makeTx(blockHeight, isCoinbase) {
+      return {
+        txid: Ferrous.randomHex(64),
+        blockHeight: blockHeight,
+        from: isCoinbase ? 'COINBASE' : '1' + Ferrous.randomHex(33),
+        to: '1' + Ferrous.randomHex(33),
+        amount: isCoinbase ? 50 : Ferrous.randomFloat(0.1, 20).toFixed(4),
+        fee: isCoinbase ? 0 : Ferrous.randomFloat(0, 0.01).toFixed(6),
+        isCoinbase: isCoinbase,
+        confirmed: true,
+        size: Ferrous.randomInt(200, 700),
+        inputs: isCoinbase ? 0 : Ferrous.randomInt(1, 3),
+        outputs: Ferrous.randomInt(1, 2)
+      };
+    }
 
-<script>
-// ── DATA GENERATION ───────────────────────────────────────
-function randHex(n) {
-  let s=''; const h='0123456789abcdef';
-  for(let i=0;i<n;i++) s+=h[Math.floor(Math.random()*16)];
-  return s;
-}
-function shortHash(h) { return h.slice(0,8)+'...'+h.slice(-6); }
-function shortAddr(a) { return a.slice(0,6)+'...'+a.slice(-4); }
-function timeAgo(s) {
-  if(s<60) return s+'s ago';
-  if(s<3600) return Math.floor(s/60)+'m ago';
-  return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m ago';
-}
-function fmtTime(ts) {
-  return new Date(ts*1000).toISOString().replace('T',' ').slice(0,19)+' UTC';
-}
+    // Generate initial blocks
+    let blocks = Array.from({ length: 20 }, function(_, i) {
+      const b = makeBlock(blockHeight - i, i * 155 + Ferrous.randomInt(0, 30));
+      b.txs = Array.from({ length: b.txCount }, function(_, j) {
+        return makeTx(b.height, j === 0);
+      });
+      return b;
+    });
 
-let blockHeight = 14923;
-const miners = ['1Fe3rX...a92b','1Ax2mP...f31c','1Bc9kL...d77e','1Zq8nR...b44f'];
+    let allTxs = blocks.flatMap(function(b) { return b.txs; });
 
-function makeBlock(height, ageSeconds) {
-  return {
-    height,
-    hash: randHex(64),
-    prevHash: randHex(64),
-    merkleRoot: randHex(64),
-    txCount: Math.floor(Math.random()*8)+1,
-    size: Math.floor(Math.random()*40000)+8000,
-    nonce: Math.floor(Math.random()*0xffffffff),
-    bits: '1d2aff'+randHex(2),
-    timestamp: Math.floor(Date.now()/1000) - ageSeconds,
-    miner: miners[Math.floor(Math.random()*miners.length)],
-    confirmed: ageSeconds > 150,
-    txs: []
-  };
-}
+    // ═══════════════════════════════════════════════════════════
+    // RENDER FUNCTIONS
+    // ═══════════════════════════════════════════════════════════
 
-function makeTx(blockHeight, isCoinbase) {
-  return {
-    txid: randHex(64),
-    blockHeight,
-    from: isCoinbase ? 'COINBASE' : '1'+randHex(33),
-    to: '1'+randHex(33),
-    amount: isCoinbase ? 50 : (Math.random()*20+0.1).toFixed(4),
-    fee: isCoinbase ? 0 : (Math.random()*0.01).toFixed(6),
-    isCoinbase,
-    confirmed: true,
-    size: Math.floor(Math.random()*500)+200,
-    inputs: isCoinbase ? 0 : Math.floor(Math.random()*3)+1,
-    outputs: Math.floor(Math.random()*2)+1
-  };
-}
+    function renderBlocks() {
+      const rows = blocks.slice(0, 8);
+      var html = rows.map(function(b) {
+        return '<tr tabindex="0" role="button" aria-label="View block ' + b.height + '" data-block="' + b.height + '">' +
+          '<td style="color:var(--color-accent)">#' + Ferrous.formatNumber(b.height) + '</td>' +
+          '<td><span class="hash hash-short">' + b.hash + '</span></td>' +
+          '<td>' + b.txCount + '</td>' +
+          '<td>' + (b.size / 1000).toFixed(1) + 'kb</td>' +
+          '<td style="color:var(--color-text-dim)">' + Ferrous.timeAgo(Math.floor(Date.now() / 1000) - b.timestamp) + '</td>' +
+          '<td style="color:var(--color-text-dim)">' + Ferrous.shortAddr(b.miner) + '</td>' +
+          '</tr>';
+      }).join('');
+      document.getElementById('blocks-table').innerHTML = html;
+    }
 
-// Generate blocks
-let blocks = Array.from({length:20}, (_,i) => {
-  const b = makeBlock(blockHeight-i, i*155 + Math.floor(Math.random()*30));
-  b.txs = Array.from({length:b.txCount}, (_, j) => makeTx(b.height, j===0));
-  return b;
-});
+    function renderTxs() {
+      var html = allTxs.slice(0, 8).map(function(t) {
+        var fromDisplay = t.isCoinbase 
+          ? '<span style="color:var(--color-warning)">COINBASE</span>' 
+          : Ferrous.shortAddr(t.from);
+        return '<tr tabindex="0" role="button" aria-label="View transaction" data-txid="' + t.txid + '">' +
+          '<td><span class="hash hash-short">' + t.txid + '</span></td>' +
+          '<td style="color:var(--color-text-dim)">' + fromDisplay + '</td>' +
+          '<td style="color:var(--color-success);white-space:nowrap">' + t.amount + ' FRR</td>' +
+          '<td><span class="badge badge-success">CONFIRMED</span></td>' +
+          '</tr>';
+      }).join('');
+      document.getElementById('tx-table').innerHTML = html;
+    }
 
-let allTxs = blocks.flatMap(b => b.txs);
+    function renderAllBlocks() {
+      var html = blocks.map(function(b) {
+        var statusClass = b.confirmed ? 'badge-success' : 'badge-warning';
+        var statusText = b.confirmed ? 'CONFIRMED' : 'PENDING';
+        return '<tr tabindex="0" role="button" aria-label="View block ' + b.height + '" data-block="' + b.height + '">' +
+          '<td style="color:var(--color-accent)">#' + Ferrous.formatNumber(b.height) + '</td>' +
+          '<td><span class="hash">' + Ferrous.shortHash(b.hash) + '</span></td>' +
+          '<td><span class="hash" style="color:var(--color-text-dim)">' + Ferrous.shortHash(b.merkleRoot) + '</span></td>' +
+          '<td>' + b.txCount + '</td>' +
+          '<td style="color:var(--color-text-dim)">' + Ferrous.formatNumber(b.nonce) + '</td>' +
+          '<td style="color:var(--color-text-dim)">' + b.bits + '</td>' +
+          '<td style="color:var(--color-text-dim)">' + Ferrous.formatTimestamp(b.timestamp) + '</td>' +
+          '<td><span class="badge ' + statusClass + '">' + statusText + '</span></td>' +
+          '</tr>';
+      }).join('');
+      document.getElementById('all-blocks').innerHTML = html;
+    }
 
-// ── RENDER LATEST BLOCKS ──────────────────────────────────
-function renderBlocks() {
-  const rows = blocks.slice(0,8);
-  document.getElementById('blocks-table').innerHTML = rows.map(b => `
-    <tr onclick="showBlock(${b.height})">
-      <td style="color:var(--accent)">#${b.height.toLocaleString()}</td>
-      <td><span class="hash hash-short">${b.hash}</span></td>
-      <td>${b.txCount}</td>
-      <td>${(b.size/1000).toFixed(1)}kb</td>
-      <td style="color:var(--dim)">${timeAgo(Math.floor(Date.now()/1000)-b.timestamp)}</td>
-      <td style="color:var(--dim)">${shortAddr(b.miner)}</td>
-    </tr>`).join('');
-}
+    // ═══════════════════════════════════════════════════════════
+    // DETAIL VIEWS
+    // ═══════════════════════════════════════════════════════════
 
-// ── RENDER LATEST TXS ─────────────────────────────────────
-function renderTxs() {
-  const blockCount = blocks.slice(0,8).length;
-  document.getElementById('tx-table').innerHTML = allTxs.slice(0,blockCount).map(t => `
-    <tr onclick="showTx('${t.txid}')">
-      <td><span class="hash hash-short">${t.txid}</span></td>
-      <td style="color:var(--dim)">${t.isCoinbase ? '<span style="color:var(--yellow)">COINBASE</span>' : shortAddr(t.from)}</td>
-      <td style="color:var(--green);white-space:nowrap">${t.amount} FRR</td>
-      <td><span class="badge badge-confirmed">CONFIRMED</span></td>
-    </tr>`).join('');
-}
+    function showBlock(height) {
+      var b = blocks.find(function(x) { return x.height === height; });
+      if (!b) return;
 
-// ── RENDER ALL BLOCKS ─────────────────────────────────────
-function renderAllBlocks() {
-  document.getElementById('all-blocks').innerHTML = blocks.map(b => `
-    <tr onclick="showBlock(${b.height})">
-      <td style="color:var(--accent)">#${b.height.toLocaleString()}</td>
-      <td><span class="hash">${shortHash(b.hash)}</span></td>
-      <td><span class="hash" style="color:var(--dim)">${shortHash(b.merkleRoot)}</span></td>
-      <td>${b.txCount}</td>
-      <td style="color:var(--dim)">${b.nonce.toLocaleString()}</td>
-      <td style="color:var(--dim)">${b.bits}</td>
-      <td style="color:var(--dim)">${fmtTime(b.timestamp)}</td>
-      <td><span class="badge ${b.confirmed?'badge-confirmed':'badge-pending'}">${b.confirmed?'CONFIRMED':'PENDING'}</span></td>
-    </tr>`).join('');
-}
+      document.getElementById('detail-title').textContent = 'Block #' + Ferrous.formatNumber(height);
 
-// ── SHOW BLOCK DETAIL ─────────────────────────────────────
-function showBlock(height) {
-  const b = blocks.find(x => x.height === height);
-  if(!b) return;
+      var txRows = b.txs.map(function(t) {
+        var typeClass = t.isCoinbase ? 'coinbase' : 'regular';
+        var typeText = t.isCoinbase ? 'COINBASE' : 'TX';
+        var addrDisplay = t.isCoinbase ? '—' : Ferrous.shortAddr(t.from) + ' → ' + Ferrous.shortAddr(t.to);
+        return '<div class="tx-row" tabindex="0" role="button" data-txid="' + t.txid + '">' +
+          '<span class="tx-type ' + typeClass + '">' + typeText + '</span>' +
+          '<span class="hash">' + Ferrous.shortHash(t.txid) + '</span>' +
+          '<span style="color:var(--color-text-dim)">' + addrDisplay + '</span>' +
+          '<span style="color:var(--color-success)">' + t.amount + ' FRR</span>' +
+          '</div>';
+      }).join('');
 
-  document.getElementById('detail-title').textContent = 'Block #' + height.toLocaleString();
+      var html = '<div class="detail-grid">' +
+        '<div class="detail-card">' +
+          '<div class="detail-row"><span class="detail-key">Height</span><span class="detail-val hl">#' + Ferrous.formatNumber(b.height) + '</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Hash</span><span class="detail-val hash-wrap" style="font-size:var(--font-size-xs)">' + b.hash + '<button class="copy-btn" data-copy="' + b.hash + '" aria-label="Copy hash">[ COPY ]</button></span></div>' +
+          '<div class="detail-row"><span class="detail-key">Prev Hash</span><span class="detail-val" style="font-size:var(--font-size-xs);color:var(--color-text-dim)">' + Ferrous.shortHash(b.prevHash) + '</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Merkle Root</span><span class="detail-val" style="font-size:var(--font-size-xs);color:var(--color-text-dim)">' + Ferrous.shortHash(b.merkleRoot) + '</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Timestamp</span><span class="detail-val">' + Ferrous.formatTimestamp(b.timestamp) + '</span></div>' +
+        '</div>' +
+        '<div class="detail-card">' +
+          '<div class="detail-row"><span class="detail-key">Transactions</span><span class="detail-val">' + b.txCount + '</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Size</span><span class="detail-val">' + (b.size / 1000).toFixed(2) + ' KB</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Nonce</span><span class="detail-val">' + Ferrous.formatNumber(b.nonce) + '</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Bits</span><span class="detail-val">' + b.bits + '</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Miner</span><span class="detail-val hl">' + b.miner + '</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val ok">CONFIRMED</span></div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="border-top:1px solid var(--color-border)">' +
+        '<div style="padding:var(--space-2) var(--space-6);font-size:var(--font-size-xs);color:var(--color-text-dim);letter-spacing:2px;text-transform:uppercase;border-bottom:1px solid var(--color-border);background:var(--color-bg-tertiary)">Transactions (' + b.txCount + ')</div>' +
+        '<div class="tx-list">' + txRows + '</div>' +
+      '</div>';
 
-  const txRows = b.txs.map(t => `
-    <div class="tx-row" onclick="showTx('${t.txid}')">
-      <span class="tx-type ${t.isCoinbase?'coinbase':'regular'}">${t.isCoinbase?'COINBASE':'TX'}</span>
-      <span class="hash">${shortHash(t.txid)}</span>
-      <span style="color:var(--dim)">${t.isCoinbase?'—':shortAddr(t.from)+' → '+shortAddr(t.to)}</span>
-      <span style="color:var(--green)">${t.amount} FRR</span>
-    </div>`).join('');
+      document.getElementById('detail-content').innerHTML = html;
+      showDetail('Block #' + Ferrous.formatNumber(height));
+      attachCopyHandlers();
+      attachTxHandlers();
+    }
 
-  document.getElementById('detail-content').innerHTML = `
-    <div class="detail-grid">
-      <div class="detail-card">
-        <div class="detail-row"><span class="detail-key">Height</span><span class="detail-val hl">#${b.height.toLocaleString()}</span></div>
-        <div class="detail-row"><span class="detail-key">Hash</span><span class="detail-val" style="font-size:10px">${b.hash}</span></div>
-        <div class="detail-row"><span class="detail-key">Prev Hash</span><span class="detail-val" style="font-size:10px;color:var(--dim)">${shortHash(b.prevHash)}</span></div>
-        <div class="detail-row"><span class="detail-key">Merkle Root</span><span class="detail-val" style="font-size:10px;color:var(--dim)">${shortHash(b.merkleRoot)}</span></div>
-        <div class="detail-row"><span class="detail-key">Timestamp</span><span class="detail-val">${fmtTime(b.timestamp)}</span></div>
-      </div>
-      <div class="detail-card">
-        <div class="detail-row"><span class="detail-key">Transactions</span><span class="detail-val">${b.txCount}</span></div>
-        <div class="detail-row"><span class="detail-key">Size</span><span class="detail-val">${(b.size/1000).toFixed(2)} KB</span></div>
-        <div class="detail-row"><span class="detail-key">Nonce</span><span class="detail-val">${b.nonce.toLocaleString()}</span></div>
-        <div class="detail-row"><span class="detail-key">Bits</span><span class="detail-val">${b.bits}</span></div>
-        <div class="detail-row"><span class="detail-key">Miner</span><span class="detail-val hl">${b.miner}</span></div>
-        <div class="detail-row"><span class="detail-key">Status</span><span class="detail-val ok">CONFIRMED</span></div>
-      </div>
-    </div>
-    <div style="border-top:1px solid var(--border)">
-      <div style="padding:10px 24px;font-size:10px;color:var(--dim);letter-spacing:2px;text-transform:uppercase;border-bottom:1px solid var(--border);background:var(--bg3)">Transactions (${b.txCount})</div>
-      <div class="tx-list">${txRows}</div>
-    </div>`;
+    function showTx(txid) {
+      var t = allTxs.find(function(x) { return x.txid === txid; });
+      if (!t) return;
 
-  showDetail('Block #' + height.toLocaleString());
-}
+      var typeClass = t.isCoinbase ? 'warn' : 'hl';
+      var typeText = t.isCoinbase ? 'COINBASE' : 'REGULAR';
+      var fromClass = t.isCoinbase ? 'warn' : '';
+      var fromDisplay = t.isCoinbase ? 'COINBASE' : t.from;
+      var feeDisplay = t.isCoinbase ? '—' : t.fee + ' FRR';
 
-// ── SHOW TX DETAIL ────────────────────────────────────────
-function showTx(txid) {
-  const t = allTxs.find(x => x.txid === txid);
-  if(!t) return;
+      var html = '<div class="detail-grid">' +
+        '<div class="detail-card">' +
+          '<div class="detail-row"><span class="detail-key">TxID</span><span class="detail-val hl hash-wrap" style="font-size:var(--font-size-xs)">' + t.txid + '<button class="copy-btn" data-copy="' + t.txid + '" aria-label="Copy transaction ID">[ COPY ]</button></span></div>' +
+          '<div class="detail-row"><span class="detail-key">Block</span><span class="detail-val"><a href="#" class="block-link" data-block="' + t.blockHeight + '">#' + Ferrous.formatNumber(t.blockHeight) + '</a></span></div>' +
+          '<div class="detail-row"><span class="detail-key">Type</span><span class="detail-val ' + typeClass + '">' + typeText + '</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val ok">CONFIRMED</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Size</span><span class="detail-val">' + t.size + ' bytes</span></div>' +
+        '</div>' +
+        '<div class="detail-card">' +
+          '<div class="detail-row"><span class="detail-key">From</span><span class="detail-val ' + fromClass + '">' + fromDisplay + '</span></div>' +
+          '<div class="detail-row"><span class="detail-key">To</span><span class="detail-val">' + t.to + '</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Amount</span><span class="detail-val ok">' + t.amount + ' FRR</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Fee</span><span class="detail-val">' + feeDisplay + '</span></div>' +
+          '<div class="detail-row"><span class="detail-key">Inputs / Outputs</span><span class="detail-val">' + t.inputs + ' / ' + t.outputs + '</span></div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="padding:var(--space-4) var(--space-6);background:var(--color-bg-tertiary);border-top:1px solid var(--color-border);font-size:var(--font-size-sm);color:var(--color-text-dim);">' +
+        '<span style="color:var(--color-accent)">NOTE</span> — Ring CT enabled: amounts and sender identity are confidential on mainnet. Testnet shows plaintext values for debugging.' +
+      '</div>';
 
-  document.getElementById('detail-content').innerHTML = `
-    <div class="detail-grid">
-      <div class="detail-card">
-        <div class="detail-row"><span class="detail-key">TxID</span><span class="detail-val hl" style="font-size:10px">${t.txid}</span></div>
-        <div class="detail-row"><span class="detail-key">Block</span><span class="detail-val"><a href="#" onclick="showBlock(${t.blockHeight})">#${t.blockHeight.toLocaleString()}</a></span></div>
-        <div class="detail-row"><span class="detail-key">Type</span><span class="detail-val ${t.isCoinbase?'warn':'hl'}">${t.isCoinbase?'COINBASE':'REGULAR'}</span></div>
-        <div class="detail-row"><span class="detail-key">Status</span><span class="detail-val ok">CONFIRMED</span></div>
-        <div class="detail-row"><span class="detail-key">Size</span><span class="detail-val">${t.size} bytes</span></div>
-      </div>
-      <div class="detail-card">
-        <div class="detail-row"><span class="detail-key">From</span><span class="detail-val ${t.isCoinbase?'warn':''}">${t.isCoinbase?'COINBASE':t.from}</span></div>
-        <div class="detail-row"><span class="detail-key">To</span><span class="detail-val">${t.to}</span></div>
-        <div class="detail-row"><span class="detail-key">Amount</span><span class="detail-val ok">${t.amount} FRR</span></div>
-        <div class="detail-row"><span class="detail-key">Fee</span><span class="detail-val">${t.isCoinbase?'—':t.fee+' FRR'}</span></div>
-        <div class="detail-row"><span class="detail-key">Inputs / Outputs</span><span class="detail-val">${t.inputs} / ${t.outputs}</span></div>
-      </div>
-    </div>
-    <div style="padding:16px 24px;background:var(--bg3);border-top:1px solid var(--border);font-size:11px;color:var(--dim);">
-      <span style="color:var(--accent)">NOTE</span> — Ring CT enabled: amounts and sender identity are confidential on mainnet. Testnet shows plaintext values for debugging.
-    </div>`;
+      document.getElementById('detail-content').innerHTML = html;
+      showDetail('Transaction');
+      attachCopyHandlers();
+      attachBlockLinks();
+    }
 
-  showDetail('Transaction');
-}
+    function showDetail(title) {
+      document.getElementById('detail-title').textContent = title;
+      var panel = document.getElementById('detail-panel');
+      panel.classList.add('visible');
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      panel.querySelector('.detail-close').focus();
+    }
 
-function showDetail(title) {
-  document.getElementById('detail-title').textContent = title;
-  const panel = document.getElementById('detail-panel');
-  panel.classList.add('visible');
-  panel.scrollIntoView({ behavior:'smooth', block:'start' });
-}
+    function closeDetail() {
+      document.getElementById('detail-panel').classList.remove('visible');
+    }
 
-function closeDetail() {
-  document.getElementById('detail-panel').classList.remove('visible');
-}
+    // ═══════════════════════════════════════════════════════════
+    // EVENT HANDLERS
+    // ═══════════════════════════════════════════════════════════
 
-// ── SEARCH ────────────────────────────────────────────────
-function doSearch() {
-  const q = document.getElementById('search-input').value.trim();
-  if(!q) return;
-  const num = parseInt(q);
-  if(!isNaN(num)) { showBlock(num); return; }
-  const byHash = blocks.find(b => b.hash.startsWith(q.toLowerCase()));
-  if(byHash) { showBlock(byHash.height); return; }
-  const byTx = allTxs.find(t => t.txid.startsWith(q.toLowerCase()));
-  if(byTx) { showTx(byTx.txid); return; }
-  alert('Not found: ' + q);
-}
+    function attachCopyHandlers() {
+      document.querySelectorAll('.copy-btn[data-copy]').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          Ferrous.copyToClipboard(btn.getAttribute('data-copy'));
+        });
+      });
+    }
 
-// ── LIVE TICK ─────────────────────────────────────────────
-let tickSec = 0;
-function tick() {
-  tickSec++;
-  if(tickSec % 150 === 0) {
-    blockHeight++;
-    const newBlock = makeBlock(blockHeight, 0);
-    newBlock.txs = Array.from({length:newBlock.txCount}, (_,j) => makeTx(newBlock.height, j===0));
-    blocks.unshift(newBlock);
-    blocks = blocks.slice(0, 20);
-    allTxs = blocks.flatMap(b => b.txs);
-    document.getElementById('s-height').textContent = blockHeight.toLocaleString();
-    document.getElementById('s-supply').textContent = (blockHeight * 50).toLocaleString() + ' FRR';
-    renderBlocks();
-    renderTxs();
-    renderAllBlocks();
-  }
-  document.getElementById('s-hash').textContent = (1.1+Math.random()*.3).toFixed(2)+' GH/s';
-}
+    function attachTxHandlers() {
+      document.querySelectorAll('.tx-row[data-txid]').forEach(function(row) {
+        row.addEventListener('click', function() {
+          showTx(row.getAttribute('data-txid'));
+        });
+        row.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            showTx(row.getAttribute('data-txid'));
+          }
+        });
+      });
+    }
 
-// INIT
-renderBlocks();
-renderTxs();
-renderAllBlocks();
-setInterval(tick, 1000);
-</script>
+    function attachBlockLinks() {
+      document.querySelectorAll('.block-link[data-block]').forEach(function(link) {
+        link.addEventListener('click', function(e) {
+          e.preventDefault();
+          showBlock(parseInt(link.getAttribute('data-block')));
+        });
+      });
+    }
+
+    function attachTableRowHandlers() {
+      // Block rows
+      document.querySelectorAll('tr[data-block]').forEach(function(row) {
+        row.addEventListener('click', function() {
+          showBlock(parseInt(row.getAttribute('data-block')));
+        });
+        row.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            showBlock(parseInt(row.getAttribute('data-block')));
+          }
+        });
+      });
+
+      // Tx rows in tables
+      document.querySelectorAll('tr[data-txid]').forEach(function(row) {
+        row.addEventListener('click', function() {
+          showTx(row.getAttribute('data-txid'));
+        });
+        row.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            showTx(row.getAttribute('data-txid'));
+          }
+        });
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // SEARCH
+    // ═══════════════════════════════════════════════════════════
+
+    function doSearch() {
+      var q = document.getElementById('search-input').value.trim();
+      if (!q) return;
+
+      var num = parseInt(q);
+      if (!isNaN(num)) {
+        showBlock(num);
+        return;
+      }
+
+      var byHash = blocks.find(function(b) {
+        return b.hash.toLowerCase().startsWith(q.toLowerCase());
+      });
+      if (byHash) {
+        showBlock(byHash.height);
+        return;
+      }
+
+      var byTx = allTxs.find(function(t) {
+        return t.txid.toLowerCase().startsWith(q.toLowerCase());
+      });
+      if (byTx) {
+        showTx(byTx.txid);
+        return;
+      }
+
+      Ferrous.showToast('Not found: ' + q, 'warning');
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // LIVE UPDATES (Throttled)
+    // ═══════════════════════════════════════════════════════════
+
+    var tickSec = 0;
+    var updateStats = Ferrous.throttle(function() {
+      document.getElementById('s-hash').textContent = Ferrous.randomFloat(1.1, 1.4).toFixed(2) + ' GH/s';
+    }, 1000);
+
+    function tick() {
+      tickSec++;
+      
+      // New block every ~150 seconds
+      if (tickSec % 150 === 0) {
+        blockHeight++;
+        var newBlock = makeBlock(blockHeight, 0);
+        newBlock.txs = Array.from({ length: newBlock.txCount }, function(_, j) {
+          return makeTx(newBlock.height, j === 0);
+        });
+        blocks.unshift(newBlock);
+        blocks = blocks.slice(0, 20);
+        allTxs = blocks.flatMap(function(b) { return b.txs; });
+        
+        document.getElementById('s-height').textContent = Ferrous.formatNumber(blockHeight);
+        document.getElementById('s-supply').textContent = Ferrous.formatNumber(blockHeight * 50) + ' FRR';
+        
+        renderBlocks();
+        renderTxs();
+        renderAllBlocks();
+        attachTableRowHandlers();
+        
+        Ferrous.showToast('New block #' + blockHeight, 'success');
+      }
+
+      updateStats();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // EXPORT
+    // ═══════════════════════════════════════════════════════════
+
+    function exportBlocks() {
+      var data = blocks.map(function(b) {
+        return {
+          height: b.height,
+          hash: b.hash,
+          merkleRoot: b.merkleRoot,
+          txCount: b.txCount,
+          nonce: b.nonce,
+          bits: b.bits,
+          timestamp: Ferrous.formatTimestamp(b.timestamp),
+          status: b.confirmed ? 'Confirmed' : 'Pending'
+        };
+      });
+
+      Ferrous.exportCSV(data, 'ferrous-blocks.csv', [
+        { key: 'height', label: 'Height' },
+        { key: 'hash', label: 'Block Hash' },
+        { key: 'merkleRoot', label: 'Merkle Root' },
+        { key: 'txCount', label: 'Transactions' },
+        { key: 'nonce', label: 'Nonce' },
+        { key: 'bits', label: 'Bits' },
+        { key: 'timestamp', label: 'Timestamp' },
+        { key: 'status', label: 'Status' }
+      ]);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // INITIALIZATION
+    // ═══════════════════════════════════════════════════════════
+
+    document.addEventListener('DOMContentLoaded', function() {
+      // Render initial data
+      renderBlocks();
+      renderTxs();
+      renderAllBlocks();
+      attachTableRowHandlers();
+
+      // Search handlers
+      document.getElementById('search-btn').addEventListener('click', doSearch);
+      document.getElementById('search-input').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') doSearch();
+      });
+
+      // Close detail panel
+      document.getElementById('detail-close').addEventListener('click', closeDetail);
+
+      // Export button
+      document.getElementById('export-blocks').addEventListener('click', exportBlocks);
+
+      // Keyboard shortcut for search
+      Ferrous.registerShortcut('/', function() {
+        document.getElementById('search-input').focus();
+      }, 'Focus search');
+
+      // Start live updates
+      setInterval(tick, 1000);
+    });
+  </script>
 </body>
 </html>

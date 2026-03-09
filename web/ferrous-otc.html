@@ -1,545 +1,946 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ferrous OTC</title>
-<style>
-:root {
-  --bg: #0a0e1a;
-  --bg2: #0d1120;
-  --border: #1a2035;
-  --border2: #242b3d;
-  --text: #c5cdd8;
-  --dim: #4a5568;
-  --accent: #4a9eff;
-  --green: #3dffa0;
-  --red: #ff4a6a;
-  --yellow: #ffd84a;
-  --mono: 'Courier New', Courier, monospace;
-}
-* { margin:0; padding:0; box-sizing:border-box; }
-body { background:var(--bg); color:var(--text); font-family:var(--mono); font-size:13px; min-height:100vh; }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Ferrous OTC - Peer-to-peer trading for FRR/USDT on the Ferrous Network testnet">
+  <meta name="theme-color" content="#0a0e1a">
+  <title>Ferrous OTC</title>
+  <link rel="stylesheet" href="shared-styles.css">
+  <style>
+    /* OTC-specific styles */
 
-/* NAV */
-nav {
-  background:rgba(10,14,26,0.97);
-  border-bottom:1px solid var(--border);
-  padding:0 32px;
-  height:44px;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-}
-.nav-logo { color:var(--accent); letter-spacing:2px; font-size:12px; display:flex; align-items:center; gap:8px; }
-.dot { width:5px;height:5px;background:var(--green);border-radius:50%;animation:pulse 2s ease-in-out infinite; }
-@keyframes pulse { 0%,100%{opacity:1;box-shadow:0 0 4px var(--green)}50%{opacity:.4;box-shadow:none} }
-.nav-right { display:flex; align-items:center; gap:24px; font-size:11px; color:var(--dim); }
-.nav-right span { color:var(--text); }
+    /* Layout */
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 1px;
+      background: var(--color-border);
+      min-height: calc(100vh - 44px);
+    }
 
-/* LAYOUT */
-.layout { display:grid; grid-template-columns:1fr 380px; gap:1px; background:var(--border); min-height:calc(100vh - 44px); }
-.main { background:var(--bg); }
-.sidebar { background:var(--bg); }
+    .main-panel { background: var(--color-bg); }
+    .sidebar { background: var(--color-bg); }
 
-/* PANEL */
-.panel { border-bottom:1px solid var(--border); }
-.panel-head {
-  padding:12px 20px;
-  font-size:11px;
-  color:var(--dim);
-  letter-spacing:2px;
-  text-transform:uppercase;
-  border-bottom:1px solid var(--border);
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-}
-.panel-head .badge {
-  font-size:10px;
-  padding:1px 6px;
-  border:1px solid var(--border2);
-  color:var(--dim);
-  letter-spacing:0;
-}
+    /* Panel */
+    .panel {
+      border-bottom: 1px solid var(--color-border);
+    }
 
-/* ORDER BOOK */
-.orderbook { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--border); }
-.ob-side { background:var(--bg); }
-.ob-head { display:grid; grid-template-columns:1fr 1fr 1fr; padding:6px 16px; font-size:10px; color:var(--dim); letter-spacing:1px; border-bottom:1px solid var(--border); }
-.ob-row { display:grid; grid-template-columns:1fr 1fr 1fr; padding:5px 16px; font-size:12px; border-bottom:1px solid rgba(26,32,53,0.5); cursor:pointer; transition:background .1s; }
-.ob-row:hover { background:var(--bg2); }
-.ob-row.ask .price { color:var(--red); }
-.ob-row.bid .price { color:var(--green); }
-.ob-row .amount { color:var(--text); }
-.ob-row .total { color:var(--dim); }
+    .panel-head {
+      padding: var(--space-3) var(--space-5);
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--color-border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
 
-/* SPREAD */
-.spread-row {
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  padding:8px 16px;
-  background:#060912;
-  font-size:12px;
-  border-bottom:1px solid var(--border);
-}
-.spread-price { font-size:18px; color:#fff; }
-.spread-label { font-size:10px; color:var(--dim); }
+    .panel-head .badge {
+      font-size: var(--font-size-xs);
+      padding: 1px 6px;
+      border: 1px solid var(--color-border-light);
+      color: var(--color-text-dim);
+      letter-spacing: 0;
+    }
 
-/* TRADES */
-.trades-table { width:100%; }
-.trades-table th { padding:6px 16px; font-size:10px; color:var(--dim); font-weight:normal; letter-spacing:1px; border-bottom:1px solid var(--border); text-align:left; }
-.trades-table td { padding:5px 16px; font-size:12px; border-bottom:1px solid rgba(26,32,53,0.4); }
-.trades-table tr:hover td { background:var(--bg2); }
+    /* Order Book */
+    .orderbook {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--color-border);
+    }
 
-/* FORM */
-.form-wrap { padding:20px; }
-.tabs { display:flex; margin-bottom:16px; border:1px solid var(--border); }
-.tab { flex:1; padding:8px; text-align:center; font-size:11px; letter-spacing:1px; cursor:pointer; color:var(--dim); transition:all .2s; }
-.tab.buy.active { background:rgba(61,255,160,0.1); color:var(--green); border-bottom:2px solid var(--green); }
-.tab.sell.active { background:rgba(255,74,106,0.1); color:var(--red); border-bottom:2px solid var(--red); }
-.tab:hover { color:var(--text); }
+    .ob-side { background: var(--color-bg); }
 
-.form-row { margin-bottom:12px; }
-.form-label { font-size:10px; color:var(--dim); letter-spacing:1px; text-transform:uppercase; margin-bottom:6px; display:flex; justify-content:space-between; }
-.form-label span { color:var(--accent); }
-.form-input {
-  width:100%;
-  background:#060912;
-  border:1px solid var(--border);
-  color:var(--text);
-  font-family:var(--mono);
-  font-size:13px;
-  padding:9px 12px;
-  outline:none;
-  transition:border-color .2s;
-}
-.form-input:focus { border-color:var(--accent); }
-.form-input::placeholder { color:var(--dim); }
+    .ob-head {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      padding: var(--space-2) var(--space-4);
+      font-size: var(--font-size-xs);
+      color: var(--color-text-dim);
+      letter-spacing: 1px;
+      border-bottom: 1px solid var(--color-border);
+    }
 
-.input-group { position:relative; }
-.input-unit { position:absolute; right:12px; top:50%; transform:translateY(-50%); color:var(--dim); font-size:11px; }
+    .ob-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      padding: var(--space-1) var(--space-4);
+      font-size: var(--font-size-sm);
+      border-bottom: 1px solid rgba(26, 32, 53, 0.5);
+      cursor: pointer;
+      transition: background var(--transition-fast);
+    }
 
-.slider-wrap { padding:4px 0; }
-.slider { width:100%; -webkit-appearance:none; height:2px; background:var(--border2); outline:none; }
-.slider::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:12px; background:var(--accent); cursor:pointer; }
-.pct-labels { display:flex; justify-content:space-between; font-size:10px; color:var(--dim); margin-top:4px; }
+    .ob-row:hover { background: var(--color-bg-secondary); }
+    .ob-row:focus { background: var(--color-bg-secondary); outline: none; }
 
-.btn-buy {
-  width:100%; padding:11px; background:var(--green); color:#0a0e1a;
-  font-family:var(--mono); font-size:12px; letter-spacing:2px; text-transform:uppercase;
-  border:none; cursor:pointer; transition:opacity .2s; margin-top:4px;
-}
-.btn-buy:hover { opacity:.85; }
-.btn-sell {
-  width:100%; padding:11px; background:var(--red); color:#fff;
-  font-family:var(--mono); font-size:12px; letter-spacing:2px; text-transform:uppercase;
-  border:none; cursor:pointer; transition:opacity .2s; margin-top:4px;
-}
-.btn-sell:hover { opacity:.85; }
+    .ob-row.ask .price { color: var(--color-error); }
+    .ob-row.bid .price { color: var(--color-success); }
+    .ob-row .amount { color: var(--color-text); }
+    .ob-row .total { color: var(--color-text-dim); }
 
-.order-summary {
-  background:#060912;
-  border:1px solid var(--border);
-  padding:12px;
-  margin-top:12px;
-  font-size:12px;
-}
-.summary-row { display:flex; justify-content:space-between; padding:3px 0; color:var(--dim); }
-.summary-row span:last-child { color:var(--text); }
-.summary-row.total span:last-child { color:#fff; font-size:13px; }
+    /* Spread */
+    .spread-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: var(--space-2) var(--space-4);
+      background: var(--color-bg-tertiary);
+      font-size: var(--font-size-sm);
+      border-bottom: 1px solid var(--color-border);
+    }
 
-/* MY ORDERS */
-.my-orders { padding:0; }
-.order-card {
-  display:grid;
-  grid-template-columns:auto 1fr auto;
-  gap:12px;
-  align-items:center;
-  padding:12px 20px;
-  border-bottom:1px solid var(--border);
-  transition:background .1s;
-}
-.order-card:hover { background:var(--bg2); }
-.order-side { font-size:10px; letter-spacing:1px; padding:2px 6px; }
-.order-side.buy { color:var(--green); border:1px solid rgba(61,255,160,0.3); }
-.order-side.sell { color:var(--red); border:1px solid rgba(255,74,106,0.3); }
-.order-info { font-size:12px; }
-.order-price { color:var(--text); }
-.order-amount { color:var(--dim); font-size:11px; margin-top:2px; }
-.order-cancel { font-size:10px; color:var(--dim); cursor:pointer; padding:4px 8px; border:1px solid var(--border); transition:all .2s; }
-.order-cancel:hover { color:var(--red); border-color:var(--red); }
+    .spread-price {
+      font-size: var(--font-size-xl);
+      color: var(--color-white);
+    }
 
-/* STATS BAR */
-.stats-bar {
-  display:flex;
-  gap:0;
-  border-bottom:1px solid var(--border);
-  background:#060912;
-}
-.stat { padding:10px 20px; border-right:1px solid var(--border); font-size:11px; }
-.stat-l { color:var(--dim); margin-bottom:2px; font-size:10px; letter-spacing:1px; }
-.stat-v { color:var(--text); }
-.stat-v.up { color:var(--green); }
-.stat-v.dn { color:var(--red); }
+    .spread-label {
+      font-size: var(--font-size-xs);
+      color: var(--color-text-dim);
+    }
 
-/* NOTICE */
-.notice {
-  margin:16px 20px;
-  padding:10px 14px;
-  border:1px solid rgba(255,216,74,0.2);
-  background:rgba(255,216,74,0.03);
-  font-size:11px;
-  color:var(--dim);
-  line-height:1.7;
-}
-.notice span { color:var(--yellow); }
+    /* Trades Table */
+    .trades-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
 
-/* SCROLLBAR */
-::-webkit-scrollbar{width:3px;height:3px}
-::-webkit-scrollbar-track{background:var(--bg)}
-::-webkit-scrollbar-thumb{background:var(--border2)}
-</style>
+    .trades-table th {
+      padding: var(--space-2) var(--space-4);
+      font-size: var(--font-size-xs);
+      color: var(--color-text-dim);
+      font-weight: normal;
+      letter-spacing: 1px;
+      border-bottom: 1px solid var(--color-border);
+      text-align: left;
+    }
+
+    .trades-table td {
+      padding: var(--space-1) var(--space-4);
+      font-size: var(--font-size-sm);
+      border-bottom: 1px solid rgba(26, 32, 53, 0.4);
+    }
+
+    .trades-table tbody tr {
+      transition: background var(--transition-fast);
+    }
+
+    .trades-table tbody tr:hover td {
+      background: var(--color-bg-secondary);
+    }
+
+    /* Form */
+    .form-wrap {
+      padding: var(--space-5);
+    }
+
+    .tabs {
+      display: flex;
+      margin-bottom: var(--space-4);
+      border: 1px solid var(--color-border);
+    }
+
+    .tab {
+      flex: 1;
+      padding: var(--space-2);
+      text-align: center;
+      font-size: var(--font-size-sm);
+      letter-spacing: 1px;
+      cursor: pointer;
+      color: var(--color-text-dim);
+      transition: all var(--transition-base);
+      background: none;
+      border: none;
+      font-family: var(--font-mono);
+    }
+
+    .tab:hover { color: var(--color-text); }
+
+    .tab.buy.active {
+      background: rgba(61, 255, 160, 0.1);
+      color: var(--color-success);
+      border-bottom: 2px solid var(--color-success);
+    }
+
+    .tab.sell.active {
+      background: rgba(255, 74, 106, 0.1);
+      color: var(--color-error);
+      border-bottom: 2px solid var(--color-error);
+    }
+
+    .form-row {
+      margin-bottom: var(--space-3);
+    }
+
+    .form-label {
+      font-size: var(--font-size-xs);
+      color: var(--color-text-dim);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      margin-bottom: var(--space-2);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .form-label span {
+      color: var(--color-accent);
+    }
+
+    .input-group {
+      position: relative;
+    }
+
+    .input-unit {
+      position: absolute;
+      right: var(--space-3);
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--color-text-dim);
+      font-size: var(--font-size-sm);
+      pointer-events: none;
+    }
+
+    .form-input {
+      padding-right: 60px;
+    }
+
+    .slider-wrap {
+      padding: var(--space-1) 0;
+    }
+
+    .slider {
+      width: 100%;
+      -webkit-appearance: none;
+      height: 2px;
+      background: var(--color-border-light);
+      outline: none;
+    }
+
+    .slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      background: var(--color-accent);
+      cursor: pointer;
+    }
+
+    .slider::-moz-range-thumb {
+      width: 12px;
+      height: 12px;
+      background: var(--color-accent);
+      cursor: pointer;
+      border: none;
+    }
+
+    .slider:focus {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 2px;
+    }
+
+    .pct-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: var(--font-size-xs);
+      color: var(--color-text-dim);
+      margin-top: var(--space-1);
+    }
+
+    .btn-buy {
+      width: 100%;
+      padding: var(--space-3);
+      background: var(--color-success);
+      color: var(--color-bg);
+      font-family: var(--font-mono);
+      font-size: var(--font-size-sm);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      border: none;
+      cursor: pointer;
+      transition: opacity var(--transition-base);
+      margin-top: var(--space-1);
+    }
+
+    .btn-buy:hover:not(:disabled) { opacity: 0.85; }
+    .btn-buy:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-sell {
+      width: 100%;
+      padding: var(--space-3);
+      background: var(--color-error);
+      color: var(--color-white);
+      font-family: var(--font-mono);
+      font-size: var(--font-size-sm);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      border: none;
+      cursor: pointer;
+      transition: opacity var(--transition-base);
+      margin-top: var(--space-1);
+    }
+
+    .btn-sell:hover:not(:disabled) { opacity: 0.85; }
+    .btn-sell:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .order-summary {
+      background: var(--color-bg-tertiary);
+      border: 1px solid var(--color-border);
+      padding: var(--space-3);
+      margin-top: var(--space-3);
+      font-size: var(--font-size-sm);
+    }
+
+    .summary-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 3px 0;
+      color: var(--color-text-dim);
+    }
+
+    .summary-row span:last-child {
+      color: var(--color-text);
+    }
+
+    .summary-row.total span:last-child {
+      color: var(--color-white);
+      font-size: var(--font-size-base);
+    }
+
+    /* My Orders */
+    .my-orders {
+      padding: 0;
+    }
+
+    .order-card {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: var(--space-3);
+      align-items: center;
+      padding: var(--space-3) var(--space-5);
+      border-bottom: 1px solid var(--color-border);
+      transition: background var(--transition-fast);
+    }
+
+    .order-card:hover {
+      background: var(--color-bg-secondary);
+    }
+
+    .order-side {
+      font-size: var(--font-size-xs);
+      letter-spacing: 1px;
+      padding: 2px 6px;
+    }
+
+    .order-side.buy {
+      color: var(--color-success);
+      border: 1px solid rgba(61, 255, 160, 0.3);
+    }
+
+    .order-side.sell {
+      color: var(--color-error);
+      border: 1px solid rgba(255, 74, 106, 0.3);
+    }
+
+    .order-info {
+      font-size: var(--font-size-sm);
+    }
+
+    .order-price {
+      color: var(--color-text);
+    }
+
+    .order-amount {
+      color: var(--color-text-dim);
+      font-size: var(--font-size-sm);
+      margin-top: 2px;
+    }
+
+    .order-cancel {
+      font-size: var(--font-size-xs);
+      color: var(--color-text-dim);
+      cursor: pointer;
+      padding: var(--space-1) var(--space-2);
+      border: 1px solid var(--color-border);
+      transition: all var(--transition-base);
+      background: none;
+      font-family: var(--font-mono);
+    }
+
+    .order-cancel:hover {
+      color: var(--color-error);
+      border-color: var(--color-error);
+    }
+
+    /* Notice */
+    .notice {
+      margin: var(--space-4) var(--space-5);
+      padding: var(--space-2) var(--space-3);
+      border: 1px solid rgba(255, 216, 74, 0.2);
+      background: rgba(255, 216, 74, 0.03);
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+      line-height: var(--line-height-relaxed);
+    }
+
+    .notice span {
+      color: var(--color-warning);
+    }
+
+    /* Market Info */
+    .market-info {
+      padding: var(--space-4) var(--space-5);
+      font-size: var(--font-size-sm);
+    }
+
+    .market-row {
+      display: flex;
+      justify-content: space-between;
+      padding: var(--space-2) 0;
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .market-row:last-child {
+      border-bottom: none;
+    }
+
+    .market-label {
+      color: var(--color-text-dim);
+    }
+
+    /* Nav right section */
+    .nav-right {
+      display: flex;
+      align-items: center;
+      gap: var(--space-6);
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+    }
+
+    .nav-right span {
+      color: var(--color-text);
+    }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .layout {
+        grid-template-columns: 1fr 320px;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .nav-right {
+        display: none;
+      }
+
+      .orderbook {
+        grid-template-columns: 1fr;
+      }
+
+      .ob-side:first-child {
+        border-bottom: 1px solid var(--color-border);
+      }
+    }
+
+    @media (max-width: 480px) {
+      .stats-bar {
+        flex-wrap: wrap;
+      }
+
+      .stat {
+        flex: 1 1 50%;
+        min-width: 100px;
+      }
+    }
+  </style>
 </head>
 <body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
 
-<nav>
-  <div class="nav-logo">
-    <span style="border:1px solid var(--accent);padding:1px 6px;color:#fff">Fe</span>
-    FERROUS OTC
-    <div class="dot"></div>
-  </div>
-  <div class="nav-right">
-    <span style="color:var(--dim)">pair</span>
-    <span>FRR / USDT</span>
-    <span style="color:var(--dim)">network</span>
-    <span style="color:var(--yellow)">TESTNET</span>
-    <span style="color:var(--dim)">address</span>
-    <span style="color:var(--accent)">1Fe3r...a92b</span>
-  </div>
-</nav>
-
-<!-- STATS BAR -->
-<div class="stats-bar">
-  <div class="stat"><div class="stat-l">LAST PRICE</div><div class="stat-v up" id="last-price">0.0842</div></div>
-  <div class="stat"><div class="stat-l">24H CHANGE</div><div class="stat-v up" id="change">+4.21%</div></div>
-  <div class="stat"><div class="stat-l">24H HIGH</div><div class="stat-v" id="high">0.0891</div></div>
-  <div class="stat"><div class="stat-l">24H LOW</div><div class="stat-v" id="low">0.0798</div></div>
-  <div class="stat"><div class="stat-l">24H VOLUME</div><div class="stat-v" id="volume">12,440 FRR</div></div>
-  <div class="stat"><div class="stat-l">OPEN ORDERS</div><div class="stat-v" id="open-orders">24</div></div>
-</div>
-
-<div class="layout">
-
-  <!-- MAIN -->
-  <div class="main">
-
-    <!-- ORDER BOOK -->
-    <div class="panel">
-      <div class="panel-head">
-        Order Book
-        <span class="badge">FRR / USDT</span>
-      </div>
-      <div class="orderbook">
-        <div class="ob-side">
-          <div class="ob-head"><span>PRICE</span><span>AMOUNT</span><span>TOTAL</span></div>
-          <div id="asks"></div>
-        </div>
-        <div class="ob-side">
-          <div class="ob-head"><span>PRICE</span><span>AMOUNT</span><span>TOTAL</span></div>
-          <div id="bids"></div>
-        </div>
-      </div>
-      <div class="spread-row">
-        <div>
-          <div class="spread-label">LAST TRADED PRICE</div>
-          <div class="spread-price" id="spread-price">0.0842 USDT</div>
-        </div>
-        <div style="text-align:right">
-          <div class="spread-label">SPREAD</div>
-          <div id="spread-val" style="font-size:13px;color:var(--dim)">0.0002</div>
-        </div>
-      </div>
+  <!-- Navigation -->
+  <nav class="ferrous-nav" role="navigation" aria-label="Main navigation">
+    <div class="nav-logo">
+      <a href="index.html" style="display:flex;align-items:center;gap:var(--space-2);color:inherit;text-decoration:none;">
+        <span class="fe">Fe</span>
+        FERROUS OTC
+        <div class="dot" aria-hidden="true"></div>
+      </a>
     </div>
-
-    <!-- RECENT TRADES -->
-    <div class="panel">
-      <div class="panel-head">Recent Trades</div>
-      <table class="trades-table">
-        <thead>
-          <tr>
-            <th>TIME</th>
-            <th>PRICE</th>
-            <th>AMOUNT (FRR)</th>
-            <th>TOTAL (USDT)</th>
-            <th>TYPE</th>
-          </tr>
-        </thead>
-        <tbody id="trades"></tbody>
-      </table>
+    <div class="nav-right" aria-label="Trading info">
+      <span style="color:var(--color-text-dim)">pair</span>
+      <span>FRR / USDT</span>
+      <span style="color:var(--color-text-dim)">network</span>
+      <span style="color:var(--color-warning)">TESTNET</span>
+      <span style="color:var(--color-text-dim)">address</span>
+      <span style="color:var(--color-accent)">1Fe3r...a92b</span>
     </div>
-
-    <!-- MY ORDERS -->
-    <div class="panel">
-      <div class="panel-head">My Open Orders <span class="badge" id="my-count">3</span></div>
-      <div class="my-orders" id="my-orders"></div>
+    <div style="display:flex;gap:var(--space-3);align-items:center;">
+      <button class="theme-toggle" aria-label="Toggle theme">[ LIGHT ]</button>
+      <button class="nav-toggle" aria-expanded="false" aria-controls="nav-links">[ MENU ]</button>
     </div>
+    <ul class="nav-links" id="nav-links">
+      <li><a href="index.html">Home</a></li>
+      <li><a href="ferrous-network.html">Network</a></li>
+      <li><a href="ferrous-explorer.html">Explorer</a></li>
+      <li><a href="ferrous-pool.html">Pool</a></li>
+      <li><a href="ferrous-otc.html" aria-current="page" class="active">OTC</a></li>
+    </ul>
+  </nav>
 
+  <!-- Stats Bar -->
+  <div class="stats-bar" role="region" aria-label="Market statistics">
+    <div class="stat">
+      <div class="stat-label">Last Price</div>
+      <div class="stat-value success" id="last-price">0.0842</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">24H Change</div>
+      <div class="stat-value success" id="change">+4.21%</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">24H High</div>
+      <div class="stat-value" id="high">0.0891</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">24H Low</div>
+      <div class="stat-value" id="low">0.0798</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">24H Volume</div>
+      <div class="stat-value" id="volume">12,440 FRR</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Open Orders</div>
+      <div class="stat-value" id="open-orders">24</div>
+    </div>
   </div>
 
-  <!-- SIDEBAR -->
-  <div class="sidebar">
-
-    <!-- FORM -->
-    <div class="panel">
-      <div class="panel-head">Place Order</div>
-      <div class="form-wrap">
-
-        <div class="tabs">
-          <div class="tab buy active" id="tab-buy" onclick="setTab('buy')">BUY FRR</div>
-          <div class="tab sell" id="tab-sell" onclick="setTab('sell')">SELL FRR</div>
+  <main id="main-content" class="layout">
+    <!-- Main Panel -->
+    <div class="main-panel">
+      <!-- Order Book -->
+      <section class="panel" aria-labelledby="orderbook-title">
+        <div class="panel-head">
+          <span id="orderbook-title">Order Book</span>
+          <span class="badge">FRR / USDT</span>
         </div>
-
-        <div class="form-row">
-          <div class="form-label">Price <span id="price-hint">≈ market</span></div>
-          <div class="input-group">
-            <input type="number" class="form-input" id="f-price" placeholder="0.0000" step="0.0001" oninput="updateSummary()">
-            <span class="input-unit">USDT</span>
+        <div class="orderbook" role="table" aria-label="Order book">
+          <div class="ob-side" role="rowgroup">
+            <div class="ob-head" role="row">
+              <span role="columnheader">PRICE</span>
+              <span role="columnheader">AMOUNT</span>
+              <span role="columnheader">TOTAL</span>
+            </div>
+            <div id="asks" role="rowgroup" aria-label="Ask orders"></div>
+          </div>
+          <div class="ob-side" role="rowgroup">
+            <div class="ob-head" role="row">
+              <span role="columnheader">PRICE</span>
+              <span role="columnheader">AMOUNT</span>
+              <span role="columnheader">TOTAL</span>
+            </div>
+            <div id="bids" role="rowgroup" aria-label="Bid orders"></div>
           </div>
         </div>
-
-        <div class="form-row">
-          <div class="form-label">Amount <span id="bal-hint">bal: 500.00 FRR</span></div>
-          <div class="input-group">
-            <input type="number" class="form-input" id="f-amount" placeholder="0.00" step="0.01" oninput="updateSummary()">
-            <span class="input-unit">FRR</span>
+        <div class="spread-row">
+          <div>
+            <div class="spread-label">LAST TRADED PRICE</div>
+            <div class="spread-price" id="spread-price">0.0842 USDT</div>
+          </div>
+          <div style="text-align:right">
+            <div class="spread-label">SPREAD</div>
+            <div id="spread-val" style="font-size:var(--font-size-base);color:var(--color-text-dim)">0.0002</div>
           </div>
         </div>
+      </section>
 
-        <div class="form-row">
-          <div class="slider-wrap">
-            <input type="range" class="slider" min="0" max="100" value="0" id="pct-slider" oninput="setPct(this.value)">
-            <div class="pct-labels"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+      <!-- Recent Trades -->
+      <section class="panel" aria-labelledby="trades-title">
+        <div class="panel-head" id="trades-title">Recent Trades</div>
+        <table class="trades-table" aria-describedby="trades-title">
+          <thead>
+            <tr>
+              <th scope="col">TIME</th>
+              <th scope="col">PRICE</th>
+              <th scope="col">AMOUNT (FRR)</th>
+              <th scope="col">TOTAL (USDT)</th>
+              <th scope="col">TYPE</th>
+            </tr>
+          </thead>
+          <tbody id="trades"></tbody>
+        </table>
+      </section>
+
+      <!-- My Orders -->
+      <section class="panel" aria-labelledby="myorders-title">
+        <div class="panel-head">
+          <span id="myorders-title">My Open Orders</span>
+          <span class="badge" id="my-count">3</span>
+        </div>
+        <div class="my-orders" id="my-orders" role="list" aria-label="Your open orders"></div>
+      </section>
+    </div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <!-- Order Form -->
+      <section class="panel" aria-labelledby="placeorder-title">
+        <div class="panel-head" id="placeorder-title">Place Order</div>
+        <form class="form-wrap" id="order-form" aria-label="Place order form">
+          <div class="tabs" role="tablist">
+            <button type="button" class="tab buy active" id="tab-buy" role="tab" aria-selected="true" aria-controls="buy-form">BUY FRR</button>
+            <button type="button" class="tab sell" id="tab-sell" role="tab" aria-selected="false" aria-controls="sell-form">SELL FRR</button>
           </div>
+
+          <div class="form-row">
+            <label class="form-label" for="f-price">
+              Price
+              <span id="price-hint">~ market</span>
+            </label>
+            <div class="input-group">
+              <input type="number" class="form-input" id="f-price" placeholder="0.0000" step="0.0001" aria-describedby="price-hint">
+              <span class="input-unit">USDT</span>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <label class="form-label" for="f-amount">
+              Amount
+              <span id="bal-hint">bal: 500.00 FRR</span>
+            </label>
+            <div class="input-group">
+              <input type="number" class="form-input" id="f-amount" placeholder="0.00" step="0.01" aria-describedby="bal-hint">
+              <span class="input-unit">FRR</span>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="slider-wrap">
+              <label for="pct-slider" class="sr-only">Percentage of balance</label>
+              <input type="range" class="slider" min="0" max="100" value="0" id="pct-slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="pct-labels" aria-hidden="true">
+                <span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="order-summary" role="region" aria-label="Order summary">
+            <div class="summary-row"><span>Price</span><span id="s-price">—</span></div>
+            <div class="summary-row"><span>Amount</span><span id="s-amount">—</span></div>
+            <div class="summary-row"><span>Fee (0.1%)</span><span id="s-fee">—</span></div>
+            <div class="summary-row total"><span>Total</span><span id="s-total">—</span></div>
+          </div>
+
+          <button type="submit" class="btn-buy" id="submit-btn">BUY FRR</button>
+        </form>
+      </section>
+
+      <!-- Notice -->
+      <div class="notice" role="alert">
+        <span>TESTNET</span> — This exchange runs on Ferrous testnet.
+        FRR has no monetary value. For testing purposes only.
+      </div>
+
+      <!-- Market Info -->
+      <section class="panel" aria-labelledby="marketinfo-title">
+        <div class="panel-head" id="marketinfo-title">Market Info</div>
+        <div class="market-info">
+          <div class="market-row"><span class="market-label">Pair</span><span>FRR / USDT</span></div>
+          <div class="market-row"><span class="market-label">Min Order</span><span>1.00 FRR</span></div>
+          <div class="market-row"><span class="market-label">Maker Fee</span><span style="color:var(--color-success)">0.10%</span></div>
+          <div class="market-row"><span class="market-label">Taker Fee</span><span style="color:var(--color-success)">0.10%</span></div>
+          <div class="market-row"><span class="market-label">Settlement</span><span>On-chain</span></div>
+          <div class="market-row"><span class="market-label">Network</span><span style="color:var(--color-accent)">Ferrous Testnet</span></div>
         </div>
+      </section>
+    </aside>
+  </main>
 
-        <div class="order-summary" id="order-summary">
-          <div class="summary-row"><span>Price</span><span id="s-price">—</span></div>
-          <div class="summary-row"><span>Amount</span><span id="s-amount">—</span></div>
-          <div class="summary-row"><span>Fee (0.1%)</span><span id="s-fee">—</span></div>
-          <div class="summary-row total"><span>Total</span><span id="s-total">—</span></div>
-        </div>
+  <script src="shared-utils.js"></script>
+  <script>
+    // ═══════════════════════════════════════════════════════════
+    // STATE
+    // ═══════════════════════════════════════════════════════════
 
-        <button class="btn-buy" id="submit-btn" onclick="placeOrder()">BUY FRR</button>
+    var currentTab = 'buy';
+    var lastPrice = 0.0842;
 
-      </div>
-    </div>
+    var asks = [
+      { price: 0.0856, amount: 120.00 },
+      { price: 0.0854, amount: 85.50 },
+      { price: 0.0852, amount: 200.00 },
+      { price: 0.0850, amount: 310.75 },
+      { price: 0.0848, amount: 95.00 },
+      { price: 0.0846, amount: 450.00 },
+      { price: 0.0844, amount: 180.25 }
+    ];
 
-    <!-- NOTICE -->
-    <div class="notice">
-      <span>TESTNET</span> — This exchange runs on Ferrous testnet.
-      FRR has no monetary value. For testing purposes only.
-    </div>
+    var bids = [
+      { price: 0.0842, amount: 250.00 },
+      { price: 0.0840, amount: 130.50 },
+      { price: 0.0838, amount: 380.00 },
+      { price: 0.0836, amount: 95.75 },
+      { price: 0.0834, amount: 210.00 },
+      { price: 0.0832, amount: 520.50 },
+      { price: 0.0830, amount: 175.00 }
+    ];
 
-    <!-- MARKET INFO -->
-    <div class="panel">
-      <div class="panel-head">Market Info</div>
-      <div style="padding:16px 20px;font-size:12px;">
-        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);"><span style="color:var(--dim)">Pair</span><span>FRR / USDT</span></div>
-        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);"><span style="color:var(--dim)">Min Order</span><span>1.00 FRR</span></div>
-        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);"><span style="color:var(--dim)">Maker Fee</span><span style="color:var(--green)">0.10%</span></div>
-        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);"><span style="color:var(--dim)">Taker Fee</span><span style="color:var(--green)">0.10%</span></div>
-        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);"><span style="color:var(--dim)">Settlement</span><span>On-chain</span></div>
-        <div style="display:flex;justify-content:space-between;padding:6px 0;"><span style="color:var(--dim)">Network</span><span style="color:var(--accent)">Ferrous Testnet</span></div>
-      </div>
-    </div>
+    var myOrders = [
+      { id: 1, side: 'buy', price: 0.0820, amount: 100.00, filled: 0 },
+      { id: 2, side: 'buy', price: 0.0815, amount: 250.00, filled: 12.5 },
+      { id: 3, side: 'sell', price: 0.0875, amount: 50.00, filled: 0 }
+    ];
 
-  </div>
-</div>
-
-<script>
-// ── STATE ─────────────────────────────────────────────────
-let currentTab = 'buy';
-let lastPrice = 0.0842;
-
-const asks = [
-  { price: 0.0856, amount: 120.00 },
-  { price: 0.0854, amount: 85.50 },
-  { price: 0.0852, amount: 200.00 },
-  { price: 0.0850, amount: 310.75 },
-  { price: 0.0848, amount: 95.00 },
-  { price: 0.0846, amount: 450.00 },
-  { price: 0.0844, amount: 180.25 },
-];
-
-const bids = [
-  { price: 0.0842, amount: 250.00 },
-  { price: 0.0840, amount: 130.50 },
-  { price: 0.0838, amount: 380.00 },
-  { price: 0.0836, amount: 95.75 },
-  { price: 0.0834, amount: 210.00 },
-  { price: 0.0832, amount: 520.50 },
-  { price: 0.0830, amount: 175.00 },
-];
-
-let myOrders = [
-  { id: 1, side: 'buy',  price: 0.0820, amount: 100.00, filled: 0 },
-  { id: 2, side: 'buy',  price: 0.0815, amount: 250.00, filled: 12.5 },
-  { id: 3, side: 'sell', price: 0.0875, amount: 50.00,  filled: 0 },
-];
-
-let recentTrades = Array.from({length:12}, (_,i) => ({
-  price: (0.0842 + (Math.random()-.5)*0.001).toFixed(4),
-  amount: (Math.random()*200+10).toFixed(2),
-  side: Math.random()>.5?'buy':'sell',
-  time: new Date(Date.now() - i*45000)
-}));
-
-// ── RENDER ORDER BOOK ─────────────────────────────────────
-function renderOrderBook() {
-  const askEl = document.getElementById('asks');
-  const bidEl = document.getElementById('bids');
-
-  askEl.innerHTML = asks.map(o => `
-    <div class="ob-row ask" onclick="setPrice(${o.price})">
-      <span class="price">${o.price.toFixed(4)}</span>
-      <span class="amount">${o.amount.toFixed(2)}</span>
-      <span class="total">${(o.price*o.amount).toFixed(2)}</span>
-    </div>`).join('');
-
-  bidEl.innerHTML = bids.map(o => `
-    <div class="ob-row bid" onclick="setPrice(${o.price})">
-      <span class="price">${o.price.toFixed(4)}</span>
-      <span class="amount">${o.amount.toFixed(2)}</span>
-      <span class="total">${(o.price*o.amount).toFixed(2)}</span>
-    </div>`).join('');
-}
-
-// ── RENDER TRADES ─────────────────────────────────────────
-function renderTrades() {
-  document.getElementById('trades').innerHTML = recentTrades.map(t => {
-    const h = t.time.getHours().toString().padStart(2,'0');
-    const m = t.time.getMinutes().toString().padStart(2,'0');
-    const s = t.time.getSeconds().toString().padStart(2,'0');
-    const color = t.side==='buy' ? 'var(--green)' : 'var(--red)';
-    return `<tr>
-      <td style="color:var(--dim)">${h}:${m}:${s}</td>
-      <td style="color:${color}">${t.price}</td>
-      <td>${t.amount}</td>
-      <td style="color:var(--dim)">${(parseFloat(t.price)*parseFloat(t.amount)).toFixed(4)}</td>
-      <td style="color:${color};font-size:10px;letter-spacing:1px">${t.side.toUpperCase()}</td>
-    </tr>`;
-  }).join('');
-}
-
-// ── RENDER MY ORDERS ──────────────────────────────────────
-function renderMyOrders() {
-  document.getElementById('my-count').textContent = myOrders.length;
-  document.getElementById('my-orders').innerHTML = myOrders.map(o => `
-    <div class="order-card">
-      <div class="order-side ${o.side}">${o.side.toUpperCase()}</div>
-      <div class="order-info">
-        <div class="order-price">${o.price.toFixed(4)} USDT</div>
-        <div class="order-amount">${o.amount.toFixed(2)} FRR · filled ${o.filled.toFixed(2)}</div>
-      </div>
-      <div class="order-cancel" onclick="cancelOrder(${o.id})">CANCEL</div>
-    </div>`).join('');
-}
-
-// ── TABS ──────────────────────────────────────────────────
-function setTab(tab) {
-  currentTab = tab;
-  document.getElementById('tab-buy').classList.toggle('active', tab==='buy');
-  document.getElementById('tab-sell').classList.toggle('active', tab==='sell');
-  const btn = document.getElementById('submit-btn');
-  if(tab==='buy') {
-    btn.className='btn-buy'; btn.textContent='BUY FRR';
-    document.getElementById('bal-hint').textContent='bal: 500.00 FRR';
-  } else {
-    btn.className='btn-sell'; btn.textContent='SELL FRR';
-    document.getElementById('bal-hint').textContent='bal: 500.00 FRR';
-  }
-  updateSummary();
-}
-
-function setPrice(p) {
-  document.getElementById('f-price').value = p.toFixed(4);
-  updateSummary();
-}
-
-function setPct(v) {
-  const bal = 500;
-  document.getElementById('f-amount').value = (bal * v / 100).toFixed(2);
-  updateSummary();
-}
-
-function updateSummary() {
-  const price = parseFloat(document.getElementById('f-price').value)||0;
-  const amount = parseFloat(document.getElementById('f-amount').value)||0;
-  const fee = price * amount * 0.001;
-  const total = price * amount;
-  document.getElementById('s-price').textContent  = price  ? price.toFixed(4)+' USDT' : '—';
-  document.getElementById('s-amount').textContent = amount ? amount.toFixed(2)+' FRR' : '—';
-  document.getElementById('s-fee').textContent    = fee    ? fee.toFixed(4)+' USDT' : '—';
-  document.getElementById('s-total').textContent  = total  ? total.toFixed(4)+' USDT' : '—';
-}
-
-function placeOrder() {
-  const price = parseFloat(document.getElementById('f-price').value);
-  const amount = parseFloat(document.getElementById('f-amount').value);
-  if(!price||!amount) return;
-  myOrders.unshift({ id: Date.now(), side: currentTab, price, amount, filled: 0 });
-  document.getElementById('f-price').value = '';
-  document.getElementById('f-amount').value = '';
-  document.getElementById('pct-slider').value = 0;
-  updateSummary();
-  renderMyOrders();
-}
-
-function cancelOrder(id) {
-  myOrders = myOrders.filter(o => o.id !== id);
-  renderMyOrders();
-}
-
-// ── LIVE SIMULATION ───────────────────────────────────────
-function tick() {
-  // drift prices slightly
-  lastPrice += (Math.random()-.5)*0.0002;
-  lastPrice = Math.max(0.07, Math.min(0.10, lastPrice));
-
-  asks.forEach(o => { o.price = parseFloat((o.price + (Math.random()-.48)*0.0001).toFixed(4)); });
-  bids.forEach(o => { o.price = parseFloat((o.price + (Math.random()-.52)*0.0001).toFixed(4)); });
-  asks.sort((a,b)=>b.price-a.price);
-  bids.sort((a,b)=>b.price-a.price);
-
-  // new trade occasionally
-  if(Math.random()<0.3) {
-    recentTrades.unshift({
-      price: lastPrice.toFixed(4),
-      amount: (Math.random()*150+5).toFixed(2),
-      side: Math.random()>.5?'buy':'sell',
-      time: new Date()
+    var recentTrades = Array.from({ length: 12 }, function(_, i) {
+      return {
+        price: (0.0842 + (Math.random() - 0.5) * 0.001).toFixed(4),
+        amount: (Math.random() * 200 + 10).toFixed(2),
+        side: Math.random() > 0.5 ? 'buy' : 'sell',
+        time: new Date(Date.now() - i * 45000)
+      };
     });
-    recentTrades = recentTrades.slice(0,12);
-  }
 
-  const change = ((lastPrice-0.0800)/0.0800*100);
-  document.getElementById('last-price').textContent = lastPrice.toFixed(4);
-  document.getElementById('change').textContent = (change>=0?'+':'')+change.toFixed(2)+'%';
-  document.getElementById('change').className = 'stat-v '+(change>=0?'up':'dn');
-  document.getElementById('spread-price').textContent = lastPrice.toFixed(4)+' USDT';
-  document.getElementById('spread-val').textContent = (asks[asks.length-1].price - bids[0].price).toFixed(4);
+    // ═══════════════════════════════════════════════════════════
+    // RENDER FUNCTIONS
+    // ═══════════════════════════════════════════════════════════
 
-  renderOrderBook();
-  renderTrades();
-}
+    function renderOrderBook() {
+      var askEl = document.getElementById('asks');
+      var bidEl = document.getElementById('bids');
 
-// INIT
-renderOrderBook();
-renderTrades();
-renderMyOrders();
-setInterval(tick, 1500);
-</script>
+      askEl.innerHTML = asks.map(function(o) {
+        return '<div class="ob-row ask" role="row" tabindex="0" data-price="' + o.price + '" aria-label="Ask ' + o.price.toFixed(4) + ' USDT, ' + o.amount.toFixed(2) + ' FRR">' +
+          '<span class="price" role="cell">' + o.price.toFixed(4) + '</span>' +
+          '<span class="amount" role="cell">' + o.amount.toFixed(2) + '</span>' +
+          '<span class="total" role="cell">' + (o.price * o.amount).toFixed(2) + '</span>' +
+        '</div>';
+      }).join('');
+
+      bidEl.innerHTML = bids.map(function(o) {
+        return '<div class="ob-row bid" role="row" tabindex="0" data-price="' + o.price + '" aria-label="Bid ' + o.price.toFixed(4) + ' USDT, ' + o.amount.toFixed(2) + ' FRR">' +
+          '<span class="price" role="cell">' + o.price.toFixed(4) + '</span>' +
+          '<span class="amount" role="cell">' + o.amount.toFixed(2) + '</span>' +
+          '<span class="total" role="cell">' + (o.price * o.amount).toFixed(2) + '</span>' +
+        '</div>';
+      }).join('');
+
+      // Attach click handlers
+      document.querySelectorAll('.ob-row').forEach(function(row) {
+        row.addEventListener('click', function() {
+          setPrice(parseFloat(row.getAttribute('data-price')));
+        });
+        row.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setPrice(parseFloat(row.getAttribute('data-price')));
+          }
+        });
+      });
+    }
+
+    function renderTrades() {
+      document.getElementById('trades').innerHTML = recentTrades.map(function(t) {
+        var h = t.time.getHours().toString().padStart(2, '0');
+        var m = t.time.getMinutes().toString().padStart(2, '0');
+        var s = t.time.getSeconds().toString().padStart(2, '0');
+        var color = t.side === 'buy' ? 'var(--color-success)' : 'var(--color-error)';
+        return '<tr>' +
+          '<td style="color:var(--color-text-dim)">' + h + ':' + m + ':' + s + '</td>' +
+          '<td style="color:' + color + '">' + t.price + '</td>' +
+          '<td>' + t.amount + '</td>' +
+          '<td style="color:var(--color-text-dim)">' + (parseFloat(t.price) * parseFloat(t.amount)).toFixed(4) + '</td>' +
+          '<td style="color:' + color + ';font-size:var(--font-size-xs);letter-spacing:1px">' + t.side.toUpperCase() + '</td>' +
+        '</tr>';
+      }).join('');
+    }
+
+    function renderMyOrders() {
+      document.getElementById('my-count').textContent = myOrders.length;
+      document.getElementById('my-orders').innerHTML = myOrders.map(function(o) {
+        return '<div class="order-card" role="listitem">' +
+          '<div class="order-side ' + o.side + '">' + o.side.toUpperCase() + '</div>' +
+          '<div class="order-info">' +
+            '<div class="order-price">' + o.price.toFixed(4) + ' USDT</div>' +
+            '<div class="order-amount">' + o.amount.toFixed(2) + ' FRR · filled ' + o.filled.toFixed(2) + '</div>' +
+          '</div>' +
+          '<button class="order-cancel" data-id="' + o.id + '" aria-label="Cancel order at ' + o.price.toFixed(4) + ' USDT">CANCEL</button>' +
+        '</div>';
+      }).join('');
+
+      // Attach cancel handlers
+      document.querySelectorAll('.order-cancel').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          cancelOrder(parseInt(btn.getAttribute('data-id')));
+        });
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // FORM HANDLERS
+    // ═══════════════════════════════════════════════════════════
+
+    function setTab(tab) {
+      currentTab = tab;
+      document.getElementById('tab-buy').classList.toggle('active', tab === 'buy');
+      document.getElementById('tab-sell').classList.toggle('active', tab === 'sell');
+      document.getElementById('tab-buy').setAttribute('aria-selected', tab === 'buy');
+      document.getElementById('tab-sell').setAttribute('aria-selected', tab === 'sell');
+
+      var btn = document.getElementById('submit-btn');
+      if (tab === 'buy') {
+        btn.className = 'btn-buy';
+        btn.textContent = 'BUY FRR';
+        document.getElementById('bal-hint').textContent = 'bal: 500.00 FRR';
+      } else {
+        btn.className = 'btn-sell';
+        btn.textContent = 'SELL FRR';
+        document.getElementById('bal-hint').textContent = 'bal: 500.00 FRR';
+      }
+      updateSummary();
+    }
+
+    function setPrice(p) {
+      document.getElementById('f-price').value = p.toFixed(4);
+      updateSummary();
+      Ferrous.showToast('Price set to ' + p.toFixed(4) + ' USDT', 'info');
+    }
+
+    function setPct(v) {
+      var bal = 500;
+      document.getElementById('f-amount').value = (bal * v / 100).toFixed(2);
+      document.getElementById('pct-slider').setAttribute('aria-valuenow', v);
+      updateSummary();
+    }
+
+    function updateSummary() {
+      var price = parseFloat(document.getElementById('f-price').value) || 0;
+      var amount = parseFloat(document.getElementById('f-amount').value) || 0;
+      var fee = price * amount * 0.001;
+      var total = price * amount;
+      
+      document.getElementById('s-price').textContent = price ? price.toFixed(4) + ' USDT' : '—';
+      document.getElementById('s-amount').textContent = amount ? amount.toFixed(2) + ' FRR' : '—';
+      document.getElementById('s-fee').textContent = fee ? fee.toFixed(4) + ' USDT' : '—';
+      document.getElementById('s-total').textContent = total ? total.toFixed(4) + ' USDT' : '—';
+    }
+
+    function placeOrder(e) {
+      e.preventDefault();
+      var price = parseFloat(document.getElementById('f-price').value);
+      var amount = parseFloat(document.getElementById('f-amount').value);
+      
+      if (!price || !amount) {
+        Ferrous.showToast('Please enter price and amount', 'warning');
+        return;
+      }
+
+      if (amount < 1) {
+        Ferrous.showToast('Minimum order is 1.00 FRR', 'warning');
+        return;
+      }
+
+      myOrders.unshift({
+        id: Date.now(),
+        side: currentTab,
+        price: price,
+        amount: amount,
+        filled: 0
+      });
+
+      document.getElementById('f-price').value = '';
+      document.getElementById('f-amount').value = '';
+      document.getElementById('pct-slider').value = 0;
+      document.getElementById('pct-slider').setAttribute('aria-valuenow', 0);
+      updateSummary();
+      renderMyOrders();
+
+      Ferrous.showToast(currentTab.toUpperCase() + ' order placed at ' + price.toFixed(4), 'success');
+    }
+
+    function cancelOrder(id) {
+      myOrders = myOrders.filter(function(o) { return o.id !== id; });
+      renderMyOrders();
+      Ferrous.showToast('Order cancelled', 'info');
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // LIVE SIMULATION
+    // ═══════════════════════════════════════════════════════════
+
+    var tick = Ferrous.throttle(function() {
+      // Drift prices slightly
+      lastPrice += (Math.random() - 0.5) * 0.0002;
+      lastPrice = Math.max(0.07, Math.min(0.10, lastPrice));
+
+      asks.forEach(function(o) {
+        o.price = parseFloat((o.price + (Math.random() - 0.48) * 0.0001).toFixed(4));
+      });
+      bids.forEach(function(o) {
+        o.price = parseFloat((o.price + (Math.random() - 0.52) * 0.0001).toFixed(4));
+      });
+      asks.sort(function(a, b) { return b.price - a.price; });
+      bids.sort(function(a, b) { return b.price - a.price; });
+
+      // New trade occasionally
+      if (Math.random() < 0.3) {
+        recentTrades.unshift({
+          price: lastPrice.toFixed(4),
+          amount: (Math.random() * 150 + 5).toFixed(2),
+          side: Math.random() > 0.5 ? 'buy' : 'sell',
+          time: new Date()
+        });
+        recentTrades = recentTrades.slice(0, 12);
+      }
+
+      var change = ((lastPrice - 0.0800) / 0.0800 * 100);
+      document.getElementById('last-price').textContent = lastPrice.toFixed(4);
+      document.getElementById('change').textContent = (change >= 0 ? '+' : '') + change.toFixed(2) + '%';
+      document.getElementById('change').className = 'stat-value ' + (change >= 0 ? 'success' : 'error');
+      document.getElementById('spread-price').textContent = lastPrice.toFixed(4) + ' USDT';
+      document.getElementById('spread-val').textContent = (asks[asks.length - 1].price - bids[0].price).toFixed(4);
+
+      renderOrderBook();
+      renderTrades();
+    }, 1500);
+
+    // ═══════════════════════════════════════════════════════════
+    // INITIALIZATION
+    // ═══════════════════════════════════════════════════════════
+
+    document.addEventListener('DOMContentLoaded', function() {
+      // Initial render
+      renderOrderBook();
+      renderTrades();
+      renderMyOrders();
+
+      // Tab handlers
+      document.getElementById('tab-buy').addEventListener('click', function() { setTab('buy'); });
+      document.getElementById('tab-sell').addEventListener('click', function() { setTab('sell'); });
+
+      // Form handlers
+      document.getElementById('f-price').addEventListener('input', updateSummary);
+      document.getElementById('f-amount').addEventListener('input', updateSummary);
+      document.getElementById('pct-slider').addEventListener('input', function() {
+        setPct(this.value);
+      });
+      document.getElementById('order-form').addEventListener('submit', placeOrder);
+
+      // Keyboard shortcuts
+      Ferrous.registerShortcut('b', function() { setTab('buy'); }, 'Switch to buy');
+      Ferrous.registerShortcut('s', function() { setTab('sell'); }, 'Switch to sell');
+
+      // Start live updates
+      setInterval(tick, 1500);
+    });
+  </script>
 </body>
 </html>

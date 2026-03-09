@@ -1,69 +1,291 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ferrous Pool</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: #0a0a0a;
-    color: #c5cdd8;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 13px;
-    line-height: 1.4;
-    padding: 16px;
-    min-height: 100vh;
-  }
-  .screen { max-width: 110ch; margin: 0 auto; }
-  .blink { animation: blink 1s step-end infinite; }
-  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Ferrous Mining Pool - Mine FRR with SHA-256d Proof-of-Work. Monitor hashrate, workers, and payouts.">
+  <meta name="theme-color" content="#0a0a0a">
+  <title>Ferrous Pool</title>
+  <link rel="stylesheet" href="shared-styles.css">
+  <style>
+    /* Pool-specific styles - Terminal aesthetic */
+    :root {
+      --pool-bg: #0a0a0a;
+      --pool-border: #2a2a2a;
+      --pool-dim: #444;
+    }
 
-  .dim { color: #444; }
-  .accent { color: #4a9eff; }
-  .green { color: #4aff91; }
-  .yellow { color: #ffd84a; }
-  .red { color: #ff4a4a; }
-  .white { color: #ffffff; }
+    body {
+      background: var(--pool-bg);
+      padding: var(--space-4);
+    }
 
-  .row { display: flex; gap: 0; }
-  .panel { border: 1px solid #2a2a2a; padding: 8px 12px; }
-  .panel-title { color: #4a9eff; margin-bottom: 6px; letter-spacing: 1px; font-size: 11px; }
+    [data-theme="light"] body {
+      background: var(--color-bg);
+    }
 
-  .hbar { border-top: 1px solid #2a2a2a; margin: 8px 0; }
-  .vdiv { color: #2a2a2a; }
+    .screen {
+      max-width: 110ch;
+      margin: 0 auto;
+    }
 
-  table { border-collapse: collapse; width: 100%; }
-  td, th { padding: 2px 8px; text-align: left; }
-  th { color: #444; font-weight: normal; font-size: 11px; border-bottom: 1px solid #1a1a1a; }
-  tr:hover td { background: #111; }
+    /* Override colors for pool theme */
+    .dim { color: var(--pool-dim); }
+    .accent { color: var(--color-accent); }
+    .green { color: #4aff91; }
+    .yellow { color: var(--color-warning); }
+    .red { color: #ff4a4a; }
+    .white { color: var(--color-white); }
 
-  .badge-ok   { color: #0a0a0a; background: #4aff91; padding: 0 4px; }
-  .badge-warn { color: #0a0a0a; background: #ffd84a; padding: 0 4px; }
-  .badge-err  { color: #0a0a0a; background: #ff4a4a; padding: 0 4px; }
+    /* Layout */
+    .row {
+      display: flex;
+      gap: 0;
+    }
 
-  .bar-bg { display: inline-block; background: #1a1a1a; width: 80px; height: 8px; vertical-align: middle; }
-  .bar-fill { display: inline-block; background: #4a9eff; height: 8px; }
+    .panel {
+      border: 1px solid var(--pool-border);
+      padding: var(--space-2) var(--space-3);
+      background: var(--pool-bg);
+    }
 
-  .ascii-logo { color: #4a9eff; font-size: 11px; line-height: 1.2; }
-  .footer { color: #2a2a2a; margin-top: 12px; font-size: 11px; }
-  .status-bar { background: #111; border: 1px solid #2a2a2a; padding: 3px 12px; display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 11px; }
-</style>
+    [data-theme="light"] .panel {
+      border-color: var(--color-border);
+      background: var(--color-bg-tertiary);
+    }
+
+    .panel-title {
+      color: var(--color-accent);
+      margin-bottom: var(--space-2);
+      letter-spacing: 1px;
+      font-size: var(--font-size-sm);
+    }
+
+    /* Tables */
+    .pool-table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: var(--font-size-sm);
+    }
+
+    .pool-table td,
+    .pool-table th {
+      padding: 2px var(--space-2);
+      text-align: left;
+    }
+
+    .pool-table th {
+      color: var(--pool-dim);
+      font-weight: normal;
+      font-size: var(--font-size-sm);
+      border-bottom: 1px solid #1a1a1a;
+    }
+
+    .pool-table tbody tr {
+      transition: background var(--transition-fast);
+    }
+
+    .pool-table tbody tr:hover td {
+      background: #111;
+    }
+
+    [data-theme="light"] .pool-table th {
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    [data-theme="light"] .pool-table tbody tr:hover td {
+      background: var(--color-bg-secondary);
+    }
+
+    /* Badges */
+    .badge-ok {
+      color: var(--pool-bg);
+      background: #4aff91;
+      padding: 0 var(--space-1);
+    }
+
+    .badge-warn {
+      color: var(--pool-bg);
+      background: var(--color-warning);
+      padding: 0 var(--space-1);
+    }
+
+    .badge-err {
+      color: var(--pool-bg);
+      background: #ff4a4a;
+      padding: 0 var(--space-1);
+    }
+
+    /* Progress bar */
+    .bar-bg {
+      display: inline-block;
+      background: #1a1a1a;
+      width: 80px;
+      height: 8px;
+      vertical-align: middle;
+    }
+
+    .bar-fill {
+      display: inline-block;
+      background: var(--color-accent);
+      height: 8px;
+    }
+
+    [data-theme="light"] .bar-bg {
+      background: var(--color-border);
+    }
+
+    /* ASCII logo */
+    .ascii-logo {
+      color: var(--color-accent);
+      font-size: var(--font-size-sm);
+      line-height: 1.2;
+    }
+
+    /* Footer */
+    .pool-footer {
+      color: var(--pool-border);
+      margin-top: var(--space-3);
+      font-size: var(--font-size-sm);
+    }
+
+    /* Status bar */
+    .status-bar {
+      background: #111;
+      border: 1px solid var(--pool-border);
+      padding: 3px var(--space-3);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: var(--space-2);
+      font-size: var(--font-size-sm);
+    }
+
+    [data-theme="light"] .status-bar {
+      background: var(--color-bg-secondary);
+      border-color: var(--color-border);
+    }
+
+    /* Chart */
+    .chart-container {
+      font-size: var(--font-size-sm);
+      line-height: 1.1;
+      overflow-x: auto;
+    }
+
+    /* Navigation header for pool */
+    .pool-nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: var(--space-2);
+      padding-bottom: var(--space-2);
+      border-bottom: 1px solid var(--pool-border);
+    }
+
+    .pool-nav-links {
+      display: flex;
+      gap: var(--space-4);
+      list-style: none;
+    }
+
+    .pool-nav-links a {
+      color: var(--pool-dim);
+      font-size: var(--font-size-sm);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .pool-nav-links a:hover {
+      color: var(--color-text);
+      text-decoration: none;
+    }
+
+    .pool-nav-links a.active {
+      color: var(--color-accent);
+    }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .row {
+        flex-direction: column;
+      }
+
+      .panel {
+        width: 100% !important;
+        flex: none !important;
+      }
+
+      .ascii-logo {
+        display: none;
+      }
+    }
+
+    @media (max-width: 768px) {
+      body {
+        padding: var(--space-2);
+      }
+
+      .screen {
+        max-width: 100%;
+      }
+
+      .pool-nav {
+        flex-direction: column;
+        gap: var(--space-2);
+      }
+
+      .pool-nav-links {
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+
+      .status-bar {
+        flex-direction: column;
+        gap: var(--space-1);
+        text-align: center;
+      }
+
+      .chart-container {
+        font-size: var(--font-size-xs);
+      }
+    }
+  </style>
 </head>
 <body>
-<div class="screen">
+  <a href="#main-content" class="skip-link">Skip to main content</a>
 
-<!-- STATUS BAR -->
-<div class="status-bar">
-  <span><span class="accent">FERROUS POOL</span> <span class="dim">v0.1.0</span></span>
-  <span class="dim">ferrous.network</span>
-  <span id="clock" class="green"></span>
-</div>
+  <div class="screen">
+    <!-- Navigation -->
+    <nav class="pool-nav" role="navigation" aria-label="Pool navigation">
+      <div style="display:flex;align-items:center;gap:var(--space-3);">
+        <a href="index.html" style="color:var(--color-accent);text-decoration:none;">
+          <span class="accent">FERROUS POOL</span>
+        </a>
+        <span class="dim">v0.1.0</span>
+      </div>
+      <ul class="pool-nav-links">
+        <li><a href="index.html">Home</a></li>
+        <li><a href="ferrous-network.html">Network</a></li>
+        <li><a href="ferrous-explorer.html">Explorer</a></li>
+        <li><a href="ferrous-pool.html" class="active" aria-current="page">Pool</a></li>
+        <li><a href="ferrous-otc.html">OTC</a></li>
+      </ul>
+      <button class="theme-toggle" aria-label="Toggle theme">[ LIGHT ]</button>
+    </nav>
 
-<!-- ASCII LOGO + NETWORK STATS -->
-<div class="row">
-  <div class="panel" style="flex:0 0 auto; padding-right:24px;">
-<pre class="ascii-logo">
+    <!-- Status Bar -->
+    <div class="status-bar" role="region" aria-label="Pool status">
+      <span><span class="accent">FERROUS POOL</span> <span class="dim">v0.1.0</span></span>
+      <span class="dim">ferrous.network</span>
+      <span id="clock" class="green" aria-live="polite"></span>
+    </div>
+
+    <main id="main-content">
+      <!-- ASCII Logo + Network Stats -->
+      <div class="row">
+        <div class="panel" style="flex:0 0 auto;padding-right:var(--space-6);">
+          <pre class="ascii-logo" aria-hidden="true">
  _____ _____ ____  ____  ___  _   _ ____
 |  ___| ____|  _ \|  _ \/ _ \| | | / ___|
 | |_  |  _| | |_) | |_) | | | | | | \___ \
@@ -76,320 +298,386 @@
   ██╔═══╝ ██║   ██║██║   ██║██║
   ██║     ╚██████╔╝╚██████╔╝███████╗
   ╚═╝      ╚═════╝  ╚═════╝ ╚══════╝</pre>
-  </div>
+        </div>
 
-  <div style="flex:1; display:flex; flex-direction:column; gap:0;">
-    <!-- NETWORK ROW -->
-    <div class="row" style="flex:1;">
-      <div class="panel" style="flex:1;">
-        <div class="panel-title">[ NETWORK ]</div>
-        <table>
-          <tr><td class="dim">height</td><td class="white" id="height">--</td></tr>
-          <tr><td class="dim">difficulty</td><td class="yellow" id="diff">--</td></tr>
-          <tr><td class="dim">net hashrate</td><td class="accent" id="nethash">--</td></tr>
-          <tr><td class="dim">block time</td><td id="btime">--</td></tr>
-          <tr><td class="dim">last block</td><td class="green" id="lastblock">--</td></tr>
-        </table>
+        <div style="flex:1;display:flex;flex-direction:column;gap:0;">
+          <div class="row" style="flex:1;">
+            <!-- Network Stats -->
+            <section class="panel" style="flex:1;" aria-labelledby="network-title">
+              <h2 class="panel-title" id="network-title">[ NETWORK ]</h2>
+              <table class="pool-table">
+                <tbody>
+                  <tr><td class="dim">height</td><td class="white" id="height">--</td></tr>
+                  <tr><td class="dim">difficulty</td><td class="yellow" id="diff">--</td></tr>
+                  <tr><td class="dim">net hashrate</td><td class="accent" id="nethash">--</td></tr>
+                  <tr><td class="dim">block time</td><td id="btime">--</td></tr>
+                  <tr><td class="dim">last block</td><td class="green" id="lastblock">--</td></tr>
+                </tbody>
+              </table>
+            </section>
+
+            <!-- Pool Stats -->
+            <section class="panel" style="flex:1;" aria-labelledby="poolstats-title">
+              <h2 class="panel-title" id="poolstats-title">[ POOL STATS ]</h2>
+              <table class="pool-table">
+                <tbody>
+                  <tr><td class="dim">pool hashrate</td><td class="accent" id="poolhash">--</td></tr>
+                  <tr><td class="dim">pool workers</td><td class="white" id="workers">--</td></tr>
+                  <tr><td class="dim">blocks found</td><td class="green" id="found">--</td></tr>
+                  <tr><td class="dim">pool fee</td><td class="yellow">1.00%</td></tr>
+                  <tr><td class="dim">luck</td><td id="luck">--</td></tr>
+                </tbody>
+              </table>
+            </section>
+
+            <!-- Payments Stats -->
+            <section class="panel" style="flex:1;" aria-labelledby="payments-title">
+              <h2 class="panel-title" id="payments-title">[ PAYMENTS ]</h2>
+              <table class="pool-table">
+                <tbody>
+                  <tr><td class="dim">total paid</td><td class="white" id="totalpaid">--</td></tr>
+                  <tr><td class="dim">pending</td><td class="yellow" id="pending">--</td></tr>
+                  <tr><td class="dim">min payout</td><td>0.01 FRR</td></tr>
+                  <tr><td class="dim">interval</td><td>1h</td></tr>
+                  <tr><td class="dim">algorithm</td><td class="accent">SHA-256d</td></tr>
+                </tbody>
+              </table>
+            </section>
+          </div>
+        </div>
       </div>
-      <div class="panel" style="flex:1;">
-        <div class="panel-title">[ POOL STATS ]</div>
-        <table>
-          <tr><td class="dim">pool hashrate</td><td class="accent" id="poolhash">--</td></tr>
-          <tr><td class="dim">pool workers</td><td class="white" id="workers">--</td></tr>
-          <tr><td class="dim">blocks found</td><td class="green" id="found">--</td></tr>
-          <tr><td class="dim">pool fee</td><td class="yellow">1.00%</td></tr>
-          <tr><td class="dim">luck</td><td id="luck">--</td></tr>
-        </table>
+
+      <!-- Hashrate Chart -->
+      <section class="panel" style="margin-top:0;" aria-labelledby="chart-title">
+        <h2 class="panel-title" id="chart-title">[ POOL HASHRATE / 24H ]</h2>
+        <div id="chart" class="chart-container" role="img" aria-label="Pool hashrate chart over 24 hours"></div>
+      </section>
+
+      <!-- Workers + Recent Blocks -->
+      <div class="row" style="margin-top:0;">
+        <section class="panel" style="flex:3;" aria-labelledby="workers-title">
+          <h2 class="panel-title" id="workers-title">[ ACTIVE WORKERS ]</h2>
+          <table class="pool-table">
+            <thead>
+              <tr>
+                <th scope="col">worker</th>
+                <th scope="col">hashrate</th>
+                <th scope="col">shares</th>
+                <th scope="col">efficiency</th>
+                <th scope="col">last seen</th>
+                <th scope="col">status</th>
+              </tr>
+            </thead>
+            <tbody id="workers-table"></tbody>
+          </table>
+        </section>
+
+        <section class="panel" style="flex:2;" aria-labelledby="blocks-title">
+          <h2 class="panel-title" id="blocks-title">[ RECENT BLOCKS ]</h2>
+          <table class="pool-table">
+            <thead>
+              <tr>
+                <th scope="col">height</th>
+                <th scope="col">hash</th>
+                <th scope="col">reward</th>
+                <th scope="col">time</th>
+                <th scope="col">status</th>
+              </tr>
+            </thead>
+            <tbody id="blocks-table"></tbody>
+          </table>
+        </section>
       </div>
-      <div class="panel" style="flex:1;">
-        <div class="panel-title">[ PAYMENTS ]</div>
-        <table>
-          <tr><td class="dim">total paid</td><td class="white" id="totalpaid">--</td></tr>
-          <tr><td class="dim">pending</td><td class="yellow" id="pending">--</td></tr>
-          <tr><td class="dim">min payout</td><td>0.01 FRR</td></tr>
-          <tr><td class="dim">interval</td><td>1h</td></tr>
-          <tr><td class="dim">algorithm</td><td class="accent">SHA-256d</td></tr>
+
+      <!-- Recent Payments -->
+      <section class="panel" style="margin-top:0;" aria-labelledby="recentpayments-title">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h2 class="panel-title" id="recentpayments-title">[ RECENT PAYMENTS ]</h2>
+          <button class="btn btn-ghost" id="export-payments" style="padding:2px 8px;font-size:var(--font-size-xs);">EXPORT CSV</button>
+        </div>
+        <table class="pool-table">
+          <thead>
+            <tr>
+              <th scope="col">address</th>
+              <th scope="col">amount</th>
+              <th scope="col">tx hash</th>
+              <th scope="col">time</th>
+              <th scope="col">status</th>
+            </tr>
+          </thead>
+          <tbody id="payments-table"></tbody>
         </table>
-      </div>
-    </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="pool-footer">
+      <span class="dim" aria-hidden="true">────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><br>
+      <span>ferrous.network pool</span>
+      <span style="margin:0 var(--space-2);">|</span>
+      <span>seed1.ferrous.network:3333</span>
+      <span style="margin:0 var(--space-2);">|</span>
+      <span>seed2.ferrous.network:3333</span>
+      <span style="margin:0 var(--space-2);">|</span>
+      <span class="blink" aria-hidden="true">_</span>
+    </footer>
   </div>
-</div>
 
-<!-- HASHRATE CHART -->
-<div class="panel" style="margin-top:0;">
-  <div class="panel-title">[ POOL HASHRATE / 24H ]</div>
-  <div id="chart" style="font-size:11px; line-height:1.1;"></div>
-</div>
+  <script src="shared-utils.js"></script>
+  <script>
+    // ═══════════════════════════════════════════════════════════
+    // STATE
+    // ═══════════════════════════════════════════════════════════
 
-<!-- WORKERS + RECENT BLOCKS -->
-<div class="row" style="margin-top:0;">
-  <div class="panel" style="flex:3;">
-    <div class="panel-title">[ ACTIVE WORKERS ]</div>
-    <table>
-      <thead>
-        <tr>
-          <th>worker</th>
-          <th>hashrate</th>
-          <th>shares</th>
-          <th>efficiency</th>
-          <th>last seen</th>
-          <th>status</th>
-        </tr>
-      </thead>
-      <tbody id="workers-table"></tbody>
-    </table>
-  </div>
-  <div class="panel" style="flex:2;">
-    <div class="panel-title">[ RECENT BLOCKS ]</div>
-    <table>
-      <thead>
-        <tr>
-          <th>height</th>
-          <th>hash</th>
-          <th>reward</th>
-          <th>time</th>
-          <th>status</th>
-        </tr>
-      </thead>
-      <tbody id="blocks-table"></tbody>
-    </table>
-  </div>
-</div>
-
-<!-- RECENT PAYMENTS -->
-<div class="panel" style="margin-top:0;">
-  <div class="panel-title">[ RECENT PAYMENTS ]</div>
-  <table>
-    <thead>
-      <tr>
-        <th>address</th>
-        <th>amount</th>
-        <th>tx hash</th>
-        <th>time</th>
-        <th>status</th>
-      </tr>
-    </thead>
-    <tbody id="payments-table"></tbody>
-  </table>
-</div>
-
-<!-- FOOTER -->
-<div class="footer">
-  <span class="dim">────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><br>
-  ferrous.network pool | seed1.ferrous.network:3333 | seed2.ferrous.network:3333 | <span class="blink">_</span>
-</div>
-
-</div>
-
-<script>
-// ── helpers ──────────────────────────────────────────────
-function rand(a, b) { return Math.random() * (b - a) + a; }
-function randInt(a, b) { return Math.floor(rand(a, b)); }
-function fmtHash(h) { return h.toString(16).padStart(8,'0').toUpperCase(); }
-function shortAddr(a) { return a.slice(0,6)+'...'+a.slice(-4); }
-function shortTx(t) { return t.slice(0,8)+'...'+t.slice(-4); }
-function randomAddr() {
-  let s = '1F';
-  const chars = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-  for(let i=0;i<30;i++) s += chars[randInt(0,chars.length)];
-  return s;
-}
-function randomTx() {
-  let s = '';
-  const h = '0123456789abcdef';
-  for(let i=0;i<64;i++) s += h[randInt(0,16)];
-  return s;
-}
-function timeAgo(s) {
-  if(s<60) return s+'s ago';
-  if(s<3600) return Math.floor(s/60)+'m ago';
-  return Math.floor(s/3600)+'h ago';
-}
-
-// ── state ─────────────────────────────────────────────────
-let blockHeight = 14872;
-let totalBlocks = 31;
-let totalPaid = 184.22;
-let pending = 12.74;
-let chartData = Array.from({length:48}, () => rand(180, 420));
-
-const workerNames = ['miner_alpha','miner_beta','rig_gamma','node_delta','rig_epsilon'];
-const workers = workerNames.map((name, i) => ({
-  name,
-  hashrate: rand(80, 350),
-  shares: randInt(1200, 9000),
-  efficiency: rand(94, 99.9),
-  lastSeen: randInt(1, 45),
-  active: i < 4
-}));
-
-let recentBlocks = Array.from({length:8}, (_,i) => ({
-  height: blockHeight - i,
-  hash: randInt(0x10000000, 0xffffffff),
-  reward: 50,
-  age: (i+1) * randInt(170, 200),
-  confirmed: i > 0
-}));
-
-let recentPayments = Array.from({length:6}, (_,i) => ({
-  addr: randomAddr(),
-  amount: (rand(0.5, 8)).toFixed(4),
-  tx: randomTx(),
-  age: (i+1)*randInt(20,60)*60,
-  done: i > 0
-}));
-
-// ── clock ─────────────────────────────────────────────────
-function updateClock() {
-  const now = new Date();
-  document.getElementById('clock').textContent =
-    now.toUTCString().replace('GMT','UTC');
-}
-
-// ── chart ─────────────────────────────────────────────────
-function drawChart() {
-  const bars = ' ▁▂▃▄▅▆▇█';
-  const max = Math.max(...chartData);
-  const min = Math.min(...chartData);
-  const rows = 5;
-  let lines = [];
-  for(let r = rows-1; r >= 0; r--) {
-    let line = '<span class="dim">' + (Math.round(min + (max-min)*(r/(rows-1)))).toString().padStart(4) + ' GH/s </span>';
-    for(let i = 0; i < chartData.length; i++) {
-      const norm = (chartData[i] - min) / (max - min);
-      const filled = norm * rows;
-      const rowVal = filled - r;
-      if(rowVal >= 1) line += '<span class="accent">█</span>';
-      else if(rowVal > 0) {
-        const idx = Math.floor(rowVal * 8);
-        line += '<span style="color:#2a5a8f">' + bars[idx] + '</span>';
-      } else {
-        line += '<span class="dim">·</span>';
-      }
-    }
-    lines.push(line);
-  }
-  lines.push('<span class="dim">       ' + Array.from({length:48},(_,i)=> i%6===0 ? (48-i)+'h' : ' ').map(s=>s.padEnd(1)).join('') + '</span>');
-  document.getElementById('chart').innerHTML = lines.join('<br>');
-}
-
-// ── workers table ─────────────────────────────────────────
-function renderWorkers() {
-  const tbody = document.getElementById('workers-table');
-  tbody.innerHTML = workers.map(w => {
-    const pct = Math.min(100, (w.hashrate/350)*100);
-    const bar = `<span class="bar-bg"><span class="bar-fill" style="width:${pct}px"></span></span>`;
-    const status = w.active
-      ? '<span class="badge-ok"> ACTIVE </span>'
-      : '<span class="badge-warn"> IDLE </span>';
-    return `<tr>
-      <td class="white">${w.name}</td>
-      <td>${bar} <span class="accent">${w.hashrate.toFixed(1)} GH/s</span></td>
-      <td>${w.shares.toLocaleString()}</td>
-      <td class="green">${w.efficiency.toFixed(1)}%</td>
-      <td class="dim">${timeAgo(w.lastSeen)}</td>
-      <td>${status}</td>
-    </tr>`;
-  }).join('');
-}
-
-// ── blocks table ──────────────────────────────────────────
-function renderBlocks() {
-  const tbody = document.getElementById('blocks-table');
-  tbody.innerHTML = recentBlocks.map((b,i) => {
-    const status = i===0
-      ? '<span class="badge-warn"> PENDING </span>'
-      : '<span class="badge-ok"> CONFIRMED </span>';
-    return `<tr>
-      <td class="accent">#${b.height}</td>
-      <td class="dim">${fmtHash(b.hash).slice(0,12)}...</td>
-      <td class="yellow">${b.reward} FRR</td>
-      <td class="dim">${timeAgo(b.age)}</td>
-      <td>${status}</td>
-    </tr>`;
-  }).join('');
-}
-
-// ── payments table ────────────────────────────────────────
-function renderPayments() {
-  const tbody = document.getElementById('payments-table');
-  tbody.innerHTML = recentPayments.map((p,i) => {
-    const status = i===0
-      ? '<span class="badge-warn"> PENDING </span>'
-      : '<span class="badge-ok"> SENT </span>';
-    return `<tr>
-      <td class="white">${shortAddr(p.addr)}</td>
-      <td class="yellow">${p.amount} FRR</td>
-      <td class="dim">${shortTx(p.tx)}</td>
-      <td class="dim">${timeAgo(p.age)}</td>
-      <td>${status}</td>
-    </tr>`;
-  }).join('');
-}
-
-// ── network stats ─────────────────────────────────────────
-function renderStats() {
-  const poolHash = workers.filter(w=>w.active).reduce((s,w)=>s+w.hashrate,0);
-  const netHash = poolHash * rand(8, 12);
-  const luck = rand(85, 115);
-  const luckColor = luck > 100 ? 'red' : 'green';
-
-  document.getElementById('height').textContent = blockHeight.toLocaleString();
-  document.getElementById('diff').textContent = '0x' + randInt(0x1d00,0x1fff).toString(16).toUpperCase() + 'FFFF';
-  document.getElementById('nethash').textContent = netHash.toFixed(1) + ' GH/s';
-  document.getElementById('btime').textContent = randInt(168,195) + 's';
-  document.getElementById('lastblock').textContent = timeAgo(randInt(10,90));
-  document.getElementById('poolhash').textContent = poolHash.toFixed(1) + ' GH/s';
-  document.getElementById('workers').textContent = workers.filter(w=>w.active).length + ' / ' + workers.length;
-  document.getElementById('found').textContent = totalBlocks;
-  document.getElementById('luck').innerHTML = `<span class="${luckColor}">${luck.toFixed(1)}%</span>`;
-  document.getElementById('totalpaid').textContent = totalPaid.toFixed(2) + ' FRR';
-  document.getElementById('pending').textContent = pending.toFixed(2) + ' FRR';
-}
-
-// ── tick ──────────────────────────────────────────────────
-function tick() {
-  // drift workers
-  workers.forEach(w => {
-    if(w.active) {
-      w.hashrate = Math.max(10, w.hashrate + rand(-5, 5));
-      w.shares += randInt(0, 3);
-      w.lastSeen = Math.max(1, w.lastSeen - 1);
-    }
-  });
-  // drift chart
-  chartData.shift();
-  chartData.push(rand(180, 420));
-  // occasional new block
-  if(Math.random() < 0.05) {
-    blockHeight++;
-    totalBlocks++;
-    recentBlocks.unshift({
-      height: blockHeight,
-      hash: randInt(0x10000000, 0xffffffff),
-      reward: 50,
-      age: 0,
-      confirmed: false
+    var blockHeight = 14872;
+    var totalBlocks = 31;
+    var totalPaid = 184.22;
+    var pending = 12.74;
+    var chartData = Array.from({ length: 48 }, function() {
+      return Ferrous.randomFloat(180, 420);
     });
-    recentBlocks = recentBlocks.slice(0, 8);
-  }
-  recentBlocks.forEach(b => b.age += 2);
-  recentPayments.forEach(p => p.age += 2);
-  totalPaid += rand(0, 0.02);
-  pending = Math.max(0, pending + rand(-0.05, 0.1));
 
-  renderStats();
-  renderWorkers();
-  renderBlocks();
-  renderPayments();
-  drawChart();
-  updateClock();
-}
+    var workerNames = ['miner_alpha', 'miner_beta', 'rig_gamma', 'node_delta', 'rig_epsilon'];
+    var workers = workerNames.map(function(name, i) {
+      return {
+        name: name,
+        hashrate: Ferrous.randomFloat(80, 350),
+        shares: Ferrous.randomInt(1200, 9000),
+        efficiency: Ferrous.randomFloat(94, 99.9),
+        lastSeen: Ferrous.randomInt(1, 45),
+        active: i < 4
+      };
+    });
 
-// init
-tick();
-setInterval(tick, 2000);
-setInterval(updateClock, 1000);
-</script>
+    var recentBlocks = Array.from({ length: 8 }, function(_, i) {
+      return {
+        height: blockHeight - i,
+        hash: Ferrous.randomInt(0x10000000, 0xffffffff),
+        reward: 50,
+        age: (i + 1) * Ferrous.randomInt(170, 200),
+        confirmed: i > 0
+      };
+    });
+
+    var recentPayments = Array.from({ length: 6 }, function(_, i) {
+      return {
+        addr: Ferrous.randomAddress(),
+        amount: Ferrous.randomFloat(0.5, 8).toFixed(4),
+        tx: Ferrous.randomTxId(),
+        age: (i + 1) * Ferrous.randomInt(20, 60) * 60,
+        done: i > 0
+      };
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // RENDER FUNCTIONS
+    // ═══════════════════════════════════════════════════════════
+
+    function updateClock() {
+      var now = new Date();
+      document.getElementById('clock').textContent = now.toUTCString().replace('GMT', 'UTC');
+    }
+
+    function drawChart() {
+      var bars = ' ▁▂▃▄▅▆▇█';
+      var max = Math.max.apply(null, chartData);
+      var min = Math.min.apply(null, chartData);
+      var rows = 5;
+      var lines = [];
+
+      for (var r = rows - 1; r >= 0; r--) {
+        var line = '<span class="dim">' + Math.round(min + (max - min) * (r / (rows - 1))).toString().padStart(4) + ' GH/s </span>';
+        for (var i = 0; i < chartData.length; i++) {
+          var norm = (chartData[i] - min) / (max - min);
+          var filled = norm * rows;
+          var rowVal = filled - r;
+          if (rowVal >= 1) {
+            line += '<span class="accent">█</span>';
+          } else if (rowVal > 0) {
+            var idx = Math.floor(rowVal * 8);
+            line += '<span style="color:#2a5a8f">' + bars[idx] + '</span>';
+          } else {
+            line += '<span class="dim">·</span>';
+          }
+        }
+        lines.push(line);
+      }
+
+      var timeLabels = '<span class="dim">       ';
+      for (var t = 0; t < 48; t++) {
+        timeLabels += (t % 6 === 0 ? (48 - t) + 'h' : ' ').padEnd(1);
+      }
+      timeLabels += '</span>';
+      lines.push(timeLabels);
+
+      document.getElementById('chart').innerHTML = lines.join('<br>');
+    }
+
+    function renderWorkers() {
+      var tbody = document.getElementById('workers-table');
+      tbody.innerHTML = workers.map(function(w) {
+        var pct = Math.min(100, (w.hashrate / 350) * 100);
+        var bar = '<span class="bar-bg"><span class="bar-fill" style="width:' + pct + 'px"></span></span>';
+        var status = w.active
+          ? '<span class="badge-ok"> ACTIVE </span>'
+          : '<span class="badge-warn"> IDLE </span>';
+        return '<tr>' +
+          '<td class="white">' + w.name + '</td>' +
+          '<td>' + bar + ' <span class="accent">' + w.hashrate.toFixed(1) + ' GH/s</span></td>' +
+          '<td>' + Ferrous.formatNumber(w.shares) + '</td>' +
+          '<td class="green">' + w.efficiency.toFixed(1) + '%</td>' +
+          '<td class="dim">' + Ferrous.timeAgo(w.lastSeen) + '</td>' +
+          '<td>' + status + '</td>' +
+        '</tr>';
+      }).join('');
+    }
+
+    function renderBlocks() {
+      var tbody = document.getElementById('blocks-table');
+      tbody.innerHTML = recentBlocks.map(function(b, i) {
+        var status = i === 0
+          ? '<span class="badge-warn"> PENDING </span>'
+          : '<span class="badge-ok"> CONFIRMED </span>';
+        var hashStr = b.hash.toString(16).toUpperCase().padStart(8, '0');
+        return '<tr>' +
+          '<td class="accent">#' + Ferrous.formatNumber(b.height) + '</td>' +
+          '<td class="dim">' + hashStr.slice(0, 12) + '...</td>' +
+          '<td class="yellow">' + b.reward + ' FRR</td>' +
+          '<td class="dim">' + Ferrous.timeAgo(b.age) + '</td>' +
+          '<td>' + status + '</td>' +
+        '</tr>';
+      }).join('');
+    }
+
+    function renderPayments() {
+      var tbody = document.getElementById('payments-table');
+      tbody.innerHTML = recentPayments.map(function(p, i) {
+        var status = i === 0
+          ? '<span class="badge-warn"> PENDING </span>'
+          : '<span class="badge-ok"> SENT </span>';
+        return '<tr>' +
+          '<td class="white">' + Ferrous.shortAddr(p.addr) + '</td>' +
+          '<td class="yellow">' + p.amount + ' FRR</td>' +
+          '<td class="dim">' + Ferrous.shortHash(p.tx, 8, 4) + '</td>' +
+          '<td class="dim">' + Ferrous.timeAgo(p.age) + '</td>' +
+          '<td>' + status + '</td>' +
+        '</tr>';
+      }).join('');
+    }
+
+    function renderStats() {
+      var poolHash = workers.filter(function(w) { return w.active; }).reduce(function(s, w) { return s + w.hashrate; }, 0);
+      var netHash = poolHash * Ferrous.randomFloat(8, 12);
+      var luck = Ferrous.randomFloat(85, 115);
+      var luckColor = luck > 100 ? 'red' : 'green';
+
+      document.getElementById('height').textContent = Ferrous.formatNumber(blockHeight);
+      document.getElementById('diff').textContent = '0x' + Ferrous.randomInt(0x1d00, 0x1fff).toString(16).toUpperCase() + 'FFFF';
+      document.getElementById('nethash').textContent = netHash.toFixed(1) + ' GH/s';
+      document.getElementById('btime').textContent = Ferrous.randomInt(168, 195) + 's';
+      document.getElementById('lastblock').textContent = Ferrous.timeAgo(Ferrous.randomInt(10, 90));
+      document.getElementById('poolhash').textContent = poolHash.toFixed(1) + ' GH/s';
+      document.getElementById('workers').textContent = workers.filter(function(w) { return w.active; }).length + ' / ' + workers.length;
+      document.getElementById('found').textContent = totalBlocks;
+      document.getElementById('luck').innerHTML = '<span class="' + luckColor + '">' + luck.toFixed(1) + '%</span>';
+      document.getElementById('totalpaid').textContent = totalPaid.toFixed(2) + ' FRR';
+      document.getElementById('pending').textContent = pending.toFixed(2) + ' FRR';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // LIVE UPDATES
+    // ═══════════════════════════════════════════════════════════
+
+    var tick = Ferrous.throttle(function() {
+      // Drift workers
+      workers.forEach(function(w) {
+        if (w.active) {
+          w.hashrate = Math.max(10, w.hashrate + Ferrous.randomFloat(-5, 5));
+          w.shares += Ferrous.randomInt(0, 3);
+          w.lastSeen = Math.max(1, w.lastSeen - 1);
+        }
+      });
+
+      // Drift chart
+      chartData.shift();
+      chartData.push(Ferrous.randomFloat(180, 420));
+
+      // Occasional new block
+      if (Math.random() < 0.05) {
+        blockHeight++;
+        totalBlocks++;
+        recentBlocks.unshift({
+          height: blockHeight,
+          hash: Ferrous.randomInt(0x10000000, 0xffffffff),
+          reward: 50,
+          age: 0,
+          confirmed: false
+        });
+        recentBlocks = recentBlocks.slice(0, 8);
+        Ferrous.showToast('New block found! #' + blockHeight, 'success');
+      }
+
+      recentBlocks.forEach(function(b) { b.age += 2; });
+      recentPayments.forEach(function(p) { p.age += 2; });
+      totalPaid += Ferrous.randomFloat(0, 0.02);
+      pending = Math.max(0, pending + Ferrous.randomFloat(-0.05, 0.1));
+
+      renderStats();
+      renderWorkers();
+      renderBlocks();
+      renderPayments();
+      drawChart();
+      updateClock();
+    }, 2000);
+
+    // ═══════════════════════════════════════════════════════════
+    // EXPORT
+    // ═══════════════════════════════════════════════════════════
+
+    function exportPayments() {
+      var data = recentPayments.map(function(p, i) {
+        return {
+          address: p.addr,
+          amount: p.amount,
+          txHash: p.tx,
+          time: Ferrous.timeAgo(p.age),
+          status: i === 0 ? 'Pending' : 'Sent'
+        };
+      });
+
+      Ferrous.exportCSV(data, 'ferrous-pool-payments.csv', [
+        { key: 'address', label: 'Address' },
+        { key: 'amount', label: 'Amount (FRR)' },
+        { key: 'txHash', label: 'Transaction Hash' },
+        { key: 'time', label: 'Time' },
+        { key: 'status', label: 'Status' }
+      ]);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // INITIALIZATION
+    // ═══════════════════════════════════════════════════════════
+
+    document.addEventListener('DOMContentLoaded', function() {
+      // Initial render
+      tick();
+      updateClock();
+
+      // Export handler
+      document.getElementById('export-payments').addEventListener('click', exportPayments);
+
+      // Clock updates
+      setInterval(updateClock, 1000);
+
+      // Live updates
+      setInterval(tick, 2000);
+
+      // Keyboard shortcuts
+      Ferrous.registerShortcut('r', function() {
+        tick();
+        Ferrous.showToast('Refreshed', 'info');
+      }, 'Refresh data');
+    });
+  </script>
 </body>
 </html>

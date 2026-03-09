@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Ferrous Network - A quantum-resistant, privacy-focused Layer 1 blockchain built in Rust with SHA-256d Proof-of-Work">
+  <meta name="theme-color" content="#0a0e1a">
+  <title>Ferrous Network - Quantum-Resistant Blockchain</title>
+  <link rel="stylesheet" href="shared-styles.css">
+  <style>
+    /* Index-specific styles */
+    .index-hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      padding: var(--space-10);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .index-hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(74,158,255,0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(74,158,255,0.02) 1px, transparent 1px);
+      background-size: 60px 60px;
+      mask-image: radial-gradient(ellipse 60% 60% at 50% 50%, black 30%, transparent 100%);
+      pointer-events: none;
+    }
+
+    .index-logo {
+      font-size: 72px;
+      color: var(--color-accent);
+      margin-bottom: var(--space-4);
+      animation: fadeUp 0.6s ease forwards;
+    }
+
+    .index-logo .fe {
+      border: 2px solid var(--color-accent);
+      padding: var(--space-2) var(--space-4);
+      color: var(--color-white);
+    }
+
+    .index-title {
+      font-size: clamp(24px, 4vw, 48px);
+      font-weight: normal;
+      color: var(--color-white);
+      margin-bottom: var(--space-4);
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      opacity: 0;
+      animation: fadeUp 0.6s ease forwards 0.2s;
+    }
+
+    .index-subtitle {
+      color: var(--color-text-dim);
+      font-size: var(--font-size-md);
+      max-width: 600px;
+      line-height: var(--line-height-loose);
+      margin-bottom: var(--space-12);
+      opacity: 0;
+      animation: fadeUp 0.6s ease forwards 0.4s;
+    }
+
+    .index-nav {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: var(--space-4);
+      max-width: 900px;
+      width: 100%;
+      opacity: 0;
+      animation: fadeUp 0.6s ease forwards 0.6s;
+    }
+
+    .index-card {
+      border: 1px solid var(--color-border);
+      padding: var(--space-8);
+      text-align: left;
+      transition: all var(--transition-base);
+      text-decoration: none;
+      display: block;
+      background: var(--color-bg);
+    }
+
+    .index-card:hover {
+      border-color: var(--color-accent);
+      background: var(--color-bg-secondary);
+      text-decoration: none;
+      transform: translateY(-2px);
+    }
+
+    .index-card:focus-visible {
+      outline: 2px solid var(--color-accent);
+      outline-offset: 2px;
+    }
+
+    .index-card-icon {
+      font-size: var(--font-size-2xl);
+      color: var(--color-accent);
+      margin-bottom: var(--space-3);
+    }
+
+    .index-card-title {
+      font-size: var(--font-size-lg);
+      color: var(--color-white);
+      margin-bottom: var(--space-2);
+      letter-spacing: 1px;
+    }
+
+    .index-card-desc {
+      color: var(--color-text-dim);
+      font-size: var(--font-size-sm);
+      line-height: var(--line-height-relaxed);
+    }
+
+    .index-card-arrow {
+      color: var(--color-text-dim);
+      font-size: var(--font-size-sm);
+      margin-top: var(--space-4);
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      transition: color var(--transition-fast);
+    }
+
+    .index-card:hover .index-card-arrow {
+      color: var(--color-accent);
+    }
+
+    .index-features {
+      display: flex;
+      justify-content: center;
+      gap: var(--space-8);
+      margin-bottom: var(--space-12);
+      flex-wrap: wrap;
+      opacity: 0;
+      animation: fadeUp 0.6s ease forwards 0.5s;
+    }
+
+    .index-feature {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+    }
+
+    .index-feature .dot {
+      width: 6px;
+      height: 6px;
+      background: var(--color-success);
+      border-radius: 50%;
+    }
+
+    .index-footer {
+      position: absolute;
+      bottom: var(--space-5);
+      left: 0;
+      right: 0;
+      text-align: center;
+      font-size: var(--font-size-sm);
+      color: var(--color-text-dim);
+    }
+
+    .index-footer a {
+      color: var(--color-accent);
+    }
+
+    /* Theme toggle positioned in top right */
+    .index-theme-toggle {
+      position: absolute;
+      top: var(--space-5);
+      right: var(--space-5);
+    }
+
+    @media (max-width: 768px) {
+      .index-hero {
+        padding: var(--space-5);
+      }
+
+      .index-nav {
+        grid-template-columns: 1fr;
+      }
+
+      .index-features {
+        flex-direction: column;
+        align-items: center;
+        gap: var(--space-4);
+      }
+
+      .index-logo {
+        font-size: 48px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
+  <main id="main-content" class="index-hero">
+    <button class="theme-toggle index-theme-toggle" aria-label="Toggle theme">[ LIGHT ]</button>
+
+    <div class="index-logo" aria-hidden="true">
+      <span class="fe">Fe</span>
+    </div>
+
+    <h1 class="index-title">Ferrous Network</h1>
+
+    <p class="index-subtitle">
+      A quantum-resistant, privacy-focused Layer 1 blockchain built in Rust.
+      Post-quantum signatures, confidential transactions, and SHA-256d Proof-of-Work.
+    </p>
+
+    <div class="index-features">
+      <div class="index-feature">
+        <span class="dot"></span>
+        <span>CRYSTALS-Dilithium</span>
+      </div>
+      <div class="index-feature">
+        <span class="dot"></span>
+        <span>Ring CT Privacy</span>
+      </div>
+      <div class="index-feature">
+        <span class="dot"></span>
+        <span>SHA-256d PoW</span>
+      </div>
+      <div class="index-feature">
+        <span class="dot"></span>
+        <span>100% Rust</span>
+      </div>
+    </div>
+
+    <nav class="index-nav" aria-label="Main navigation">
+      <a href="ferrous-network.html" class="index-card">
+        <div class="index-card-icon">[N]</div>
+        <h2 class="index-card-title">Network</h2>
+        <p class="index-card-desc">Learn about the protocol, run a node, and explore the network specifications.</p>
+        <div class="index-card-arrow">Enter Network <span aria-hidden="true">→</span></div>
+      </a>
+
+      <a href="ferrous-explorer.html" class="index-card">
+        <div class="index-card-icon">[E]</div>
+        <h2 class="index-card-title">Explorer</h2>
+        <p class="index-card-desc">Browse blocks, transactions, and addresses on the Ferrous blockchain.</p>
+        <div class="index-card-arrow">Open Explorer <span aria-hidden="true">→</span></div>
+      </a>
+
+      <a href="ferrous-pool.html" class="index-card">
+        <div class="index-card-icon">[P]</div>
+        <h2 class="index-card-title">Mining Pool</h2>
+        <p class="index-card-desc">Join the mining pool to earn FRR rewards. Monitor hashrate and payouts.</p>
+        <div class="index-card-arrow">Start Mining <span aria-hidden="true">→</span></div>
+      </a>
+
+      <a href="ferrous-otc.html" class="index-card">
+        <div class="index-card-icon">[T]</div>
+        <h2 class="index-card-title">OTC Trading</h2>
+        <p class="index-card-desc">Trade FRR on the peer-to-peer OTC market. Place and fill orders.</p>
+        <div class="index-card-arrow">Open Trading <span aria-hidden="true">→</span></div>
+      </a>
+    </nav>
+
+    <footer class="index-footer">
+      <span>ferrous.network</span>
+      <span style="margin: 0 var(--space-3);">·</span>
+      <a href="https://github.com/chronocoders/ferrous" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <span style="margin: 0 var(--space-3);">·</span>
+      <span>TESTNET <span class="blink">_</span></span>
+    </footer>
+  </main>
+
+  <script src="shared-utils.js"></script>
+  <script>
+    // Register keyboard shortcuts for navigation
+    Ferrous.registerShortcut('n', function() {
+      window.location.href = 'ferrous-network.html';
+    }, 'Go to Network');
+
+    Ferrous.registerShortcut('e', function() {
+      window.location.href = 'ferrous-explorer.html';
+    }, 'Go to Explorer');
+
+    Ferrous.registerShortcut('p', function() {
+      window.location.href = 'ferrous-pool.html';
+    }, 'Go to Pool');
+
+    Ferrous.registerShortcut('o', function() {
+      window.location.href = 'ferrous-otc.html';
+    }, 'Go to OTC');
+  </script>
+</body>
+</html>
