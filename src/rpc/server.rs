@@ -238,6 +238,7 @@ impl RpcServer {
         }
 
         let mut block_hashes = Vec::new();
+        let mut last_hash = [0u8; 32];
 
         for _ in 0..nblocks {
             let hash = {
@@ -248,9 +249,11 @@ impl RpcServer {
                     .map_err(|e| format!("Mining failed: {:?}", e))?;
                 header.hash()
             };
-            let _ = self.relay.announce_block(hash);
+            last_hash = hash;
             block_hashes.push(hex::encode(hash));
         }
+
+        let _ = self.relay.announce_block(last_hash);
 
         let response = MineBlocksResponse {
             blocks: block_hashes,
@@ -282,6 +285,7 @@ impl RpcServer {
             .map_err(|e| format!("Invalid address: {}", e))?;
 
         let mut block_hashes = Vec::new();
+        let mut last_hash = [0u8; 32];
 
         for _ in 0..nblocks {
             let hash = {
@@ -295,9 +299,11 @@ impl RpcServer {
                     .map_err(|e| format!("Mining failed: {:?}", e))?;
                 header.hash()
             };
-            let _ = self.relay.announce_block(hash);
+            last_hash = hash;
             block_hashes.push(hex::encode(hash));
         }
+
+        let _ = self.relay.announce_block(last_hash);
 
         let response = MineBlocksResponse {
             blocks: block_hashes,

@@ -67,9 +67,16 @@ impl BlockRelay {
         for inv_vec in &inv.inventory {
             match inv_vec.inv_type {
                 INV_BLOCK => {
-                    // Check if we have this block
                     if !chain.has_block(&inv_vec.hash) {
-                        to_request.push(*inv_vec);
+                        // Trigger headers sync instead of direct GETDATA
+                        // This avoids INV rate limit issues during bulk mining
+                        drop(chain);
+                        let sync_guard = self.peer_manager.sync_manager();
+                        let sync = sync_guard.lock().unwrap();
+                        if let Some(sync) = &*sync {
+                            let _ = sync.request_headers_force(peer_id);
+                        }
+                        return Ok(());
                     }
                 }
                 INV_TX => {
