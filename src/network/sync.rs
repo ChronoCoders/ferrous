@@ -17,7 +17,7 @@ pub struct SyncManager {
 enum SyncState {
     Idle,
     DownloadingHeaders { from_peer: u64, highest_known: u64 },
-    DownloadingBlocks { pending: Vec<[u8; 32]> },
+    DownloadingBlocks { pending: Vec<[u8; 32]>, peer_id: u64 },
     Synced,
 }
 
@@ -47,13 +47,30 @@ impl SyncManager {
     }
 
     pub fn block_received(&self, hash: [u8; 32]) {
-        let mut state = self.sync_state.lock().unwrap();
-        if let SyncState::DownloadingBlocks { pending } = &mut *state {
-            if let Some(pos) = pending.iter().position(|h| *h == hash) {
-                pending.remove(pos);
-                if pending.is_empty() {
-                    *state = SyncState::Idle;
+        let next_peer = {
+            let mut state = self.sync_state.lock().unwrap();
+            if let SyncState::DownloadingBlocks { pending, peer_id } = &mut *state {
+                if let Some(pos) = pending.iter().position(|h| *h == hash) {
+                    pending.remove(pos);
                 }
+                if pending.is_empty() {
+                    let pid = *peer_id;
+                    *state = SyncState::Idle;
+                    Some(pid)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        // If pending cleared, check if we need more blocks
+        if let Some(peer_id) = next_peer {
+            let local_height = self.get_local_height();
+            let peer_height = self.peer_manager.get_peer_start_height(peer_id).unwrap_or(0);
+            if (peer_height as u64) > local_height as u64 {
+                let _ = self.start_sync(peer_id);
             }
         }
     }
@@ -201,6 +218,7 @@ impl SyncManager {
             // I'll implement `request_blocks_for_headers` helper.
             *state = SyncState::DownloadingBlocks {
                 pending: Vec::new(),
+                peer_id,
             };
             drop(state);
 
@@ -249,7 +267,7 @@ impl SyncManager {
 
             // Update state
             let mut state = self.sync_state.lock().unwrap();
-            if let SyncState::DownloadingBlocks { pending: ref mut p } = *state {
+            if let SyncState::DownloadingBlocks { pending: ref mut p, .. } = *state {
                 p.extend(pending);
             }
         }
