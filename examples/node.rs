@@ -54,6 +54,10 @@ struct Args {
     /// Seed nodes (comma separated)
     #[arg(long, value_delimiter = ',')]
     seed_nodes: Vec<String>,
+
+    /// Enable continuous mining
+    #[arg(long, default_value = "false")]
+    mine: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -222,10 +226,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let miner = Arc::new(Miner::new(params, mining_address));
 
         let config = RpcServerConfig {
-            chain,
-            miner,
+            chain: chain.clone(),
+            miner: miner.clone(),
             wallet,
-            peer_manager,
+            peer_manager: peer_manager.clone(),
             network_stats,
             recovery_manager,
             relay: relay.clone(),
@@ -233,6 +237,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let server = RpcServer::new(config, &args.rpc_addr)
             .map_err(std::io::Error::other)?;
+
+        if args.mine {
+            println!("Starting continuous miner...");
+            let chain_mine = chain.clone();
+            let miner_mine = miner.clone();
+            let relay_mine = relay.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let hash = {
+                        let mut chain_guard = chain_mine.lock().unwrap();
+                        match miner_mine.mine_and_attach(&mut chain_guard, Vec::new()) {
+                            Ok(header) => Some(header.hash()),
+                            Err(e) => {
+                                eprintln!("Mining error: {:?}", e);
+                                std::thread::sleep(std::time::Duration::from_secs(1));
+                                None
+                            }
+                        }
+                    };
+                    if let Some(hash) = hash {
+                        let _ = relay_mine.announce_block(hash);
+                    }
+                }
+            });
+        }
 
         println!("Node running. Press Ctrl+C to stop.");
         println!("\nExample commands:");
