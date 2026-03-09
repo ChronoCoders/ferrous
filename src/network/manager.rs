@@ -455,7 +455,7 @@ impl PeerManager {
             let is_regtest = magic == [0xfa, 0xbf, 0xb5, 0xda];
             let security = security_clone.lock().unwrap();
             let total_peers = peers_clone.lock().unwrap().len();
-            if !is_regtest && !security.can_accept_for_diversity(ip, total_peers) {
+            if !is_regtest && !is_trusted && !security.can_accept_for_diversity(ip, total_peers) {
                 println!("Rejected connection from {} (diversity)", ip);
                 return;
             }

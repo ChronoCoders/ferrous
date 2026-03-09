@@ -68,13 +68,13 @@ impl BlockRelay {
             match inv_vec.inv_type {
                 INV_BLOCK => {
                     if !chain.has_block(&inv_vec.hash) {
-                        // Trigger headers sync instead of direct GETDATA
-                        // This avoids INV rate limit issues during bulk mining
                         drop(chain);
                         let sync_guard = self.peer_manager.sync_manager();
                         let sync = sync_guard.lock().unwrap();
                         if let Some(sync) = &*sync {
-                            let _ = sync.request_headers_force(peer_id);
+                            if !sync.is_syncing() {
+                                let _ = sync.request_headers_force(peer_id);
+                            }
                         }
                         return Ok(());
                     }
