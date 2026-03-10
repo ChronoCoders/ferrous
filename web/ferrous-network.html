@@ -977,30 +977,6 @@ a:hover { text-decoration: underline; }
         </div>
       </article>
 
-      <article class="node-step">
-        <div class="step-num">05</div>
-        <div>
-          <h3 class="step-title">Run as a Service (Optional)</h3>
-          <div class="step-body">Use systemd for automatic startup and restart on failure.</div>
-          <div class="terminal">
-            <div><span class="term-prompt">$ </span><span class="term-cmd">sudo nano /etc/systemd/system/ferrous.service</span></div>
-            <div></div>
-            <div><span class="term-out">[Unit]</span></div>
-            <div><span class="term-out">Description=Ferrous Network Node</span></div>
-            <div><span class="term-out">After=network.target</span></div>
-            <div></div>
-            <div><span class="term-out">[Service]</span></div>
-            <div><span class="term-out">ExecStart=/usr/local/bin/ferrous --config /etc/ferrous/ferrous.toml</span></div>
-            <div><span class="term-out">Restart=always</span></div>
-            <div></div>
-            <div><span class="term-out">[Install]</span></div>
-            <div><span class="term-out">WantedBy=multi-user.target</span></div>
-            <div></div>
-            <div><span class="term-prompt">$ </span><span class="term-cmd">sudo systemctl enable --now ferrous</span></div>
-          </div>
-        </div>
-      </article>
-
     </div>
   </div>
 </section>

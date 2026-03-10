@@ -32,3 +32,7 @@ node-prod-data/
 # OS specific
 .DS_Store
 Thumbs.db
+
+# Local operator notes / scripts
+TRAE.md
+monitor.sh

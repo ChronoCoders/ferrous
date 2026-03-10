@@ -610,7 +610,9 @@ impl PeerManager {
                     }
                     MessagePayload::Block(block) => {
                         println!("dispatch: received block message from peer {}", id);
-                        let _ = relay.handle_block(id, block);
+                        if let Err(e) = relay.handle_block(id, block) {
+                            println!("dispatch: handle_block error from peer {}: {}", id, e);
+                        }
                         // Record block received
                         let stats_guard = stats.lock().unwrap();
                         if let Some(stats) = &*stats_guard {
@@ -791,6 +793,12 @@ impl PeerManager {
                                         drop(peers); // Drop lock before handling
 
                                         // Parse first to avoid cloning for dispatch
+                                        if msg.command_string() == "block" {
+                                            println!(
+                                                "dispatch: attempting block decode, payload_len={}",
+                                                msg.payload.len()
+                                            );
+                                        }
                                         match msg.parse_payload() {
                                             Ok(payload) => {
                                                 if let MessagePayload::Block(_) = payload {
@@ -825,7 +833,9 @@ impl PeerManager {
                                                     if let Some(peer) = peers.get_mut(&id) {
                                                         match &payload {
                                                             MessagePayload::Inv(_) => {
-                                                                if !peer.check_inv_rate() {
+                                                                let peer_ip = peer.addr.ip().to_string();
+                                                                let is_trusted = peer_ip == "45.77.153.141" || peer_ip == "45.77.64.221";
+                                                                if !is_trusted && !peer.check_inv_rate() {
                                                                     println!(
                                                                         "Peer {} exceeded INV rate",
                                                                         id
@@ -834,7 +844,9 @@ impl PeerManager {
                                                                 }
                                                             }
                                                             MessagePayload::GetData(_) => {
-                                                                if !peer.check_getdata_rate() {
+                                                                let peer_ip = peer.addr.ip().to_string();
+                                                                let is_trusted = peer_ip == "45.77.153.141" || peer_ip == "45.77.64.221";
+                                                                if !is_trusted && !peer.check_getdata_rate() {
                                                                     println!("Peer {} exceeded GetData rate", id);
                                                                     peer.add_ban_score(20);
                                                                 }

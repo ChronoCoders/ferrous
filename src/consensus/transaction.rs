@@ -219,6 +219,19 @@ impl Decode for Transaction {
         let (locktime, c4) = u32::decode(&bytes[offset..])?;
         offset += c4;
 
+        if offset == bytes.len() {
+            return Ok((
+                Transaction {
+                    version,
+                    inputs,
+                    outputs,
+                    witnesses: Vec::new(),
+                    locktime,
+                },
+                offset,
+            ));
+        }
+
         let mut witnesses = Vec::with_capacity(input_count);
         for _ in 0..input_count {
             let (witness, consumed) = Witness::decode(&bytes[offset..])?;
