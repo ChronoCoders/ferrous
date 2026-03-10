@@ -155,6 +155,7 @@ impl SyncManager {
     // Handle received headers
     pub fn handle_headers(&self, peer_id: u64, headers_msg: &HeadersMessage) -> Result<(), String> {
         println!("SyncManager: Received {} headers from peer {}", headers_msg.headers.len(), peer_id);
+        println!("handle_headers: first_prev={} first_hash={}", hex::encode(headers_msg.headers.first().map(|h| h.prev_block_hash).unwrap_or([0u8;32])), hex::encode(headers_msg.headers.first().map(|h| h.hash()).unwrap_or([0u8;32])));
         
         // If empty, we are likely synced
         if headers_msg.headers.is_empty() {
@@ -189,35 +190,20 @@ impl SyncManager {
 
         // If received 2000 headers, request more
         if headers_msg.headers.len() >= 2000 {
-            // Request blocks for this batch first
+            // Set state to DownloadingBlocks
+            let mut state = self.sync_state.lock().unwrap();
+            *state = SyncState::DownloadingBlocks {
+                pending: Vec::new(),
+                peer_id,
+            };
+            drop(state);
+
+            // Request blocks for this batch.
             self.request_blocks_from_headers(peer_id, &headers_msg.headers)?;
-            // Then continue downloading headers
-            self.start_sync(peer_id)?;
         } else {
             // Headers complete, start downloading blocks
-            // Collect all block hashes we need (missing full blocks)
-            // Ideally we should traverse from current block tip to header tip
-            // But for simplicity, let's request blocks for the headers we just received?
-            // Or better, check what we are missing.
-
-            // The prompt says: "Request blocks for all stored headers"
-            // And sets state to DownloadingBlocks
-
             let mut state = self.sync_state.lock().unwrap();
 
-            // We need to find which blocks are missing content
-            // This requires access to chain, but we dropped it.
-            // Let's re-acquire chain or better, just use the headers we just received?
-            // But we might have received headers we already have?
-            // Usually headers message contains new headers.
-
-            // Let's assume we want to download blocks for the headers in this message, plus any previous pending?
-            // But wait, if we got < 2000, it means we reached tip.
-            // We should iterate from our current BLOCK tip to HEADER tip and request blocks.
-
-            // Implementation detail:
-            // "Request blocks for all stored headers"
-            // I'll implement `request_blocks_for_headers` helper.
             *state = SyncState::DownloadingBlocks {
                 pending: Vec::new(),
                 peer_id,
@@ -297,13 +283,10 @@ impl SyncManager {
                 }
             }
         }
+        println!("handle_getheaders: matched start_height={}", start_height);
 
         // Collect up to 2000 headers
         let mut headers = Vec::new();
-        // Use block tip or header tip? Usually header tip.
-        // But I don't have header tip getter.
-        // I'll try to probe heights.
-
         let mut height = start_height;
         loop {
             if headers.len() >= 2000 {

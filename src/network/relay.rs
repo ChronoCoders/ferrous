@@ -124,17 +124,29 @@ impl BlockRelay {
         // Handle Blocks
         let mut blocks_to_send = Vec::new();
         let mut txs_to_send = Vec::new();
+        println!("Relay: handle_getdata called from peer {}, {} items", peer_id, getdata.inventory.len());
 
         {
             let chain = self.chain.lock().unwrap();
             for inv_vec in &getdata.inventory {
                 match inv_vec.inv_type {
                     INV_BLOCK => {
-                        if let Some(block) = chain.get_block(&inv_vec.hash) {
-                            blocks_to_send.push(BlockMessage {
-                                header: block.header,
-                                transactions: block.transactions.clone(),
+                        let block_opt = chain.get_block(&inv_vec.hash)
+                            .map(|b| BlockMessage {
+                                header: b.header,
+                                transactions: b.transactions.clone(),
+                            })
+                            .or_else(|| {
+                                chain.block_store.get_block(&inv_vec.hash).ok().flatten().map(|b| BlockMessage {
+                                    header: b.header,
+                                    transactions: b.transactions,
+                                })
                             });
+                        if let Some(block_msg) = block_opt {
+                            println!("Relay: serving block {} to peer {}", hex::encode(inv_vec.hash), peer_id);
+                            blocks_to_send.push(block_msg);
+                        } else {
+                            println!("Relay: block {} not found for peer {}", hex::encode(inv_vec.hash), peer_id);
                         }
                     }
                     INV_TX => {
@@ -163,11 +175,7 @@ impl BlockRelay {
     // Handle received Block message
     pub fn handle_block(&self, peer_id: u64, block: &BlockMessage) -> Result<(), String> {
         let block_hash = block.header.hash();
-
-        // Notify SyncManager that we received this block (to clear pending state)
-        if let Some(sync) = &*self.peer_manager.sync_manager().lock().unwrap() {
-            sync.block_received(block_hash);
-        }
+        println!("Relay: received block {} from peer {}", hex::encode(block_hash), peer_id);
 
         let mut chain = self.chain.lock().unwrap();
 
@@ -178,10 +186,11 @@ impl BlockRelay {
             transactions: block.transactions.clone(),
         }) {
             Ok(()) => {
+                println!("Relay: block {} added to chain successfully", hex::encode(block_hash));
+                
                 let height = chain.get_height_for_hash(&block_hash);
 
                 // Check if it's the new tip
-                // Note: get_tip returns Option<BlockData>. We unwrap result then Option.
                 let is_tip = chain
                     .get_tip()
                     .map(|t| {
@@ -190,7 +199,13 @@ impl BlockRelay {
                     })
                     .unwrap_or(false);
 
+                // Drop chain lock BEFORE calling sync.block_received to avoid deadlock
                 drop(chain);
+
+                // Notify SyncManager that we received this block (to clear pending state)
+                if let Some(sync) = &*self.peer_manager.sync_manager().lock().unwrap() {
+                    sync.block_received(block_hash);
+                }
 
                 // Update peer height
                 if let Some(h) = height {
@@ -214,16 +229,14 @@ impl BlockRelay {
                 Ok(())
             }
             Err(ChainError::OrphanBlock) => {
+                println!("Relay: block {} is orphan", hex::encode(block_hash));
                 drop(chain);
-                // Trigger header sync to find parent
-                let sync_guard = self.peer_manager.sync_manager();
-                let sync = sync_guard.lock().unwrap();
-                if let Some(sync) = &*sync {
-                    let _ = sync.request_headers_force(peer_id);
-                }
                 Ok(())
             }
-            Err(e) => Err(format!("Block validation failed: {}", e)),
+            Err(e) => {
+                println!("Relay: block {} validation failed: {:?}", hex::encode(block_hash), e);
+                Err(format!("Block validation failed: {}", e))
+            }
         }
     }
 

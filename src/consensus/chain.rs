@@ -297,6 +297,24 @@ impl ChainState {
         let (height, cumulative_work) = if block.header.prev_block_hash == [0u8; 32] {
             (0, block.header.work())
         } else {
+            // Check memory first, then DB
+            let prev_hash_hex = hex::encode(block.header.prev_block_hash);
+            println!("add_block: looking for parent {} in memory: {}", prev_hash_hex, self.blocks.contains_key(&block.header.prev_block_hash));
+            if !self.blocks.contains_key(&block.header.prev_block_hash) {
+                 let db_result = self.block_store.get_block(&block.header.prev_block_hash);
+                 println!("add_block: DB lookup for parent {}: {:?}", prev_hash_hex, db_result.as_ref().map(|r| r.is_some()));
+                 if let Ok(Some(prev_block)) = db_result {
+                     let prev_hash = prev_block.header.hash();
+                     let prev_height = 0; // Fallback
+                     let prev_data_owned = BlockData {
+                         block: prev_block,
+                         height: prev_height,
+                         cumulative_work: U256([0u8; 32]), 
+                     };
+                     self.blocks.insert(prev_hash, prev_data_owned);
+                 }
+            }
+
             let prev_data = self
                 .blocks
                 .get(&block.header.prev_block_hash)
@@ -613,8 +631,8 @@ impl ChainState {
         Ok(())
     }
 
-    pub fn store_header_only(&self, _header: &BlockHeader) -> Result<(), String> {
-        Ok(())
+    pub fn store_header_only(&self, header: &BlockHeader) -> Result<(), String> {
+        self.block_store.store_header(header).map_err(|e| e.to_string())
     }
 }
 

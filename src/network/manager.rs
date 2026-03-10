@@ -469,6 +469,16 @@ impl PeerManager {
             }
             drop(security);
 
+            // Skip if already connected to this IP (but allow trusted peers to reconnect)
+            let is_trusted = ip.to_string() == "45.77.153.141" || ip.to_string() == "45.77.64.221";
+            if !is_trusted {
+                let already_connected = peers_clone.lock().unwrap().values().any(|p| p.addr.ip() == ip);
+                if already_connected {
+                    println!("Rejected duplicate inbound connection from {} (already connected)", ip);
+                    return;
+                }
+            }
+
             if peers_clone.lock().unwrap().len() >= max_peers {
                 println!("Max peers reached. Rejecting connection from {}", peer_addr);
                 return;
@@ -599,6 +609,7 @@ impl PeerManager {
                         let _ = relay.handle_getdata(id, getdata);
                     }
                     MessagePayload::Block(block) => {
+                        println!("dispatch: received block message from peer {}", id);
                         let _ = relay.handle_block(id, block);
                         // Record block received
                         let stats_guard = stats.lock().unwrap();
@@ -782,6 +793,9 @@ impl PeerManager {
                                         // Parse first to avoid cloning for dispatch
                                         match msg.parse_payload() {
                                             Ok(payload) => {
+                                                if let MessagePayload::Block(_) = payload {
+                                                    println!("dispatch: decoded block message from peer {}", id);
+                                                }
                                                 // VALIDATION CHECKPOINT 2: Payload content
                                                 if let Err(e) = payload.validate() {
                                                     println!(

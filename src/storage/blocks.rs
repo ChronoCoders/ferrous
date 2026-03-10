@@ -117,6 +117,14 @@ impl BlockStore {
         }
     }
 
+    /// Store header only (without full block)
+    pub fn store_header(&self, header: &BlockHeader) -> Result<(), String> {
+        let hash = header.hash();
+        use crate::primitives::serialize::Encode;
+        let header_bytes = header.encode();
+        self.db.put(CF_HEADERS, &hash, &header_bytes)
+    }
+
     /// Check if block exists
     pub fn has_block(&self, hash: &Hash256) -> Result<bool, String> {
         Ok(self.db.get(CF_BLOCKS, hash)?.is_some())
