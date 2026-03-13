@@ -307,7 +307,7 @@ impl PeerManager {
         let sync_manager_clone = Arc::clone(&self.sync_manager);
         let our_version = self.our_version;
         let our_services = self.our_services;
-        
+
         let our_height = {
             let sync_guard = self.sync_manager.lock().unwrap();
             if let Some(sync) = &*sync_guard {
@@ -450,7 +450,7 @@ impl PeerManager {
             // DoS check
             let mut dos = dos_protection_clone.lock().unwrap();
             let is_trusted = ip.to_string() == "45.77.153.141" || ip.to_string() == "45.77.64.221";
-            
+
             if !is_trusted && !dos.can_accept_inbound(ip) {
                 println!("Rejected inbound connection from {} (DoS protection)", ip);
                 // Record failed attempt for rate limiting
@@ -472,9 +472,16 @@ impl PeerManager {
             // Skip if already connected to this IP (but allow trusted peers to reconnect)
             let is_trusted = ip.to_string() == "45.77.153.141" || ip.to_string() == "45.77.64.221";
             if !is_trusted {
-                let already_connected = peers_clone.lock().unwrap().values().any(|p| p.addr.ip() == ip);
+                let already_connected = peers_clone
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .any(|p| p.addr.ip() == ip);
                 if already_connected {
-                    println!("Rejected duplicate inbound connection from {} (already connected)", ip);
+                    println!(
+                        "Rejected duplicate inbound connection from {} (already connected)",
+                        ip
+                    );
                     return;
                 }
             }
@@ -833,9 +840,14 @@ impl PeerManager {
                                                     if let Some(peer) = peers.get_mut(&id) {
                                                         match &payload {
                                                             MessagePayload::Inv(_) => {
-                                                                let peer_ip = peer.addr.ip().to_string();
-                                                                let is_trusted = peer_ip == "45.77.153.141" || peer_ip == "45.77.64.221";
-                                                                if !is_trusted && !peer.check_inv_rate() {
+                                                                let peer_ip =
+                                                                    peer.addr.ip().to_string();
+                                                                let is_trusted = peer_ip
+                                                                    == "45.77.153.141"
+                                                                    || peer_ip == "45.77.64.221";
+                                                                if !is_trusted
+                                                                    && !peer.check_inv_rate()
+                                                                {
                                                                     println!(
                                                                         "Peer {} exceeded INV rate",
                                                                         id
@@ -844,9 +856,14 @@ impl PeerManager {
                                                                 }
                                                             }
                                                             MessagePayload::GetData(_) => {
-                                                                let peer_ip = peer.addr.ip().to_string();
-                                                                let is_trusted = peer_ip == "45.77.153.141" || peer_ip == "45.77.64.221";
-                                                                if !is_trusted && !peer.check_getdata_rate() {
+                                                                let peer_ip =
+                                                                    peer.addr.ip().to_string();
+                                                                let is_trusted = peer_ip
+                                                                    == "45.77.153.141"
+                                                                    || peer_ip == "45.77.64.221";
+                                                                if !is_trusted
+                                                                    && !peer.check_getdata_rate()
+                                                                {
                                                                     println!("Peer {} exceeded GetData rate", id);
                                                                     peer.add_ban_score(20);
                                                                 }

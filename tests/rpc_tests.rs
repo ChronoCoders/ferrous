@@ -10,9 +10,9 @@ use ferrous_node::network::mempool::NetworkMempool;
 use ferrous_node::network::recovery::RecoveryManager;
 use ferrous_node::network::relay::BlockRelay;
 use ferrous_node::network::stats::NetworkStats;
-use ferrous_node::rpc::RpcServerConfig;
 use ferrous_node::primitives::hash::Hash256;
 use ferrous_node::rpc::RpcServer;
+use ferrous_node::rpc::RpcServerConfig;
 use ferrous_node::wallet::address::address_to_script_pubkey;
 use ferrous_node::wallet::builder::TransactionBuilder;
 use ferrous_node::wallet::manager::Wallet;
@@ -148,7 +148,11 @@ fn test_rpc_server_creation() {
     let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -173,7 +177,11 @@ fn test_getblockchaininfo_returns_correct_data() {
     let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -184,8 +192,7 @@ fn test_getblockchaininfo_returns_correct_data() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -217,7 +224,11 @@ fn test_unknown_method_returns_error() {
     let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -228,8 +239,7 @@ fn test_unknown_method_returns_error() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -257,7 +267,11 @@ fn test_json_rpc_error_handling_parse_error() {
     let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -268,8 +282,7 @@ fn test_json_rpc_error_handling_parse_error() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let response = server.handle_raw("this is not valid json");
     let body = read_body(response);
@@ -289,7 +302,11 @@ fn test_mineblocks_mines_correct_count_and_returns_hashes() {
     let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -300,8 +317,7 @@ fn test_mineblocks_mines_correct_count_and_returns_hashes() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -335,7 +351,11 @@ fn test_mineblocks_extends_chain_height() {
     let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain: chain.clone(),
@@ -346,8 +366,7 @@ fn test_mineblocks_extends_chain_height() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let info_before = server.handle_json_rpc(json!({
         "jsonrpc": "2.0",
@@ -389,7 +408,11 @@ fn test_mineblocks_zero_blocks_returns_error() {
     let wallet = Arc::new(Mutex::new(wallet));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -400,8 +423,7 @@ fn test_mineblocks_zero_blocks_returns_error() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -428,7 +450,11 @@ fn test_mineblocks_too_many_blocks_returns_error() {
     let wallet = Arc::new(Mutex::new(create_wallet(&temp_dir)));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -439,8 +465,7 @@ fn test_mineblocks_too_many_blocks_returns_error() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -473,7 +498,11 @@ fn test_getblock_returns_correct_data() {
     let wallet = Arc::new(Mutex::new(create_wallet(&_tmp)));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -484,8 +513,7 @@ fn test_getblock_returns_correct_data() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -526,7 +554,11 @@ fn test_getblock_invalid_hash_returns_error() {
     ));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -537,8 +569,7 @@ fn test_getblock_invalid_hash_returns_error() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -572,7 +603,11 @@ fn test_getbestblockhash_returns_tip_hash() {
     let wallet = Arc::new(Mutex::new(Wallet::load("./test-wallet.dat", 0x6f).unwrap()));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -583,8 +618,7 @@ fn test_getbestblockhash_returns_tip_hash() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let request = json!({
         "jsonrpc": "2.0",
@@ -618,7 +652,11 @@ fn test_generatetoaddress_mines_to_wallet_address() {
     ));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -629,8 +667,7 @@ fn test_generatetoaddress_mines_to_wallet_address() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let addr_req = json!({
         "jsonrpc": "2.0",
@@ -685,7 +722,11 @@ fn test_sendtoaddress_end_to_end() {
     let wallet_for_inspection = wallet.clone();
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -696,8 +737,7 @@ fn test_sendtoaddress_end_to_end() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let addr_req = json!({
         "jsonrpc": "2.0",
@@ -891,7 +931,11 @@ fn test_insufficient_funds_rejection() {
     let wallet = Arc::new(Mutex::new(wallet));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -902,8 +946,7 @@ fn test_insufficient_funds_rejection() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let addr_req = json!({
         "jsonrpc": "2.0",
@@ -1005,7 +1048,11 @@ fn test_invalid_address_rejection() {
     ));
     let (peer_manager, network_stats, recovery_manager) = create_network_components();
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool,
+    ));
 
     let config = RpcServerConfig {
         chain,
@@ -1016,8 +1063,7 @@ fn test_invalid_address_rejection() {
         recovery_manager,
         relay: relay.clone(),
     };
-    let server = RpcServer::new(config, "127.0.0.1:0")
-    .expect("server");
+    let server = RpcServer::new(config, "127.0.0.1:0").expect("server");
 
     let invalid_addresses = vec![malformed.to_string(), mainnet_address, bad_checksum_address];
 

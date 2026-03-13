@@ -4,9 +4,9 @@ use ferrous_node::consensus::merkle::compute_merkle_root;
 use ferrous_node::consensus::params::Network;
 use ferrous_node::consensus::transaction::{Transaction, TxInput, TxOutput, Witness};
 use ferrous_node::consensus::utxo::{OutPoint, UtxoError};
+use ferrous_node::consensus::validation::ValidationError;
 use ferrous_node::primitives::hash::{sha256d, Hash256};
 use ferrous_node::script::engine::{validate_p2pkh, ScriptContext};
-use ferrous_node::consensus::validation::ValidationError;
 use ferrous_node::wallet::address::address_to_script_pubkey;
 use ferrous_node::wallet::builder::TransactionBuilder;
 use ferrous_node::wallet::manager::Wallet;
@@ -186,13 +186,13 @@ fn test_add_orphan_block_error() {
     // before checking orphan status.
     // However, mine_block uses the header's prev_block_hash during mining.
     // But here we mutated it AFTER mining.
-    
+
     // Correct approach: mine with the INTENDED prev_block_hash
     let mut _bad_prev_header = prev_header;
-    _bad_prev_header.prev_block_hash = sha256d(&[1u8; 32]); 
+    _bad_prev_header.prev_block_hash = sha256d(&[1u8; 32]);
     // Wait, the prev_block_hash field in header IS the hash of previous block.
     // We just need to construct a header with a random prev_hash and MINE it.
-    
+
     let mut header = BlockHeader {
         version: 1,
         prev_block_hash: sha256d(&[1u8; 32]), // Random parent
@@ -201,7 +201,7 @@ fn test_add_orphan_block_error() {
         n_bits: 0x207f_ffff,
         nonce: 0,
     };
-    
+
     while !header.check_proof_of_work().unwrap() {
         header.nonce += 1;
     }
@@ -480,11 +480,10 @@ fn test_wallet_balance_after_reorg() {
             prev_header.timestamp + 600,
         );
         prev_header = header;
-        let result = chain
-            .add_block(Block {
-                header,
-                transactions: vec![tx],
-            });
+        let result = chain.add_block(Block {
+            header,
+            transactions: vec![tx],
+        });
         assert!(result.is_ok());
     }
 
@@ -515,7 +514,7 @@ fn test_wallet_balance_after_reorg() {
     // After reorg, wallet's previous coinbase no longer exists in main chain
     let balance_after = wallet.get_balance(&chain).unwrap();
     // TODO: Reorg not fully supported (no UTXO unwinding), so balance checks are disabled.
-    // assert_eq!(balance_after, 0); 
+    // assert_eq!(balance_after, 0);
     println!("Balance after reorg: {}", balance_after);
 }
 
@@ -794,7 +793,7 @@ fn test_invalid_signature_rejection() {
     // The coinbase must be the first transaction
     let coinbase = coinbase_transaction(50 * 100_000_000, 106, 0);
     let txs = vec![coinbase, tx_invalid];
-    
+
     let header = mine_block(&prev_header, &txs, prev_header.timestamp + 600);
 
     let result = chain.add_block(Block {
@@ -804,9 +803,11 @@ fn test_invalid_signature_rejection() {
 
     assert!(matches!(
         result,
-        Err(ChainError::InvalidBlock(ValidationError::MissingWitnessCommitment)) |
-        Err(ChainError::InvalidBlock(ValidationError::TransactionStructureInvalid)) |
-        Err(ChainError::UtxoError(UtxoError::ScriptValidationFailed))
+        Err(ChainError::InvalidBlock(
+            ValidationError::MissingWitnessCommitment
+        )) | Err(ChainError::InvalidBlock(
+            ValidationError::TransactionStructureInvalid
+        )) | Err(ChainError::UtxoError(UtxoError::ScriptValidationFailed))
     ));
 
     assert_eq!(chain.get_tip().unwrap().unwrap().height, 105);

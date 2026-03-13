@@ -213,9 +213,13 @@ impl Peer {
 
         // Create NetworkMessage
         let payload = msg.encode();
-        
+
         // Use the connection's magic
-        let magic = self.connection.as_ref().ok_or("Peer not connected")?.magic();
+        let magic = self
+            .connection
+            .as_ref()
+            .ok_or("Peer not connected")?
+            .magic();
         let net_msg = NetworkMessage::new(magic, "version", payload);
 
         self.send(&net_msg)?;
@@ -242,7 +246,11 @@ impl Peer {
 
         // Send Verack
         let verack = VerackMessage;
-        let magic = self.connection.as_ref().ok_or("Peer not connected")?.magic();
+        let magic = self
+            .connection
+            .as_ref()
+            .ok_or("Peer not connected")?
+            .magic();
         let net_msg = NetworkMessage::new(magic, "verack", verack.encode());
         self.send(&net_msg)?;
 

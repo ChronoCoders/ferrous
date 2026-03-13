@@ -42,3 +42,7 @@ overflow-checks = true
 
 [profile.dev.package.librocksdb-sys]
 opt-level = 3
+
+[[example]]
+name = "monitor"
+path = "examples/monitor.rs"

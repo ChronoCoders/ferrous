@@ -34,6 +34,30 @@ cargo run --example node -- --dashboard --network regtest
 cargo run --example node -- --network mainnet
 ```
 
+### Monitor TUI (Seed Nodes)
+
+Ferrous includes a standalone monitoring TUI that polls multiple remote nodes over JSON-RPC via SSH tunnels.
+
+1) Open SSH tunnels (these commands will appear to “do nothing” and should be left running):
+
+```bash
+ssh -N -L 18331:127.0.0.1:8332 root@45.77.153.141
+ssh -N -L 18332:127.0.0.1:8332 root@45.77.64.221
+```
+
+2) Verify tunnels (PowerShell):
+
+```powershell
+curl.exe -s -X POST http://127.0.0.1:18331 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"getblockchaininfo","params":[],"id":1}'
+curl.exe -s -X POST http://127.0.0.1:18332 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"getblockchaininfo","params":[],"id":1}'
+```
+
+3) Run the monitor:
+
+```bash
+cargo run --release --example monitor
+```
+
 ### Mining (Regtest)
 
 To mine blocks instantly in `regtest` mode, open a second terminal and use the RPC interface:
@@ -69,7 +93,7 @@ curl -X POST http://127.0.0.1:8332 \
     - Health monitoring and stale block detection.
     - RPC commands: `getrecoverystatus`, `forcereconnect`, `resetnetwork`.
 - **Storage**: RocksDB integration for chain state and block index.
-- **RPC**: Full suite of control commands (`getblockchaininfo`, `mineblocks`, `getpeerinfo`, etc.).
+- **RPC**: Full suite of control commands (`getblockchaininfo`, `getmininginfo`, `mineblocks`, `getpeerinfo`, etc.).
 - **UI**: Terminal User Interface (TUI) for real-time statistics.
 
 ### Roadmap
