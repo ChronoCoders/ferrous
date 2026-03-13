@@ -2,8 +2,8 @@ use crate::consensus::chain::ChainState;
 use crate::mining::Miner;
 use crate::network::diagnostics::NetworkDiagnostics;
 use crate::network::manager::PeerManager;
-use crate::network::relay::BlockRelay;
 use crate::network::recovery::RecoveryManager;
+use crate::network::relay::BlockRelay;
 use crate::network::stats::NetworkStats;
 use crate::rpc::methods::*;
 use crate::wallet::builder::TransactionBuilder;
@@ -62,21 +62,137 @@ impl RpcServer {
     }
 
     pub fn handle_raw(&self, body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
-        let req: Value = match serde_json::from_str(body) {
-            Ok(v) => v,
-            Err(_) => return self.error_response(Value::Null, -32700, "Parse error"),
-        };
-
-        self.handle_json_rpc(req)
+        self.handle_json_rpc_body(body.as_bytes()).0
     }
 
     pub fn handle_json_rpc(&self, req: Value) -> Response<std::io::Cursor<Vec<u8>>> {
-        let method = req["method"].as_str().unwrap_or("");
-        let params = &req["params"];
-        let id = req["id"].clone();
+        match self.handle_json_rpc_value(&req).0 {
+            Some(v) => self.json_response(v),
+            None => Response::from_string("").with_status_code(204),
+        }
+    }
 
+    fn handle_json_rpc_body(&self, body: &[u8]) -> (Response<std::io::Cursor<Vec<u8>>>, bool) {
+        let trimmed = self.trim_body(body);
+        let req: Value = match serde_json::from_slice(trimmed) {
+            Ok(Value::String(s)) => match serde_json::from_str(&s) {
+                Ok(v) => v,
+                Err(_) => {
+                    return (
+                        self.error_response(Value::Null, -32700, "Parse error"),
+                        false,
+                    )
+                }
+            },
+            Ok(v) => v,
+            Err(_) => {
+                let without_nul: Vec<u8> = trimmed.iter().copied().filter(|b| *b != 0).collect();
+                let secondary = if without_nul.len() == trimmed.len() {
+                    trimmed
+                } else {
+                    &without_nul
+                };
+
+                match serde_json::from_slice::<Value>(secondary) {
+                    Ok(Value::String(s)) => match serde_json::from_str(&s) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            return (
+                                self.error_response(Value::Null, -32700, "Parse error"),
+                                false,
+                            )
+                        }
+                    },
+                    Ok(v) => v,
+                    Err(_) => {
+                        if let Some(v) = self.try_parse_backslash_escaped_json(secondary) {
+                            v
+                        } else if let Some(v) = self.try_parse_backslash_quote_json(secondary) {
+                            v
+                        } else if let Some(v) = self.try_parse_extracted_json(secondary) {
+                            v
+                        } else {
+                            return (
+                                self.error_response(Value::Null, -32700, "Parse error"),
+                                false,
+                            );
+                        }
+                    }
+                }
+            }
+        };
+
+        match req {
+            Value::Array(items) => {
+                if items.is_empty() {
+                    return (
+                        self.error_response(Value::Null, -32600, "Invalid Request"),
+                        false,
+                    );
+                }
+
+                let mut responses: Vec<Value> = Vec::new();
+                let mut stop = false;
+                for item in &items {
+                    let (resp, should_stop) = self.handle_json_rpc_value(item);
+                    stop |= should_stop;
+                    if let Some(resp) = resp {
+                        responses.push(resp);
+                    }
+                }
+
+                if responses.is_empty() {
+                    return (Response::from_string("").with_status_code(204), stop);
+                }
+
+                (self.json_response(Value::Array(responses)), stop)
+            }
+            other => {
+                let (resp, stop) = self.handle_json_rpc_value(&other);
+                match resp {
+                    Some(v) => (self.json_response(v), stop),
+                    None => (Response::from_string("").with_status_code(204), stop),
+                }
+            }
+        }
+    }
+
+    fn handle_json_rpc_value(&self, req: &Value) -> (Option<Value>, bool) {
+        let Some(obj) = req.as_object() else {
+            return (
+                Some(self.error_value(Value::Null, -32600, "Invalid Request")),
+                false,
+            );
+        };
+
+        let method = obj.get("method").and_then(|m| m.as_str()).unwrap_or("");
+        if method.is_empty() {
+            return (
+                Some(self.error_value(Value::Null, -32600, "Invalid Request")),
+                false,
+            );
+        }
+
+        let stop = method == "stop";
+
+        let id_present = obj.contains_key("id");
+        let id = obj.get("id").cloned().unwrap_or(Value::Null);
+        if !id_present {
+            let _ = self.dispatch_method(method, obj.get("params").unwrap_or(&Value::Null));
+            return (None, stop);
+        }
+
+        let params = obj.get("params").unwrap_or(&Value::Null);
+        match self.dispatch_method(method, params) {
+            Ok(result) => (Some(self.success_value(id, result)), stop),
+            Err((code, message)) => (Some(self.error_value(id, code, message)), stop),
+        }
+    }
+
+    fn dispatch_method(&self, method: &str, params: &Value) -> Result<Value, (i32, String)> {
         let result = match method {
             "getblockchaininfo" => self.getblockchaininfo(),
+            "getmininginfo" => self.getmininginfo(),
             "mineblocks" => self.mineblocks(params),
             "getblock" => self.getblock(params),
             "getblockhash" => self.getblockhash(params),
@@ -96,47 +212,165 @@ impl RpcServer {
             "forcereconnect" => self.forcereconnect(),
             "resetnetwork" => self.resetnetwork(),
             "stop" => Ok(json!("stopping")),
-            _ => return self.error_response(id, -32601, "Method not found"),
+            _ => return Err((-32601, "Method not found".to_string())),
         };
 
         match result {
-            Ok(v) => self.success_response(id, v),
-            Err(e) => self.error_response(id, -32603, &e),
+            Ok(v) => Ok(v),
+            Err(e) => Err((-32603, e)),
         }
+    }
+
+    fn try_parse_backslash_escaped_json(&self, body: &[u8]) -> Option<Value> {
+        let trimmed = self.trim_body(body);
+        if !(trimmed.starts_with(b"{\\\"") || trimmed.starts_with(b"[{\\\"")) {
+            return None;
+        }
+
+        let mut cleaned = Vec::with_capacity(trimmed.len());
+        let mut i = 0;
+        while i < trimmed.len() {
+            if trimmed[i] == b'\\' && i + 1 < trimmed.len() && trimmed[i + 1] == b'"' {
+                cleaned.push(b'"');
+                i += 2;
+                continue;
+            }
+            cleaned.push(trimmed[i]);
+            i += 1;
+        }
+
+        serde_json::from_slice(&cleaned).ok()
+    }
+
+    fn try_parse_backslash_quote_json(&self, body: &[u8]) -> Option<Value> {
+        if body.contains(&b'"') || !body.contains(&b'\\') {
+            return None;
+        }
+
+        let mut cleaned = Vec::with_capacity(body.len());
+        let mut i = 0;
+        while i < body.len() {
+            if body[i] == b'\\' {
+                if i + 1 < body.len() && body[i + 1] == b':' {
+                    cleaned.push(b'"');
+                    cleaned.push(b':');
+                    i += 2;
+                    continue;
+                }
+                if i + 1 < body.len() && body[i + 1] == b',' {
+                    cleaned.push(b'"');
+                    cleaned.push(b',');
+                    i += 2;
+                    continue;
+                }
+                cleaned.push(b'"');
+                i += 1;
+                continue;
+            }
+            cleaned.push(body[i]);
+            i += 1;
+        }
+
+        serde_json::from_slice(&cleaned).ok()
+    }
+
+    fn try_parse_extracted_json(&self, body: &[u8]) -> Option<Value> {
+        let mut start = None;
+        for (i, b) in body.iter().copied().enumerate() {
+            if b == b'{' || b == b'[' {
+                start = Some(i);
+                break;
+            }
+        }
+        let start = start?;
+
+        let mut end = None;
+        for (i, b) in body.iter().copied().enumerate().rev() {
+            if b == b'}' || b == b']' {
+                end = Some(i);
+                break;
+            }
+        }
+        let end = end?;
+        if end <= start {
+            return None;
+        }
+
+        let slice = &body[start..=end];
+        serde_json::from_slice(slice)
+            .ok()
+            .or_else(|| self.try_parse_backslash_escaped_json(slice))
+            .or_else(|| self.try_parse_backslash_quote_json(slice))
+    }
+
+    fn trim_body<'a>(&self, body: &'a [u8]) -> &'a [u8] {
+        let mut start = 0;
+        while start < body.len() && (body[start].is_ascii_whitespace() || body[start] == 0) {
+            start += 1;
+        }
+        let mut end = body.len();
+        while end > start && (body[end - 1].is_ascii_whitespace() || body[end - 1] == 0) {
+            end -= 1;
+        }
+        &body[start..end]
     }
 
     fn handle_request(
         &self,
         request: &mut tiny_http::Request,
     ) -> (Response<std::io::Cursor<Vec<u8>>>, bool) {
-        const MAX_REQUEST_BODY: usize = 1 * 1024 * 1024;
+        const MAX_REQUEST_BODY: usize = 1024 * 1024;
 
-        let content_length = request.body_length().unwrap_or(0);
-        if content_length > MAX_REQUEST_BODY {
+        if request.method() != &tiny_http::Method::Post {
             return (
-                self.error_response(Value::Null, -32600, "Request too large"),
+                self.error_response(Value::Null, -32600, "Invalid Request")
+                    .with_status_code(405),
                 false,
             );
         }
 
-        let mut content = String::new();
-        let mut reader = request.as_reader().take(MAX_REQUEST_BODY as u64);
-        if std::io::Read::read_to_string(&mut reader, &mut content).is_err() {
+        let mut buf = Vec::new();
+        match request.body_length() {
+            Some(len) if len > 0 => {
+                if len > MAX_REQUEST_BODY {
+                    return (
+                        self.error_response(Value::Null, -32600, "Request too large"),
+                        false,
+                    );
+                }
+                buf.resize(len, 0);
+                if request.as_reader().read_exact(&mut buf).is_err() {
+                    return (
+                        self.error_response(Value::Null, -32700, "Parse error"),
+                        false,
+                    );
+                }
+            }
+            _ => {
+                let mut reader = request.as_reader().take((MAX_REQUEST_BODY + 1) as u64);
+                if reader.read_to_end(&mut buf).is_err() {
+                    return (
+                        self.error_response(Value::Null, -32700, "Parse error"),
+                        false,
+                    );
+                }
+                if buf.len() > MAX_REQUEST_BODY {
+                    return (
+                        self.error_response(Value::Null, -32600, "Request too large"),
+                        false,
+                    );
+                }
+            }
+        }
+
+        if buf.is_empty() {
             return (
                 self.error_response(Value::Null, -32700, "Parse error"),
                 false,
             );
         }
 
-        let is_stop = serde_json::from_str::<Value>(&content)
-            .ok()
-            .and_then(|v| {
-                v.get("method")
-                    .and_then(|m| m.as_str().map(|s| s == "stop"))
-            })
-            .unwrap_or(false);
-
-        (self.handle_raw(&content), is_stop)
+        self.handle_json_rpc_body(&buf)
     }
 
     fn getnetworkinfo(&self) -> Result<Value, String> {
@@ -158,7 +392,7 @@ impl RpcServer {
     fn getpeerinfo(&self) -> Result<Value, String> {
         let count = self.peer_manager.get_peer_count();
         let addrs = self.peer_manager.get_peer_addrs();
-        
+
         // Return simple list for now
         let info: Vec<_> = addrs.iter().map(|a| a.to_string()).collect();
         Ok(json!({
@@ -221,6 +455,26 @@ impl RpcServer {
             blocks: height,
             headers: height,
             bestblockhash,
+        };
+
+        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+    }
+
+    fn getmininginfo(&self) -> Result<Value, String> {
+        let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+        let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
+
+        let blocks = tip.as_ref().map(|t| t.height as u32).unwrap_or(0);
+        let bits = tip.as_ref().map(|t| t.block.header.n_bits).unwrap_or(0);
+
+        let difficulty = difficulty_from_compact(bits).unwrap_or(0.0);
+        let networkhashps = difficulty * 4294967296.0 / 150.0;
+
+        let response = GetMiningInfoResponse {
+            blocks,
+            difficulty,
+            networkhashps,
+            chain: "ferrous".to_string(),
         };
 
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
@@ -369,10 +623,10 @@ impl RpcServer {
             .wallet
             .lock()
             .map_err(|_| "Lock poisoned".to_string())?;
-        
+
         let addresses = wallet.addresses();
         let response = ListAddressesResponse { addresses };
-        
+
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
     }
 
@@ -469,7 +723,7 @@ impl RpcServer {
             .ok_or("Invalid params: expected [height]")?;
 
         let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
-        
+
         let hash = chain
             .get_block_hash(height)
             .ok_or("Block height out of range".to_string())?;
@@ -480,7 +734,7 @@ impl RpcServer {
     fn getbestblockhash(&self) -> Result<Value, String> {
         let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
-        
+
         match tip {
             Some(t) => Ok(json!(hex::encode(t.block.header.hash()))),
             None => Ok(json!(null)),
@@ -505,35 +759,57 @@ impl RpcServer {
         Ok(json!("added"))
     }
 
-    fn success_response(&self, id: Value, result: Value) -> Response<std::io::Cursor<Vec<u8>>> {
-        let body = json!({
-            "jsonrpc": "2.0",
-            "result": result,
-            "id": id
-        });
-
-        Response::from_string(body.to_string()).with_header(
-            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
-        )
-    }
-
     fn error_response(
         &self,
         id: Value,
         code: i32,
         message: &str,
     ) -> Response<std::io::Cursor<Vec<u8>>> {
-        let body = json!({
-            "jsonrpc": "2.0",
-            "error": {
-                "code": code,
-                "message": message
-            },
-            "id": id
-        });
+        self.json_response(self.error_value(id, code, message))
+    }
 
+    fn json_response(&self, body: Value) -> Response<std::io::Cursor<Vec<u8>>> {
         Response::from_string(body.to_string()).with_header(
             tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
         )
     }
+
+    fn success_value(&self, id: Value, result: Value) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "result": result,
+            "id": id
+        })
+    }
+
+    fn error_value(&self, id: Value, code: i32, message: impl AsRef<str>) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "error": {
+                "code": code,
+                "message": message.as_ref()
+            },
+            "id": id
+        })
+    }
+}
+
+fn difficulty_from_compact(bits: u32) -> Option<f64> {
+    if bits == 0 {
+        return None;
+    }
+    let exponent = ((bits >> 24) & 0xff) as i32;
+    let mantissa_u32 = bits & 0x00ff_ffff;
+    if mantissa_u32 == 0 {
+        return None;
+    }
+
+    let mantissa = mantissa_u32 as f64;
+    let target = mantissa * 2f64.powi(8 * (exponent - 3));
+
+    let diff1_mantissa = 0x0000ffffu32 as f64;
+    let diff1_exponent = 0x1d_i32;
+    let diff1_target = diff1_mantissa * 2f64.powi(8 * (diff1_exponent - 3));
+
+    Some(diff1_target / target)
 }

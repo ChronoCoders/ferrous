@@ -131,7 +131,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mining_address = address_to_script_pubkey(&mining_addr_str)
         .or_else(|_| hex::decode(&mining_addr_str))
         .unwrap_or_else(|_| {
-            eprintln!("Warning: Invalid mining address/script '{}', using default OP_1", mining_addr_str);
+            eprintln!(
+                "Warning: Invalid mining address/script '{}', using default OP_1",
+                mining_addr_str
+            );
             vec![0x51]
         });
 
@@ -140,16 +143,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Managers
     let mempool = Arc::new(NetworkMempool::new(chain.clone()));
-    let relay = Arc::new(BlockRelay::new(chain.clone(), peer_manager.clone(), mempool.clone()));
+    let relay = Arc::new(BlockRelay::new(
+        chain.clone(),
+        peer_manager.clone(),
+        mempool.clone(),
+    ));
     let sync_manager = Arc::new(SyncManager::new(chain.clone(), peer_manager.clone()));
 
     peer_manager.set_relay(relay.clone());
     peer_manager.set_sync_manager(sync_manager.clone());
-    
+
     // Start P2P listener
     if let Ok(addr) = args.p2p_addr.parse() {
         println!("Starting P2P listener on {}...", addr);
-        peer_manager.start_listener(addr).map_err(std::io::Error::other)?;
+        peer_manager
+            .start_listener(addr)
+            .map_err(std::io::Error::other)?;
     } else {
         eprintln!("Invalid P2P address: {}", args.p2p_addr);
     }
@@ -159,10 +168,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(connect_addr) = args.connect {
         if let Ok(addr) = connect_addr.parse() {
-             println!("Connecting to peer {}...", addr);
-             peer_manager.connect_to_peer(addr).map_err(std::io::Error::other)?;
+            println!("Connecting to peer {}...", addr);
+            peer_manager
+                .connect_to_peer(addr)
+                .map_err(std::io::Error::other)?;
         } else {
-             eprintln!("Invalid connect address: {}", connect_addr);
+            eprintln!("Invalid connect address: {}", connect_addr);
         }
     }
 
@@ -180,7 +191,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr_manager = Arc::new(Mutex::new(
         ferrous_node::network::addrman::AddressManager::new(1000),
     ));
-    let recovery_manager = Arc::new(RecoveryManager::new(peer_manager.clone(), addr_manager, network.clone()));
+    let recovery_manager = Arc::new(RecoveryManager::new(
+        peer_manager.clone(),
+        addr_manager,
+        network.clone(),
+    ));
 
     if args.dashboard {
         // Dashboard mode
@@ -193,7 +208,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Initialize Miner
         // Use the existing params
-        let miner = Arc::new(Miner::new(params.clone(), mining_address.clone()).with_event_sender(event_sender));
+        let miner = Arc::new(
+            Miner::new(params.clone(), mining_address.clone()).with_event_sender(event_sender),
+        );
 
         let chain_clone = chain.clone();
         let miner_clone = miner.clone();
@@ -235,30 +252,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             relay: relay.clone(),
         };
 
-        let server = RpcServer::new(config, &args.rpc_addr)
-            .map_err(std::io::Error::other)?;
+        let server = RpcServer::new(config, &args.rpc_addr).map_err(std::io::Error::other)?;
 
         if args.mine {
             println!("Starting continuous miner...");
             let chain_mine = chain.clone();
             let miner_mine = miner.clone();
             let relay_mine = relay.clone();
-            std::thread::spawn(move || {
-                loop {
-                    let hash = {
-                        let mut chain_guard = chain_mine.lock().unwrap();
-                        match miner_mine.mine_and_attach(&mut chain_guard, Vec::new()) {
-                            Ok(header) => Some(header.hash()),
-                            Err(e) => {
-                                eprintln!("Mining error: {:?}", e);
-                                std::thread::sleep(std::time::Duration::from_secs(1));
-                                None
-                            }
+            std::thread::spawn(move || loop {
+                let hash = {
+                    let mut chain_guard = chain_mine.lock().unwrap();
+                    match miner_mine.mine_and_attach(&mut chain_guard, Vec::new()) {
+                        Ok(header) => Some(header.hash()),
+                        Err(e) => {
+                            eprintln!("Mining error: {:?}", e);
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                            None
                         }
-                    };
-                    if let Some(hash) = hash {
-                        let _ = relay_mine.announce_block(hash);
                     }
+                };
+                if let Some(hash) = hash {
+                    let _ = relay_mine.announce_block(hash);
                 }
             });
         }

@@ -69,3 +69,11 @@ pub struct SendToAddressResponse {
 pub struct ListAddressesResponse {
     pub addresses: Vec<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetMiningInfoResponse {
+    pub blocks: u32,
+    pub difficulty: f64,
+    pub networkhashps: f64,
+    pub chain: String,
+}

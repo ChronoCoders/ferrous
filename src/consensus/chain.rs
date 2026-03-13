@@ -25,7 +25,6 @@ pub enum ChainError {
     GenesisMismatch,
 }
 
-
 impl std::fmt::Display for ChainError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -193,7 +192,11 @@ impl ChainState {
     }
 
     fn reorganize(&mut self, old_tip: &Hash256, new_tip: &Hash256) -> Result<(), ChainError> {
-        info!("Reorganizing chain from {} to {}", hex::encode(old_tip), hex::encode(new_tip));
+        info!(
+            "Reorganizing chain from {} to {}",
+            hex::encode(old_tip),
+            hex::encode(new_tip)
+        );
 
         let mut old_chain = Vec::new();
         let mut new_chain = Vec::new();
@@ -240,27 +243,41 @@ impl ChainState {
             }
         }
 
-        info!("Reorg: disconnecting {} blocks, reconnecting {}", old_chain.len(), new_chain.len());
+        info!(
+            "Reorg: disconnecting {} blocks, reconnecting {}",
+            old_chain.len(),
+            new_chain.len()
+        );
 
         for block_hash in &old_chain {
-            let block = self.blocks.get(block_hash)
+            let block = self
+                .blocks
+                .get(block_hash)
                 .ok_or(ChainError::BlockNotFound)?
-                .block.clone();
+                .block
+                .clone();
 
             let mut created_outpoints = Vec::new();
             for tx in &block.transactions {
                 let txid = tx.txid();
                 for (vout, _) in tx.outputs.iter().enumerate() {
-                    created_outpoints.push(OutPoint { txid, vout: vout as u32 });
+                    created_outpoints.push(OutPoint {
+                        txid,
+                        vout: vout as u32,
+                    });
                 }
             }
 
-            let restored_entries = self.utxo_store
+            let restored_entries = self
+                .utxo_store
                 .get_undo_data(block_hash)
                 .map_err(ChainError::DbError)?
-                .ok_or_else(|| ChainError::DbError(
-                    format!("Missing undo data for block {}", hex::encode(block_hash))
-                ))?;
+                .ok_or_else(|| {
+                    ChainError::DbError(format!(
+                        "Missing undo data for block {}",
+                        hex::encode(block_hash)
+                    ))
+                })?;
 
             self.utxo_store
                 .revert_block(&created_outpoints, &restored_entries)
@@ -276,13 +293,18 @@ impl ChainState {
                 let block = data.block.clone();
                 let height = data.height;
                 let bh = block.hash();
-                let (created_utxos, spent_utxos, spent_entries, fees) = self.apply_block_to_utxo(&block, height)?;
+                let (created_utxos, spent_utxos, spent_entries, fees) =
+                    self.apply_block_to_utxo(&block, height)?;
 
                 validate_coinbase_reward(&block.transactions[0], fees, height as u32)
                     .map_err(ChainError::InvalidBlock)?;
 
-                self.utxo_store.apply_block(&created_utxos, &spent_utxos).map_err(ChainError::DbError)?;
-                self.utxo_store.store_undo_data(&bh, &spent_entries).map_err(ChainError::DbError)?;
+                self.utxo_store
+                    .apply_block(&created_utxos, &spent_utxos)
+                    .map_err(ChainError::DbError)?;
+                self.utxo_store
+                    .store_undo_data(&bh, &spent_entries)
+                    .map_err(ChainError::DbError)?;
             }
         }
 
@@ -299,20 +321,28 @@ impl ChainState {
         } else {
             // Check memory first, then DB
             let prev_hash_hex = hex::encode(block.header.prev_block_hash);
-            println!("add_block: looking for parent {} in memory: {}", prev_hash_hex, self.blocks.contains_key(&block.header.prev_block_hash));
+            println!(
+                "add_block: looking for parent {} in memory: {}",
+                prev_hash_hex,
+                self.blocks.contains_key(&block.header.prev_block_hash)
+            );
             if !self.blocks.contains_key(&block.header.prev_block_hash) {
-                 let db_result = self.block_store.get_block(&block.header.prev_block_hash);
-                 println!("add_block: DB lookup for parent {}: {:?}", prev_hash_hex, db_result.as_ref().map(|r| r.is_some()));
-                 if let Ok(Some(prev_block)) = db_result {
-                     let prev_hash = prev_block.header.hash();
-                     let prev_height = 0; // Fallback
-                     let prev_data_owned = BlockData {
-                         block: prev_block,
-                         height: prev_height,
-                         cumulative_work: U256([0u8; 32]), 
-                     };
-                     self.blocks.insert(prev_hash, prev_data_owned);
-                 }
+                let db_result = self.block_store.get_block(&block.header.prev_block_hash);
+                println!(
+                    "add_block: DB lookup for parent {}: {:?}",
+                    prev_hash_hex,
+                    db_result.as_ref().map(|r| r.is_some())
+                );
+                if let Ok(Some(prev_block)) = db_result {
+                    let prev_hash = prev_block.header.hash();
+                    let prev_height = 0; // Fallback
+                    let prev_data_owned = BlockData {
+                        block: prev_block,
+                        height: prev_height,
+                        cumulative_work: U256([0u8; 32]),
+                    };
+                    self.blocks.insert(prev_hash, prev_data_owned);
+                }
             }
 
             let prev_data = self
@@ -336,8 +366,7 @@ impl ChainState {
                     break;
                 }
             }
-            validate_timestamp(&block.header, &prev_headers)
-                .map_err(ChainError::InvalidBlock)?;
+            validate_timestamp(&block.header, &prev_headers).map_err(ChainError::InvalidBlock)?;
 
             (
                 prev_data.height + 1,
@@ -362,7 +391,9 @@ impl ChainState {
         let should_update_tip = match self.tip {
             None => true,
             Some(current_tip) => {
-                let current_work = self.blocks.get(&current_tip)
+                let current_work = self
+                    .blocks
+                    .get(&current_tip)
                     .map(|d| d.cumulative_work)
                     .unwrap_or(U256::from(0u64));
                 cumulative_work > current_work
@@ -382,7 +413,8 @@ impl ChainState {
             };
 
             if !did_reorg {
-                let (created_utxos, spent_utxos, spent_entries, block_fees) = self.apply_block_to_utxo(&block, height)?;
+                let (created_utxos, spent_utxos, spent_entries, block_fees) =
+                    self.apply_block_to_utxo(&block, height)?;
 
                 validate_coinbase_reward(&block.transactions[0], block_fees, height as u32)
                     .map_err(ChainError::InvalidBlock)?;
@@ -409,7 +441,7 @@ impl ChainState {
                 .map_err(ChainError::DbError)?;
             self.tip = Some(block_hash);
         } else {
-             self.block_store
+            self.block_store
                 .store_block(&block, height, cumulative_work)
                 .map_err(ChainError::DbError)?;
         }
@@ -417,7 +449,19 @@ impl ChainState {
         Ok(())
     }
 
-    fn apply_block_to_utxo(&self, block: &Block, height: u64) -> Result<(Vec<(OutPoint, UtxoEntry)>, Vec<OutPoint>, Vec<(OutPoint, UtxoEntry)>, u64), ChainError> {
+    fn apply_block_to_utxo(
+        &self,
+        block: &Block,
+        height: u64,
+    ) -> Result<
+        (
+            Vec<(OutPoint, UtxoEntry)>,
+            Vec<OutPoint>,
+            Vec<(OutPoint, UtxoEntry)>,
+            u64,
+        ),
+        ChainError,
+    > {
         let mut created = Vec::new();
         let mut spent = Vec::new();
         let mut spent_entries = Vec::new();
@@ -576,51 +620,57 @@ impl ChainState {
     pub fn get_block_hash(&self, height: u64) -> Option<Hash256> {
         let mut current_hash = self.tip?;
         let mut current_data = self.blocks.get(&current_hash)?;
-        
+
         if height > current_data.height {
             return None;
         }
-        
+
         // Walk back
         while current_data.height > height {
             current_hash = current_data.block.header.prev_block_hash;
             current_data = self.blocks.get(&current_hash)?;
         }
-        
+
         Some(current_hash)
     }
 
     pub fn get_block_locator(&self) -> Vec<Hash256> {
-        let mut hashes = Vec::new();
-        let mut step = 1;
-        let mut current_height = self.get_height();
+        self.get_block_locator_with_heights()
+            .into_iter()
+            .map(|(hash, _)| hash)
+            .collect()
+    }
 
-        // Push tip
-        if let Some(tip) = self.tip {
-            hashes.push(tip);
-        } else {
-            return vec![[0u8; 32]];
-        }
+    pub fn get_block_locator_with_heights(&self) -> Vec<(Hash256, u64)> {
+        let mut entries = Vec::new();
+
+        let tip = match self.state_store.get_tip() {
+            Ok(Some(tip)) => tip,
+            _ => return vec![[0u8; 32]].into_iter().map(|h| (h, 0)).collect(),
+        };
+
+        entries.push((tip.hash, tip.height));
+
+        let mut step: u64 = 1;
+        let mut current_height = tip.height;
 
         while current_height > 0 {
-            if hashes.len() >= 10 {
-                step *= 2;
+            if entries.len() >= 10 {
+                step = step.saturating_mul(2);
             }
-            if current_height < step {
-                current_height = 0;
-            } else {
-                current_height -= step;
-            }
+            current_height = current_height.saturating_sub(step);
 
-            if let Some(block) = self.get_block_by_height(current_height) {
-                hashes.push(block.hash());
+            match self.block_store.get_hash_by_height(current_height) {
+                Ok(Some(hash)) => entries.push((hash, current_height)),
+                _ => break,
             }
         }
-        hashes
+
+        entries
     }
 
     pub fn get_header_at_height(&self, height: u64) -> Option<BlockHeader> {
-        self.get_block_by_height(height).map(|b| b.header)
+        self.block_store.get_header_by_height(height).ok().flatten()
     }
 
     pub fn get_height_for_hash(&self, hash: &Hash256) -> Option<u64> {
@@ -632,7 +682,19 @@ impl ChainState {
     }
 
     pub fn store_header_only(&self, header: &BlockHeader) -> Result<(), String> {
-        self.block_store.store_header(header).map_err(|e| e.to_string())
+        self.block_store
+            .store_header(header)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn store_header_only_at_height(
+        &self,
+        header: &BlockHeader,
+        height: u64,
+    ) -> Result<(), String> {
+        self.block_store
+            .store_header_at_height(header, height)
+            .map_err(|e| e.to_string())
     }
 }
 

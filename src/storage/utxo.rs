@@ -99,8 +99,8 @@ impl UtxoStore {
         block_hash: &Hash256,
         spent_entries: &[(OutPoint, UtxoEntry)],
     ) -> Result<(), String> {
-        let value =
-            bincode::serialize(spent_entries).map_err(|e| format!("Failed to serialize undo data: {}", e))?;
+        let value = bincode::serialize(spent_entries)
+            .map_err(|e| format!("Failed to serialize undo data: {}", e))?;
         self.db.put(CF_UNDO, block_hash, &value)
     }
 
@@ -110,8 +110,8 @@ impl UtxoStore {
     ) -> Result<Option<Vec<(OutPoint, UtxoEntry)>>, String> {
         match self.db.get(CF_UNDO, block_hash)? {
             Some(bytes) => {
-                let entries: Vec<(OutPoint, UtxoEntry)> =
-                    bincode::deserialize(&bytes).map_err(|e| format!("Failed to deserialize undo data: {}", e))?;
+                let entries: Vec<(OutPoint, UtxoEntry)> = bincode::deserialize(&bytes)
+                    .map_err(|e| format!("Failed to deserialize undo data: {}", e))?;
                 Ok(Some(entries))
             }
             None => Ok(None),

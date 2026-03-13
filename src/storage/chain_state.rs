@@ -110,6 +110,19 @@ impl ChainStateStore {
         batch.commit()
     }
 
+    /// Store best header (Prompt 1 requirement)
+    pub fn store_best_header(&self, height: u32, hash: &[u8; 32]) -> Result<(), String> {
+        self.set_best_header(hash, height as u64)
+    }
+
+    /// Load best header (Prompt 1 requirement)
+    pub fn load_best_header(&self) -> Result<Option<(u32, [u8; 32])>, String> {
+        match self.get_best_header()? {
+            Some((hash, height)) => Ok(Some((height as u32, hash))),
+            None => Ok(None),
+        }
+    }
+
     /// Update tip with reorg information (atomic)
     pub fn update_tip_with_reorg(
         &self,

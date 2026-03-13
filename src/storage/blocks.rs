@@ -3,6 +3,8 @@ use crate::primitives::hash::Hash256;
 use crate::storage::{Database, CF_BLOCKS, CF_BLOCK_INDEX, CF_HEADERS};
 use std::sync::Arc;
 
+const HEADER_HEIGHT_PREFIX: &[u8] = b"hh:";
+
 /// Block metadata for index (Internal use or if we want to store it separately)
 #[derive(Debug, Clone)]
 pub struct BlockMeta {
@@ -53,6 +55,13 @@ impl BlockStore {
         Self { db }
     }
 
+    fn header_height_key(height: u64) -> [u8; 11] {
+        let mut out = [0u8; 11];
+        out[..3].copy_from_slice(HEADER_HEIGHT_PREFIX);
+        out[3..].copy_from_slice(&height.to_le_bytes());
+        out
+    }
+
     /// Store block
     pub fn store_block(
         &self,
@@ -74,6 +83,13 @@ impl BlockStore {
         batch.put(CF_BLOCK_INDEX, &height.to_le_bytes(), &block_hash)?;
 
         batch.commit()
+    }
+
+    pub fn get_hash_by_height(&self, height: u64) -> Result<Option<Hash256>, String> {
+        match self.db.get(CF_BLOCK_INDEX, &height.to_le_bytes())? {
+            Some(h) => Ok(Some(h.try_into().map_err(|_| "Invalid hash")?)),
+            None => Ok(None),
+        }
     }
 
     /// Get block by hash
@@ -123,6 +139,34 @@ impl BlockStore {
         use crate::primitives::serialize::Encode;
         let header_bytes = header.encode();
         self.db.put(CF_HEADERS, &hash, &header_bytes)
+    }
+
+    pub fn store_header_at_height(&self, header: &BlockHeader, height: u64) -> Result<(), String> {
+        let hash = header.hash();
+        use crate::primitives::serialize::Encode;
+        let header_bytes = header.encode();
+
+        let key = Self::header_height_key(height);
+        let mut batch = self.db.batch();
+        batch.put(CF_HEADERS, &hash, &header_bytes)?;
+        batch.put(CF_HEADERS, &key, &hash)?;
+        batch.commit()
+    }
+
+    pub fn get_header_by_height(&self, height: u64) -> Result<Option<BlockHeader>, String> {
+        let key = Self::header_height_key(height);
+        if let Some(hash_bytes) = self.db.get(CF_HEADERS, &key)? {
+            let hash: Hash256 = hash_bytes
+                .try_into()
+                .map_err(|_| "Invalid header hash in height index")?;
+            return self.get_header(&hash);
+        }
+
+        if let Some(hash) = self.get_hash_by_height(height)? {
+            return self.get_header(&hash);
+        }
+
+        Ok(None)
     }
 
     /// Check if block exists
