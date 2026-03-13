@@ -124,29 +124,47 @@ impl BlockRelay {
         // Handle Blocks
         let mut blocks_to_send = Vec::new();
         let mut txs_to_send = Vec::new();
-        println!("Relay: handle_getdata called from peer {}, {} items", peer_id, getdata.inventory.len());
+        println!(
+            "Relay: handle_getdata called from peer {}, {} items",
+            peer_id,
+            getdata.inventory.len()
+        );
 
         {
             let chain = self.chain.lock().unwrap();
             for inv_vec in &getdata.inventory {
                 match inv_vec.inv_type {
                     INV_BLOCK => {
-                        let block_opt = chain.get_block(&inv_vec.hash)
+                        let block_opt = chain
+                            .get_block(&inv_vec.hash)
                             .map(|b| BlockMessage {
                                 header: b.header,
                                 transactions: b.transactions.clone(),
                             })
                             .or_else(|| {
-                                chain.block_store.get_block(&inv_vec.hash).ok().flatten().map(|b| BlockMessage {
-                                    header: b.header,
-                                    transactions: b.transactions,
-                                })
+                                chain
+                                    .block_store
+                                    .get_block(&inv_vec.hash)
+                                    .ok()
+                                    .flatten()
+                                    .map(|b| BlockMessage {
+                                        header: b.header,
+                                        transactions: b.transactions,
+                                    })
                             });
                         if let Some(block_msg) = block_opt {
-                            println!("Relay: serving block {} to peer {}", hex::encode(inv_vec.hash), peer_id);
+                            println!(
+                                "Relay: serving block {} to peer {}",
+                                hex::encode(inv_vec.hash),
+                                peer_id
+                            );
                             blocks_to_send.push(block_msg);
                         } else {
-                            println!("Relay: block {} not found for peer {}", hex::encode(inv_vec.hash), peer_id);
+                            println!(
+                                "Relay: block {} not found for peer {}",
+                                hex::encode(inv_vec.hash),
+                                peer_id
+                            );
                         }
                     }
                     INV_TX => {
@@ -175,7 +193,11 @@ impl BlockRelay {
     // Handle received Block message
     pub fn handle_block(&self, peer_id: u64, block: &BlockMessage) -> Result<(), String> {
         let block_hash = block.header.hash();
-        println!("Relay: received block {} from peer {}", hex::encode(block_hash), peer_id);
+        println!(
+            "Relay: received block {} from peer {}",
+            hex::encode(block_hash),
+            peer_id
+        );
 
         let mut chain = self.chain.lock().unwrap();
 
@@ -186,8 +208,11 @@ impl BlockRelay {
             transactions: block.transactions.clone(),
         }) {
             Ok(()) => {
-                println!("Relay: block {} added to chain successfully", hex::encode(block_hash));
-                
+                println!(
+                    "Relay: block {} added to chain successfully",
+                    hex::encode(block_hash)
+                );
+
                 let height = chain.get_height_for_hash(&block_hash);
 
                 // Check if it's the new tip
@@ -234,7 +259,11 @@ impl BlockRelay {
                 Ok(())
             }
             Err(e) => {
-                println!("Relay: block {} validation failed: {:?}", hex::encode(block_hash), e);
+                println!(
+                    "Relay: block {} validation failed: {:?}",
+                    hex::encode(block_hash),
+                    e
+                );
                 Err(format!("Block validation failed: {}", e))
             }
         }

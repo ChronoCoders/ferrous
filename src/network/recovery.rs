@@ -20,7 +20,11 @@ struct RecoveryState {
 }
 
 impl RecoveryManager {
-    pub fn new(peer_manager: Arc<PeerManager>, addr_manager: Arc<Mutex<AddressManager>>, network: crate::consensus::params::Network) -> Self {
+    pub fn new(
+        peer_manager: Arc<PeerManager>,
+        addr_manager: Arc<Mutex<AddressManager>>,
+        network: crate::consensus::params::Network,
+    ) -> Self {
         Self {
             peer_manager,
             addr_manager,
@@ -96,7 +100,10 @@ impl RecoveryManager {
 
     // Attempt network recovery
     pub fn recover(&self) -> Result<(), String> {
-        let mut state = self.state.lock().map_err(|e| format!("Poisoned mutex: {}", e))?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|e| format!("Poisoned mutex: {}", e))?;
 
         if !state.partition_detected {
             // First detection
@@ -133,7 +140,11 @@ impl RecoveryManager {
         println!("Stage 1: Reconnecting to known peers");
 
         // Get best addresses (previously successful)
-        let addrs = self.addr_manager.lock().map_err(|e| format!("Poisoned mutex: {}", e))?.get_best_addresses(8);
+        let addrs = self
+            .addr_manager
+            .lock()
+            .map_err(|e| format!("Poisoned mutex: {}", e))?
+            .get_best_addresses(8);
 
         for addr in addrs {
             let _ = self.peer_manager.connect_to_peer(addr);
@@ -160,17 +171,22 @@ impl RecoveryManager {
     }
 
     fn aggressive_reconnect(&self) -> Result<(), String> {
-        let attempts = self.state.lock().map_err(|e| format!("Poisoned mutex: {}", e))?.recovery_attempts;
-        println!(
-            "Stage 3: Aggressive reconnection attempt {}",
-            attempts
-        );
+        let attempts = self
+            .state
+            .lock()
+            .map_err(|e| format!("Poisoned mutex: {}", e))?
+            .recovery_attempts;
+        println!("Stage 3: Aggressive reconnection attempt {}", attempts);
 
         // Disconnect all peers
         self.force_reconnect();
 
         // Try many addresses
-        let addrs = self.addr_manager.lock().map_err(|e| format!("Poisoned mutex: {}", e))?.get_random_addresses(20);
+        let addrs = self
+            .addr_manager
+            .lock()
+            .map_err(|e| format!("Poisoned mutex: {}", e))?
+            .get_random_addresses(20);
 
         for addr in addrs {
             let _ = self.peer_manager.connect_to_peer(addr);
@@ -185,7 +201,10 @@ impl RecoveryManager {
         // Disconnect everything
         self.force_reconnect();
 
-        let mut addr_mgr = self.addr_manager.lock().map_err(|e| format!("Poisoned mutex: {}", e))?;
+        let mut addr_mgr = self
+            .addr_manager
+            .lock()
+            .map_err(|e| format!("Poisoned mutex: {}", e))?;
         addr_mgr.clear();
 
         let seeds = get_seed_nodes(self.network.clone());
@@ -226,7 +245,10 @@ impl RecoveryManager {
     }
 
     pub fn is_partitioned(&self) -> bool {
-        self.state.lock().map(|s| s.partition_detected).unwrap_or(false)
+        self.state
+            .lock()
+            .map(|s| s.partition_detected)
+            .unwrap_or(false)
     }
 
     pub fn get_attempts(&self) -> u32 {

@@ -94,7 +94,8 @@ pub fn calculate_next_target(
         actual_timespan = max_timespan;
     }
 
-    let mut new_target = multiply_u256_by_factor(&prev_target, actual_timespan, target, &params.max_target)?;
+    let mut new_target =
+        multiply_u256_by_factor(&prev_target, actual_timespan, target, &params.max_target)?;
 
     // Clamp adjustment to match tests: max +4% target, max -2% target
     let max_increase = multiply_u256_by_factor(&prev_target, 101, 100, &params.max_target)?;
