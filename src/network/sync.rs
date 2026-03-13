@@ -10,13 +10,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 type PeerId = u64;
+type LocatorEntry = ([u8; 32], u64);
+type Locator = Vec<LocatorEntry>;
 
 pub struct SyncManager {
     chain: Arc<Mutex<ChainState>>,
     peer_manager: Arc<PeerManager>,
     sync_state: Arc<Mutex<SyncState>>,
     header_height_map: Arc<Mutex<HashMap<[u8; 32], u32>>>,
-    last_locator: Arc<Mutex<Vec<([u8; 32], u64)>>>,
+    last_locator: Arc<Mutex<Locator>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -233,7 +235,7 @@ impl SyncManager {
         if headers_msg.headers.is_empty() {
             // Check if we need to download blocks (Headers are synced, but blocks might not be)
             let local_height = self.get_local_height();
-            let mut state = self.sync_state.lock().unwrap();
+            let state = self.sync_state.lock().unwrap();
 
             // Get best header height from state or DB
             let best_height_opt = match *state {
@@ -294,7 +296,7 @@ impl SyncManager {
             return Ok(());
         }
 
-        let mut state = self.sync_state.lock().unwrap();
+        let state = self.sync_state.lock().unwrap();
 
         // Extract current best header info from state if we are in DownloadingHeaders
         let (mut current_best_height, mut current_best_hash) = match *state {
@@ -350,8 +352,7 @@ impl SyncManager {
                     println!("[HEADERS] best_header_hash mismatch, trying highest locator in DB");
 
                     let locator = self.last_locator.lock().unwrap().clone();
-                    let mut matched: Option<(crate::consensus::block::BlockHeader, u32, [u8; 32])> =
-                        None;
+                    let mut matched: Option<(crate::consensus::block::BlockHeader, u32)> = None;
 
                     for (hash, height) in locator {
                         match chain.block_store.get_header(&hash) {
@@ -362,7 +363,7 @@ impl SyncManager {
                                     hex::encode(hash)
                                 );
                                 if prev_hash == hash {
-                                    matched = Some((h, height as u32, hash));
+                                    matched = Some((h, height as u32));
                                 }
                                 break;
                             }
@@ -382,9 +383,7 @@ impl SyncManager {
                         }
                     }
 
-                    if let Some((h, height, hash)) = matched {
-                        current_best_height = height;
-                        current_best_hash = hash;
+                    if let Some((h, height)) = matched {
                         (h, height)
                     } else {
                         println!("[HEADERS] No match found, re-requesting headers");
@@ -419,7 +418,7 @@ impl SyncManager {
                     (header_obj, h)
                 } else if let Some(h) = chain.get_height_for_hash(&prev_hash) {
                     let block = chain.get_block(&prev_hash).ok_or("Prev block not found")?;
-                    (block.header.clone(), h as u32)
+                    (block.header, h as u32)
                 } else {
                     return Err(format!("Prev header not found: {}", hex::encode(prev_hash)));
                 }
