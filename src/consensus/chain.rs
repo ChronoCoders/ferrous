@@ -63,6 +63,13 @@ pub struct ChainState {
     tip: Option<Hash256>,
 }
 
+type ApplyBlockToUtxoResult = (
+    Vec<(OutPoint, UtxoEntry)>,
+    Vec<OutPoint>,
+    Vec<(OutPoint, UtxoEntry)>,
+    u64,
+);
+
 impl ChainState {
     /// Create new chain state with persistent storage
     pub fn new<P: AsRef<Path>>(params: ChainParams, db_path: P) -> Result<Self, String> {
@@ -453,15 +460,7 @@ impl ChainState {
         &self,
         block: &Block,
         height: u64,
-    ) -> Result<
-        (
-            Vec<(OutPoint, UtxoEntry)>,
-            Vec<OutPoint>,
-            Vec<(OutPoint, UtxoEntry)>,
-            u64,
-        ),
-        ChainError,
-    > {
+    ) -> Result<ApplyBlockToUtxoResult, ChainError> {
         let mut created = Vec::new();
         let mut spent = Vec::new();
         let mut spent_entries = Vec::new();
@@ -495,7 +494,7 @@ impl ChainState {
                         .checked_add(utxo_entry.output.value)
                         .ok_or(ChainError::UtxoError(UtxoError::ValueOverflow))?;
 
-                    spent.push(outpoint.clone());
+                    spent.push(outpoint);
                     spent_entries.push((outpoint, utxo_entry.clone()));
                     spent_outputs.push(utxo_entry.output);
                 }
