@@ -4,14 +4,17 @@ This document describes the internal architecture of the Ferrous Network node, i
 
 ## Module Overview
 
-The crate root is defined in [lib.rs](file:///c:/ferrous/src/lib.rs#L1-L8) and exposes five top-level modules:
+The crate root is defined in [lib.rs](file:///c:/ferrous/src/lib.rs#L1-L12) and exposes these top-level modules:
 
 - [consensus](file:///c:/ferrous/src/consensus/mod.rs)
+- [dashboard](file:///c:/ferrous/src/dashboard/mod.rs)
 - [mining](file:///c:/ferrous/src/mining/mod.rs)
 - [network](file:///c:/ferrous/src/network/mod.rs)
 - [primitives](file:///c:/ferrous/src/primitives/mod.rs)
 - [rpc](file:///c:/ferrous/src/rpc/mod.rs)
 - [script](file:///c:/ferrous/src/script/mod.rs)
+- [storage](file:///c:/ferrous/src/storage/mod.rs)
+- [wallet](file:///c:/ferrous/src/wallet/mod.rs)
 
 ### consensus
 
@@ -60,6 +63,22 @@ JSON-RPC interface:
 
 - [server.rs](file:///c:/ferrous/src/rpc/server.rs): HTTP server, request handling, and method dispatch.
 - [methods.rs](file:///c:/ferrous/src/rpc/methods.rs): Request/response structs for RPC methods.
+
+### storage
+
+Persistent storage and indexes:
+
+- [db.rs](file:///c:/ferrous/src/storage/db.rs): RocksDB wrapper and column family wiring.
+- [blocks.rs](file:///c:/ferrous/src/storage/blocks.rs): Block/header storage and indexes.
+- [chain_state.rs](file:///c:/ferrous/src/storage/chain_state.rs): Persistent chain tip and best-header tracking.
+- [utxo.rs](file:///c:/ferrous/src/storage/utxo.rs): UTXO storage.
+
+### wallet
+
+Wallet management and transaction building:
+
+- [manager.rs](file:///c:/ferrous/src/wallet/manager.rs): Wallet state and address management.
+- [builder.rs](file:///c:/ferrous/src/wallet/builder.rs): Transaction construction.
 
 ### primitives
 
@@ -134,7 +153,7 @@ Defined in [server.rs](file:///c:/ferrous/src/rpc/server.rs#L8-L12), `RpcServer`
 Responsibilities:
 
 - `run()` accepts HTTP requests and dispatches JSON-RPC calls.
-- Implements `getblockchaininfo`, `mineblocks`, `getblock`, `getbestblockhash`, `stop`, `getpeerinfo`, `getrecoverystatus`, and `forcereconnect`.
+- Implements control, wallet, mining, and network methods including `getblockchaininfo`, `getblockhash`, `getblock`, `getbestblockhash`, `getmininginfo`, `getnetworkinfo`, `getpeerinfo`, `getconnectioncount`, `getnewaddress`, `getbalance`, `listunspent`, `listaddresses`, `sendtoaddress`, `generatetoaddress`, `resetnetwork`, and `stop`.
 
 ## Data Flow
 
@@ -149,12 +168,21 @@ Responsibilities:
    - `BlockRelay`: Propagates new blocks and transactions via `inv`/`getdata`.
    - `PeerDiscovery`: Updates the address book with new peer information.
 
+#### SyncManager (Headers-First IBD)
+
+`SyncManager` tracks progress using a `SyncState` enum:
+
+- `Idle`
+- `DownloadingHeaders`
+- `DownloadingBlocks`
+- `Synced`
+
 ### Mining and Block Application
 
 1. The node is started from [examples/node.rs](file:///c:/ferrous/examples/node.rs) with a chosen network.
 2. `create_genesis()` builds and mines a genesis block in-memory.
 3. `ChainState::new` initializes the chain with genesis and a fresh `UtxoSet`.
-4. `Miner::mine_and_attach` is invoked either directly (tests) or via `mineblocks` over RPC:
+4. `Miner::mine_and_attach` is invoked either via CLI mining (`--mine`) or via RPC (`mineblocks` / `generatetoaddress`):
    - `next_block_timestamp` uses MedianTimePast and network-adjusted time to pick a valid timestamp.
    - `calculate_next_target` in [difficulty.rs](file:///c:/ferrous/src/consensus/difficulty.rs#L63-L145) computes the next difficulty target from the previous header and timestamp.
    - `Miner` iterates nonce values until `BlockHeader::check_proof_of_work` succeeds.
@@ -191,7 +219,7 @@ Implications:
 
 - **Global Lock Contention**: `ChainState` lock is the primary bottleneck. Long validation or reorganization holds the lock, blocking RPC and P2P processing.
 - **Deadlock Risk**: Care is taken to avoid holding the `PeerManager` lock while calling into `ChainState`, or vice-versa.
-- **Scaling**: Future improvements should move to `RwLock` for `ChainState` (allowing parallel reads) and asynchronous networking (Tokio) to reduce thread overhead.
+- **Scaling**: Planned improvements include `RwLock` for `ChainState` (parallel reads), a separate RPC thread pool to isolate long-running requests, and further work on parallel IBD (multi-peer download + ordered apply).
 
 ## Dependencies and Rationale
 
@@ -207,15 +235,11 @@ Key external dependencies (see [Cargo.toml](file:///c:/ferrous/Cargo.toml#L7-L17
 Design choices:
 
 - **No unsafe code**: Enforced at the crate level in [lib.rs](file:///c:/ferrous/src/lib.rs#L1-L3).
-- **In-memory state**: `ChainState` and `UtxoSet` use `HashMap`s, prioritizing clarity over persistence. This is suitable for tests and experimentation.
+- **In-memory hot path**: `ChainState` maintains an in-memory view of the active chain for validation and mining, while persistence is provided via RocksDB.
 - **Explicit serialization**: Custom `Encode`/`Decode` traits in [serialize.rs](file:///c:/ferrous/src/primitives/serialize.rs) avoid relying on `serde` for consensus-critical binary formats.
 
 ## Limitations and Future Work
 
-- No persistent storage; all chain and UTXO state is lost on restart.
-- No P2P networking; RPC is the only interface, so nodes cannot sync or gossip.
-- Network parameters differ only in difficulty behavior and target block time; all networks currently share a single genesis block.
-- Address formats are raw scriptPubKeys (no Base58 or Bech32 address layer).
-
-These limitations are intentional to keep the implementation focused on consensus and validation while remaining approachable for readers and contributors.
-
+- `ChainState` is guarded by a global `Mutex` and is a known bottleneck under load (RPC timeouts can occur during heavy sync/mining).
+- Parallel IBD is in progress: Phase 1 headers-first state machine is deployed; multi-peer download + ordered apply are planned next.
+- Address format and wallet/RPC ergonomics are evolving and will change as Dilithium and later privacy features are integrated.

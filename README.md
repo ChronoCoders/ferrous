@@ -76,8 +76,8 @@ curl -X POST http://127.0.0.1:8332 \
 
 ## Project Status
 
-**Version**: 0.2.0 (Alpha)
-**Phase**: P2P Network Implementation (Complete)
+**Version**: 0.1.0 (Alpha)
+**Phase**: Phase 1 Foundation (In Progress)
 
 ### Implemented
 
@@ -93,15 +93,39 @@ curl -X POST http://127.0.0.1:8332 \
     - Health monitoring and stale block detection.
     - RPC commands: `getrecoverystatus`, `forcereconnect`, `resetnetwork`.
 - **Storage**: RocksDB integration for chain state and block index.
-- **RPC**: Full suite of control commands (`getblockchaininfo`, `getmininginfo`, `mineblocks`, `getpeerinfo`, etc.).
+- **RPC**: JSON-RPC API with the following methods:
+  - `getblockchaininfo`
+  - `getblockhash`
+  - `getblock`
+  - `getbestblockhash`
+  - `getmininginfo`
+  - `mineblocks`
+  - `generatetoaddress`
+  - `getnewaddress`
+  - `getbalance`
+  - `listunspent`
+  - `listaddresses`
+  - `sendtoaddress`
+  - `getnetworkinfo`
+  - `getpeerinfo`
+  - `getconnectioncount`
+  - `resetnetwork`
+  - `stop`
 - **UI**: Terminal User Interface (TUI) for real-time statistics.
+
+### Infrastructure (Live Testnet)
+
+- `seed1.ferrous.network` — `45.77.153.141` — Vultr New York — mining
+- `seed4.ferrous.network` — `45.77.64.221` — Vultr Frankfurt — mining
 
 ### Roadmap
 
-- **Phase 1 (Current)**: Bitcoin-like foundation (PoW, UTXO, P2P).
-- **Phase 2**: Wallet integration and transaction management.
-- **Phase 3**: Post-Quantum Cryptography (CRYSTALS-Dilithium signatures).
-- **Phase 4**: Privacy Features (Ring Confidential Transactions).
+- **Phase 1 (Current)**: Bitcoin-like foundation — PoW, UTXO, P2P, headers-first IBD (in progress: parallel IBD Phase 1 deployed).
+- **Phase 2**: Parallel IBD completion (Phase 2 + Phase 3) + testnet reset.
+- **Phase 3**: Wallet integration — BIP39 seed phrase + Shamir's Secret Sharing recovery.
+- **Phase 4**: Post-Quantum Cryptography — CRYSTALS-Dilithium (before Ring CT).
+- **Phase 5**: Privacy Features — Ring Confidential Transactions + CLSAG.
+- **Phase 6**: Security audit + Mainnet launch.
 
 ## Documentation
 
@@ -115,11 +139,8 @@ curl -X POST http://127.0.0.1:8332 \
 The project maintains a strict "zero warnings" policy.
 
 ```bash
-# Run unit and integration tests
+# Run tests
 cargo test
-
-# Run specific P2P integration tests
-cargo test --test p2p_integration
 
 # Run strict linting checks
 cargo clippy --all-targets --all-features -- -D warnings

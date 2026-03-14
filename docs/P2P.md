@@ -5,7 +5,7 @@ This document specifies the peer-to-peer network protocol used by Ferrous nodes 
 ## Protocol Basics
 
 - **Transport**: TCP
-- **Default Port**: 8333 (Mainnet), 18333 (Testnet), 18444 (Regtest)
+- **Default Port**: 8333 (Mainnet/Testnet), 18444 (Regtest)
 - **Message Structure**:
   - `Magic` (4 bytes): Network identifier
   - `Command` (12 bytes): ASCII command name, null-padded
@@ -77,7 +77,7 @@ This document specifies the peer-to-peer network protocol used by Ferrous nodes 
 
 - **Ping/Pong**: Nodes send `ping` messages every 60 seconds to ensure connections remain active.
 - **Dead Peer Detection**: If a peer misses 3 consecutive `pong` responses or sends no data for 20 minutes, it is disconnected.
-- **Handshake Timeout**: New connections must complete the Version/Verack handshake within 10 seconds or are dropped.
+- **Handshake Timeout**: New connections must complete the Version/Verack handshake within 120 seconds or are dropped.
 
 ### Network Recovery
 

@@ -2,11 +2,14 @@
 
 This document outlines the planned architecture for the privacy and post-quantum cryptographic upgrade of the Ferrous Network.
 
+**Note**: CRYSTALS-Dilithium is planned to be implemented and stabilized before RingCT. They are not introduced simultaneously.
+
 ## Overview
 
-Ferrous will implement a hybrid cryptographic model combining:
-- **Ring Confidential Transactions (RingCT)** for privacy (hiding sender, amount, and recipient).
+Ferrous will introduce post-quantum authorization first, then privacy features:
+
 - **CRYSTALS-Dilithium** for post-quantum authorization (ownership proof).
+- **Ring Confidential Transactions (RingCT)** for privacy (hiding sender, amount, and recipient).
 
 This ensures that even if a quantum computer breaks the privacy layer (EC-based), it cannot steal funds protected by the lattice-based signature scheme.
 
@@ -74,7 +77,9 @@ struct UtxoEntry {
 
 ## Roadmap
 
-1.  **Phase 1**: Implement P2P & Consensus (Current).
-2.  **Phase 2**: Wallet Integration & Transaction v2 Format.
-3.  **Phase 3**: Privacy Layer (RingCT + Dilithium) Activation on Testnet.
-4.  **Phase 4**: Mainnet Activation via Soft Fork (Block Height).
+1.  **Phase 1**: Foundation (PoW, UTXO, P2P, headers-first IBD).
+2.  **Phase 2**: Parallel IBD completion + testnet reset.
+3.  **Phase 3**: Wallet integration.
+4.  **Phase 4**: Post-Quantum Cryptography (CRYSTALS-Dilithium).
+5.  **Phase 5**: Privacy Layer (RingCT + CLSAG).
+6.  **Phase 6**: Security audit + Mainnet launch.
