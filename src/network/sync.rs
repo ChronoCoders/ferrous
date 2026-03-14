@@ -352,26 +352,17 @@ impl SyncManager {
                     println!("[HEADERS] best_header_hash mismatch, trying highest locator in DB");
 
                     let locator = self.last_locator.lock().unwrap().clone();
-                    let mut matched: Option<(crate::consensus::block::BlockHeader, u32)> = None;
+                    let mut best: Option<([u8; 32], u64)> = None;
 
                     for (hash, height) in locator {
                         match chain.block_store.get_header(&hash) {
-                            Ok(Some(h)) => {
-                                println!(
-                                    "[HEADERS] Highest locator in DB: height={} hash={}",
-                                    height,
-                                    hex::encode(hash)
-                                );
-                                if prev_hash == hash {
-                                    matched = Some((h, height as u32));
-                                }
-                                break;
-                            }
+                            Ok(Some(_)) => {}
                             Ok(None) => {
                                 println!(
                                     "[HEADERS] Locator inconsistency: header missing in DB for hash={}",
                                     hex::encode(hash)
                                 );
+                                continue;
                             }
                             Err(e) => {
                                 println!(
@@ -379,12 +370,62 @@ impl SyncManager {
                                     hex::encode(hash),
                                     e
                                 );
+                                continue;
                             }
+                        }
+
+                        let height_index_hash = chain
+                            .block_store
+                            .get_header_hash_from_height_index(height)
+                            .map_err(|e| e.to_string())?;
+                        let height_index_hash = match height_index_hash {
+                            Some(h) => h,
+                            None => {
+                                println!(
+                                    "[HEADERS] Locator inconsistency: height index missing for height={} hash={}",
+                                    height,
+                                    hex::encode(hash)
+                                );
+                                continue;
+                            }
+                        };
+
+                        if height_index_hash != hash {
+                            println!(
+                                "[HEADERS] Locator inconsistency: height index mismatch height={} expected_hash={} got_hash={}",
+                                height,
+                                hex::encode(hash),
+                                hex::encode(height_index_hash)
+                            );
+                            continue;
+                        }
+
+                        if best.is_none() || height > best.unwrap().1 {
+                            best = Some((hash, height));
                         }
                     }
 
-                    if let Some((h, height)) = matched {
-                        (h, height)
+                    if let Some((best_hash, best_height)) = best {
+                        println!(
+                            "[HEADERS] Highest locator in DB: height={} hash={}",
+                            best_height,
+                            hex::encode(best_hash)
+                        );
+
+                        if prev_hash != best_hash {
+                            println!("[HEADERS] No match found, re-requesting headers");
+                            drop(header_map);
+                            drop(chain);
+                            self.resend_getheaders(peer_id)?;
+                            return Ok(());
+                        }
+
+                        let prev_header = chain
+                            .block_store
+                            .get_header(&best_hash)
+                            .map_err(|e| e.to_string())?
+                            .ok_or("Best locator header missing in DB")?;
+                        (prev_header, best_height as u32)
                     } else {
                         println!("[HEADERS] No match found, re-requesting headers");
                         drop(header_map);

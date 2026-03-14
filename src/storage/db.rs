@@ -9,6 +9,7 @@ pub const CF_HEADERS: &str = "headers";
 pub const CF_UTXO: &str = "utxo";
 pub const CF_CHAIN_STATE: &str = "chain_state";
 pub const CF_UNDO: &str = "undo";
+pub const CF_BLOCK_META: &str = "block_meta";
 
 pub type DbEntry = (Vec<u8>, Vec<u8>);
 
@@ -29,6 +30,7 @@ impl Database {
             CF_BLOCKS,
             CF_BLOCK_INDEX,
             CF_HEADERS,
+            CF_BLOCK_META,
             CF_UTXO,
             CF_CHAIN_STATE,
             CF_UNDO,

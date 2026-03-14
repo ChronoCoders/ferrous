@@ -342,11 +342,16 @@ impl ChainState {
                 );
                 if let Ok(Some(prev_block)) = db_result {
                     let prev_hash = prev_block.header.hash();
-                    let prev_height = 0; // Fallback
+                    let meta = self
+                        .block_store
+                        .get_block_meta(&prev_hash)
+                        .map_err(ChainError::DbError)?
+                        .ok_or_else(|| ChainError::DbError("Missing block meta".to_string()))?;
+                    let prev_height = meta.height;
                     let prev_data_owned = BlockData {
                         block: prev_block,
                         height: prev_height,
-                        cumulative_work: U256([0u8; 32]),
+                        cumulative_work: meta.cumulative_work,
                     };
                     self.blocks.insert(prev_hash, prev_data_owned);
                 }
@@ -659,7 +664,7 @@ impl ChainState {
             }
             current_height = current_height.saturating_sub(step);
 
-            match self.block_store.get_hash_by_height(current_height) {
+            match self.block_store.get_header_hash_by_height(current_height) {
                 Ok(Some(hash)) => entries.push((hash, current_height)),
                 _ => break,
             }
