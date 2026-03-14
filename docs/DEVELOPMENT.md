@@ -7,19 +7,37 @@ This guide describes how to build, test, and work on the Ferrous Network codebas
 - Rust 1.70+ (stable)
 - Cargo package manager
 - Git
+- Clang (for RocksDB bindings)
+- CMake
 
 ## Building
 
 Clone the repository and build all targets:
 
 ```bash
-git clone https://github.com/chronocoders/ferrous
+git clone https://github.com/ChronoCoders/ferrous
 cd ferrous
 
 cargo build
 ```
 
-This compiles the library, tests, and the example node binary.
+This compiles the library and the example node binary.
+
+Before any deploy, ensure these pass locally:
+
+```bash
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+## Build Cache (sccache)
+
+On Windows (PowerShell), `sccache` can speed up repeated builds:
+
+```powershell
+cargo install sccache --locked
+$env:RUSTC_WRAPPER = "sccache"
+$env:SCCACHE_CACHE_SIZE = "2G"
+```
 
 ## Project Layout
 
@@ -32,7 +50,6 @@ Key directories:
   - `primitives/`: Hashing, serialization, varint utilities.
   - `rpc/`: JSON-RPC server and method definitions.
   - `script/`: Script opcodes, engine, and sighash.
-- `tests/`: Integration tests for consensus, mining, RPC, scripts, serialization, and networking.
 - `examples/`
   - `node.rs`: Example standalone node binary exposing the RPC interface.
 
@@ -52,30 +69,14 @@ Options:
 
 Typical workflows:
 
-- **Regtest**: Fast development and testing with `--network regtest` and `mineblocks` RPC calls.
-- **Mainnet/Testnet**: Experimental long-running nodes. All networks currently share a single genesis block but differ in difficulty behavior.
+- **Regtest**: Fast development and testing with `--network regtest` and `mineblocks` / `generatetoaddress` RPC calls.
+- **Testnet**: Long-running nodes with P2P networking and live mining.
 
-## Testing Strategy
-
-Ferrous uses a mix of unit tests (within modules) and integration tests (in `tests/`).
-
-### Running Tests
+## Testing and Linting
 
 ```bash
-# All tests
 cargo test
-
-# Specific integration suites
-cargo test --test chain_tests
-cargo test --test mining_tests
-cargo test --test rpc_tests
-cargo test --test p2p_integration
-
-# Show output
-cargo test -- --nocapture
 ```
-
-### Linting
 
 ```bash
 cargo clippy --all-targets --all-features -- -D warnings
@@ -87,38 +88,6 @@ The crate enforces:
 - `#![forbid(unsafe_code)]`
 
 in [lib.rs](file:///c:/ferrous/src/lib.rs#L1-L3), so any compiler warning or unsafe usage will fail the build.
-
-### Test Coverage
-
-Integration suites (under `tests/`):
-
-- `block_tests`
-- `chain_tests`
-- `difficulty_tests`
-- `hash_tests`
-- `merkle_tests`
-- `mining_tests`
-- `network_params_tests`
-- `rpc_tests`
-- `script_tests`
-- `serialize_tests`
-- `sighash_tests`
-- `transaction_tests`
-- `utxo_tests`
-- `validation_tests`
-- `varint_tests`
-- `p2p_integration` (End-to-end networking tests)
-
-Together with unit tests in the modules, these cover:
-
-- Block/transaction serialization and hashing.
-- Difficulty adjustment and validation.
-- Chain reorganization and UTXO behavior.
-- Script engine, sighash, and signature verification.
-- RPC request handling and error paths.
-- P2P Handshake, Block Propagation, and Peer Discovery.
-
-Most integration tests run against the `Regtest` network parameters for speed.
 
 ## Coding Conventions
 
@@ -137,9 +106,8 @@ When adding a feature:
    - Script opcodes or evaluation → `script/`
    - Mining logic → `mining/`
    - RPC additions → `rpc/`
-2. Add or extend unit tests close to the implementation.
-3. Add or extend integration tests under `tests/` to cover end-to-end behavior.
-4. Run `cargo test` and `cargo clippy --all-targets --all-features -- -D warnings`.
+2. Add or extend tests close to the implementation.
+3. Run `cargo test` and `cargo clippy --all-targets --all-features -- -D warnings`.
 
 For consensus changes:
 
@@ -168,7 +136,6 @@ If RPC calls fail:
 When a block or transaction is rejected during testing:
 
 - Look at the specific `ValidationError` or `ScriptError` in the test output.
-- Use the existing tests in `tests/` as references for valid and invalid cases.
 
 ## Contribution Notes
 
@@ -177,4 +144,3 @@ Even if the project is run by a single developer, the following practices help k
 - Keep changes small and focused.
 - Maintain and extend tests alongside new code.
 - Update documentation in `docs/` when behavior changes.
-

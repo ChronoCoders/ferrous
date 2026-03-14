@@ -25,13 +25,26 @@ Responses:
 Implemented methods:
 
 - `getblockchaininfo`
+- `getmininginfo`
 - `mineblocks`
 - `getblock`
+- `getblockhash`
 - `getbestblockhash`
-- `stop`
+- `getnewaddress`
+- `getbalance`
+- `listunspent`
+- `listaddresses`
+- `sendtoaddress`
+- `generatetoaddress`
+- `getnetworkinfo`
+- `addnode`
 - `getpeerinfo`
+- `getconnectioncount`
+- `getnetworkhealth`
 - `getrecoverystatus`
 - `forcereconnect`
+- `resetnetwork`
+- `stop`
 
 Error codes:
 
@@ -77,6 +90,315 @@ Fields:
 - `blocks`: Height of the active tip.
 - `headers`: Same as `blocks` (no header-only mode).
 - `bestblockhash`: Hex-encoded hash of the tip block header.
+
+## getblockhash
+
+Returns the block hash for a given height.
+
+### Request
+
+`params` is an array with a single integer: height.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getblockhash",
+  "params": [30000],
+  "id": 1
+}
+```
+
+### Response
+
+`result` is a hex string:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": "a68819f243db24659316e301cfb038fe4b62b75055cd30e3b958b23c272e1400",
+  "id": 1
+}
+```
+
+## getmininginfo
+
+Returns the current mining/network statistics.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getmininginfo",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "blocks": 104888,
+    "chain": "ferrous",
+    "difficulty": 0.0030110102769936487,
+    "networkhashps": 86214.60445071748
+  },
+  "id": 1
+}
+```
+
+## getnewaddress
+
+Returns a new wallet address string.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getnewaddress",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "address": "Frr1ExampleAddressString"
+  },
+  "id": 1
+}
+```
+
+## getbalance
+
+Returns the wallet balance.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getbalance",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+`result` is a JSON object:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "balance": 0.0
+  },
+  "id": 1
+}
+```
+
+## listunspent
+
+Returns the wallet UTXO set view.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "listunspent",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "utxos": [
+      {
+        "txid": "f3c0...",
+        "vout": 0,
+        "amount": 50.0,
+        "confirmations": 101,
+        "script_pubkey": "76a914..."
+      }
+    ]
+  },
+  "id": 1
+}
+```
+
+## listaddresses
+
+Returns all wallet addresses.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "listaddresses",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "addresses": [
+      "Frr1ExampleAddressString"
+    ]
+  },
+  "id": 1
+}
+```
+
+## sendtoaddress
+
+Creates and broadcasts a transaction paying `amount` to `address`.
+
+### Request
+
+`params` is an array with two elements: destination address string and amount.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "sendtoaddress",
+  "params": ["Frr1ExampleAddressString", 1.25],
+  "id": 1
+}
+```
+
+### Response
+
+`result` is a JSON object:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "txid": "9b1a...",
+    "blockhash": "000000..."
+  },
+  "id": 1
+}
+```
+
+## generatetoaddress
+
+Mines `nblocks` blocks, paying the coinbase reward to `address`.
+
+### Request
+
+`params` is an array: `[nblocks, address]`.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "generatetoaddress",
+  "params": [10, "Frr1ExampleAddressString"],
+  "id": 1
+}
+```
+
+### Response
+
+`result` is a `MineBlocksResponse`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "blocks": ["000000...", "000000..."]
+  },
+  "id": 1
+}
+```
+
+## getnetworkinfo
+
+Returns network configuration and runtime info.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getnetworkinfo",
+  "params": [],
+  "id": 1
+}
+```
+
+## getconnectioncount
+
+Returns the number of current P2P connections.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getconnectioncount",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": 1,
+  "id": 1
+}
+```
+
+## resetnetwork
+
+Forces a network reset.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "resetnetwork",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "result": "network reset initiated"
+  },
+  "id": 1
+}
+```
 
 ## mineblocks
 
@@ -205,28 +527,12 @@ Returns data about each connected network peer.
 
 ### Response
 
-`result` is a `GetPeerInfoResponse`:
-
 ```json
 {
   "jsonrpc": "2.0",
   "result": {
-    "peers": [
-      {
-        "id": 1,
-        "addr": "127.0.0.1:8333",
-        "state": "Active",
-        "version": 70015,
-        "services": 1,
-        "start_height": 0,
-        "inbound": true,
-        "ban_score": 0,
-        "bytes_sent": 1024,
-        "bytes_received": 2048,
-        "send_rate": 512.0,
-        "recv_rate": 1024.0
-      }
-    ]
+    "count": 1,
+    "peers": ["45.77.153.141:8333"]
   },
   "id": 1
 }
@@ -249,17 +555,13 @@ Returns the current status of the network recovery manager.
 
 ### Response
 
-`result` is a `GetRecoveryStatusResponse`:
-
 ```json
 {
   "jsonrpc": "2.0",
   "result": {
     "partition_detected": false,
     "last_block_age": 120,
-    "recovery_attempts": 0,
-    "active_peers": 5,
-    "known_addresses": 15
+    "recovery_attempts": 0
   },
   "id": 1
 }
@@ -356,4 +658,3 @@ curl -X POST http://127.0.0.1:8332 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"getblockchaininfo","params":[],"id":1}'
 ```
-

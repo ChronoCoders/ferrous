@@ -1,49 +1,45 @@
 # Ferrous Network Roadmap
 
-This document outlines the phased development and feature roadmap for the Ferrous Network.
+## Phase 1: Foundation (Current)
+- SHA256d PoW, 150s block time, per-block difficulty adjustment
+- Full P2P stack: handshake, headers-first IBD, block relay, peer discovery
+- RocksDB persistent storage
+- JSON-RPC API (20+ methods) and TUI Dashboard + Monitor
+- Parallel IBD: headers-first state machine deployed (Phase 2/3 in progress)
 
-## Phase 1: Foundation (Current - Alpha)
+## Phase 2: Parallel IBD Completion + Testnet Reset
+- BlockDownloadQueue with work-stealing multi-peer download
+- BlockApplyBuffer with sequential ordered validation
+- Testnet reset with 4 vCPU servers, 5+ nodes all mining
+- RPC threading fix: RwLock + separate thread pool
 
-- **Consensus**: SHA256d Proof-of-Work, 150s blocks, difficulty adjustment.
-- **Networking**: P2P protocol, headers-first sync, block relay.
-- **Storage**: RocksDB persistence for chain state and UTXOs.
-- **Interface**: JSON-RPC and TUI Dashboard.
+## Phase 3: Wallet Integration
+- BIP39 seed phrase (12-24 words)
+- Shamir's Secret Sharing recovery (M-of-N)
+- Wallet encryption (KDF + AEAD, replacing XOR obfuscation)
+- RPC authentication
 
-## Phase 2: Wallet & Transaction Management
+## Phase 4: Post-Quantum Cryptography
+- CRYSTALS-Dilithium (NIST FIPS 204) — replaces ECDSA
+- New address format for Dilithium public keys
+- Block/mempool size policy redesign (Dilithium sigs 2.4-4.6KB)
+- Hard fork coordination
 
-- **Wallet Implementation**:
-  - Key management (BIP32/BIP39 HD wallets).
-  - Address generation (P2PKH, P2WPKH).
-  - Transaction building and signing.
-- **Transaction Features**:
-  - Fee estimation.
-  - Replace-by-Fee (RBF) logic.
-  - Mempool prioritization.
+## Phase 5: Privacy Features
+- Ring Confidential Transactions (RingCT) + CLSAG
+- Bulletproofs+ range proofs
+- Pedersen commitments
+- Key image storage and double-spend prevention
+- Only after Dilithium is stable — never simultaneously
 
-## Phase 3: Privacy Layer (Beta)
+## Phase 6: Mainnet Launch
+- Independent security audit
+- Final testnet reset
+- Genesis block creation
+- Open-source miner release
 
-- **New Transaction Version (v2)**: Introduce Ring Confidential Transactions.
-- **Cryptography**:
-  - Integrate `dalek-cryptography` for Bulletproofs+ and Ristretto.
-  - Integrate `pqc_dilithium` for post-quantum signatures.
-- **Consensus Rules**:
-  - Add validation logic for range proofs and ring signatures.
-  - Implement key image storage and double-spend checking.
-
-## Phase 4: Mainnet Launch
-
-- **Security Audits**: External review of consensus and privacy code.
-- **Testnet Reset**: Final wipe of testnet chain.
-- **Genesis Block**: Launch of the permanent mainnet.
-- **Mining**: Release open-source miner software.
-
-## Phase 5: Ecosystem Growth
-
-- **Block Explorer**: Web interface to view blocks and transactions.
-- **Light Client (SPV)**: Mobile-friendly wallet protocol.
-- **Exchange Integration**: API support for exchanges.
-
-## Long-Term Vision
-
-- **Lattice Commitments**: Replace EC Pedersen commitments with fully PQ-safe alternatives.
-- **Sidechains**: Support for smart contracts via Layer 2 solutions.
+## Long-Term
+- Block explorer (vanilla JS, no framework)
+- Public faucet
+- Exchange backend + market maker bot
+- Light client (SPV)
