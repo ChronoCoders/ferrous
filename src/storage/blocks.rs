@@ -1,6 +1,6 @@
 use crate::consensus::block::{Block, BlockHeader, U256};
 use crate::primitives::hash::Hash256;
-use crate::storage::{Database, CF_BLOCKS, CF_BLOCK_INDEX, CF_HEADERS};
+use crate::storage::{Database, CF_BLOCKS, CF_BLOCK_INDEX, CF_BLOCK_META, CF_HEADERS};
 use std::sync::Arc;
 
 const HEADER_HEIGHT_PREFIX: &[u8] = b"hh:";
@@ -67,7 +67,7 @@ impl BlockStore {
         &self,
         block: &Block,
         height: u64,
-        _cumulative_work: U256,
+        cumulative_work: U256,
     ) -> Result<(), String> {
         let block_hash = block.header.hash();
 
@@ -82,12 +82,47 @@ impl BlockStore {
 
         batch.put(CF_BLOCK_INDEX, &height.to_le_bytes(), &block_hash)?;
 
+        let meta = BlockMeta {
+            height,
+            hash: block_hash,
+            cumulative_work,
+        };
+        batch.put(CF_BLOCK_META, &block_hash, &meta.to_bytes())?;
+
         batch.commit()
     }
 
     pub fn get_hash_by_height(&self, height: u64) -> Result<Option<Hash256>, String> {
         match self.db.get(CF_BLOCK_INDEX, &height.to_le_bytes())? {
             Some(h) => Ok(Some(h.try_into().map_err(|_| "Invalid hash")?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_header_hash_by_height(&self, height: u64) -> Result<Option<Hash256>, String> {
+        let key = Self::header_height_key(height);
+        if let Some(hash_bytes) = self.db.get(CF_HEADERS, &key)? {
+            return Ok(Some(
+                hash_bytes
+                    .try_into()
+                    .map_err(|_| "Invalid header hash in height index")?,
+            ));
+        }
+
+        self.get_hash_by_height(height)
+    }
+
+    pub fn get_header_hash_from_height_index(
+        &self,
+        height: u64,
+    ) -> Result<Option<Hash256>, String> {
+        let key = Self::header_height_key(height);
+        match self.db.get(CF_HEADERS, &key)? {
+            Some(hash_bytes) => Ok(Some(
+                hash_bytes
+                    .try_into()
+                    .map_err(|_| "Invalid header hash in height index")?,
+            )),
             None => Ok(None),
         }
     }
@@ -164,6 +199,15 @@ impl BlockStore {
 
         if let Some(hash) = self.get_hash_by_height(height)? {
             return self.get_header(&hash);
+        }
+
+        Ok(None)
+    }
+
+    pub fn get_block_meta(&self, hash: &Hash256) -> Result<Option<BlockMeta>, String> {
+        match self.db.get(CF_BLOCK_META, hash)? {
+            Some(b) => return Ok(Some(BlockMeta::from_bytes(&b)?)),
+            None => {}
         }
 
         Ok(None)
