@@ -219,6 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let network_stats_clone = network_stats.clone();
         let recovery_manager_clone = recovery_manager.clone();
         let relay_clone = relay.clone();
+        let mempool_clone = mempool.clone();
         let rpc_addr = args.rpc_addr.clone();
 
         thread::spawn(move || {
@@ -230,6 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 network_stats: network_stats_clone,
                 recovery_manager: recovery_manager_clone,
                 relay: relay_clone,
+                mempool: mempool_clone,
             };
             let server = RpcServer::new(config, &rpc_addr).unwrap();
             server.run().ok();
@@ -250,6 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             network_stats,
             recovery_manager,
             relay: relay.clone(),
+            mempool: mempool.clone(),
         };
 
         let server = RpcServer::new(config, &args.rpc_addr).map_err(std::io::Error::other)?;
