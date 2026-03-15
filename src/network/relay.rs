@@ -8,10 +8,10 @@ use crate::network::protocol::{
 };
 use crate::primitives::serialize::Encode;
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub struct BlockRelay {
-    chain: Arc<Mutex<ChainState>>,
+    chain: Arc<RwLock<ChainState>>,
     peer_manager: Arc<PeerManager>,
     announced_blocks: Arc<Mutex<HashSet<[u8; 32]>>>,
     mempool: Arc<NetworkMempool>,
@@ -19,7 +19,7 @@ pub struct BlockRelay {
 
 impl BlockRelay {
     pub fn new(
-        chain: Arc<Mutex<ChainState>>,
+        chain: Arc<RwLock<ChainState>>,
         peer_manager: Arc<PeerManager>,
         mempool: Arc<NetworkMempool>,
     ) -> Self {
@@ -61,7 +61,7 @@ impl BlockRelay {
 
     // Handle received INV message
     pub fn handle_inv(&self, peer_id: u64, inv: &InvMessage) -> Result<(), String> {
-        let chain = self.chain.lock().unwrap();
+        let chain = self.chain.read().unwrap();
         let mut to_request = Vec::new();
 
         for inv_vec in &inv.inventory {
@@ -131,7 +131,7 @@ impl BlockRelay {
         );
 
         {
-            let chain = self.chain.lock().unwrap();
+            let chain = self.chain.read().unwrap();
             for inv_vec in &getdata.inventory {
                 match inv_vec.inv_type {
                     INV_BLOCK => {
@@ -199,7 +199,7 @@ impl BlockRelay {
             peer_id
         );
 
-        let mut chain = self.chain.lock().unwrap();
+        let mut chain = self.chain.write().unwrap();
 
         // Validate and add block
         use crate::consensus::block::Block;
@@ -313,7 +313,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().to_str().unwrap();
         let params = Network::Regtest.params();
-        let chain = Arc::new(Mutex::new(ChainState::new(params, db_path).unwrap()));
+        let chain = Arc::new(RwLock::new(ChainState::new(params, db_path).unwrap()));
 
         // Setup PeerManager
         let peer_manager = Arc::new(PeerManager::new(REGTEST_MAGIC, 10, 70015, 0, 0));

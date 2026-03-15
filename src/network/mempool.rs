@@ -2,7 +2,7 @@ use crate::consensus::chain::ChainState;
 use crate::consensus::transaction::Transaction;
 use crate::consensus::utxo::OutPoint;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Maximum number of unconfirmed transactions held in memory.
 /// Transactions beyond this limit are rejected; no eviction is performed.
@@ -10,11 +10,11 @@ pub const MEMPOOL_MAX_ENTRIES: usize = 5_000;
 
 pub struct NetworkMempool {
     transactions: Arc<Mutex<HashMap<[u8; 32], Transaction>>>,
-    chain: Arc<Mutex<ChainState>>,
+    chain: Arc<RwLock<ChainState>>,
 }
 
 impl NetworkMempool {
-    pub fn new(chain: Arc<Mutex<ChainState>>) -> Self {
+    pub fn new(chain: Arc<RwLock<ChainState>>) -> Self {
         Self {
             transactions: Arc::new(Mutex::new(HashMap::new())),
             chain,
@@ -29,7 +29,7 @@ impl NetworkMempool {
         // so the chain lock and mempool lock are never acquired simultaneously,
         // eliminating any lock-ordering deadlock risk).
         {
-            let chain = self.chain.lock().unwrap();
+            let chain = self.chain.read().unwrap();
             for input in &tx.inputs {
                 let outpoint = OutPoint {
                     txid: input.prev_txid,
@@ -119,7 +119,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().to_str().unwrap();
         let params = Network::Regtest.params();
-        let chain = Arc::new(Mutex::new(ChainState::new(params, db_path).unwrap()));
+        let chain = Arc::new(RwLock::new(ChainState::new(params, db_path).unwrap()));
 
         let mempool = NetworkMempool::new(chain.clone());
 

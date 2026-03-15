@@ -13,7 +13,7 @@ use ferrous_node::rpc::{RpcServer, RpcServerConfig};
 use ferrous_node::wallet::address::address_to_script_pubkey;
 use ferrous_node::wallet::manager::Wallet;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Parser, Debug)]
 #[command(name = "ferrous-node")]
@@ -79,10 +79,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Network: {}", args.network);
     println!("Data directory: {}", db_path);
 
-    let chain = Arc::new(Mutex::new(ChainState::new(params.clone(), &db_path)?));
+    let chain = Arc::new(RwLock::new(ChainState::new(params.clone(), &db_path)?));
 
     {
-        let mut chain_guard = chain.lock().unwrap();
+        let mut chain_guard = chain.write().unwrap();
 
         // Check if genesis needed
         if chain_guard.get_height() == 0 && chain_guard.get_tip().unwrap().is_none() {
@@ -264,7 +264,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let relay_mine = relay.clone();
             std::thread::spawn(move || loop {
                 let hash = {
-                    let mut chain_guard = chain_mine.lock().unwrap();
+                    let mut chain_guard = chain_mine.write().unwrap();
                     match miner_mine.mine_and_attach(&mut chain_guard, Vec::new()) {
                         Ok(header) => Some(header.hash()),
                         Err(e) => {

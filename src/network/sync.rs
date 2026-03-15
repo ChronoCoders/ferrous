@@ -8,14 +8,14 @@ use crate::network::protocol::{
 };
 use crate::primitives::serialize::Encode;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 type PeerId = u64;
 type LocatorEntry = ([u8; 32], u64);
 type Locator = Vec<LocatorEntry>;
 
 pub struct SyncManager {
-    chain: Arc<Mutex<ChainState>>,
+    chain: Arc<RwLock<ChainState>>,
     peer_manager: Arc<PeerManager>,
     sync_state: Arc<Mutex<SyncState>>,
     header_height_map: Arc<Mutex<HashMap<[u8; 32], u32>>>,
@@ -37,7 +37,7 @@ pub enum SyncState {
 }
 
 impl SyncManager {
-    pub fn new(chain: Arc<Mutex<ChainState>>, peer_manager: Arc<PeerManager>) -> Self {
+    pub fn new(chain: Arc<RwLock<ChainState>>, peer_manager: Arc<PeerManager>) -> Self {
         Self {
             chain,
             peer_manager,
@@ -48,7 +48,7 @@ impl SyncManager {
     }
 
     pub fn get_local_height(&self) -> u32 {
-        let chain = self.chain.lock().unwrap();
+        let chain = self.chain.read().unwrap();
         chain
             .get_tip()
             .map(|t| t.map(|d| d.height).unwrap_or(0))
@@ -64,7 +64,7 @@ impl SyncManager {
     }
 
     pub fn block_received(&self, _hash: [u8; 32]) {
-        let chain = self.chain.lock().unwrap();
+        let chain = self.chain.read().unwrap();
         let current_height = chain.get_height() as u32;
         drop(chain);
 
@@ -85,7 +85,7 @@ impl SyncManager {
                     None => return,
                 };
 
-                let chain = self.chain.lock().unwrap();
+                let chain = self.chain.read().unwrap();
                 let best_header_height = chain
                     .state_store
                     .load_best_header()
@@ -139,7 +139,7 @@ impl SyncManager {
     pub fn start_sync(&self, peer_id: u64) -> Result<(), String> {
         println!("SyncManager: Starting sync check with peer {}", peer_id);
 
-        let chain = self.chain.lock().unwrap();
+        let chain = self.chain.read().unwrap();
         let our_height = chain.get_height() as u32;
 
         // Determine current best header (from DB or memory)
@@ -191,7 +191,7 @@ impl SyncManager {
             }
         }
 
-        let chain = self.chain.lock().unwrap();
+        let chain = self.chain.read().unwrap();
         let locator_with_heights = chain.get_block_locator_with_heights();
         let locator: Vec<[u8; 32]> = locator_with_heights.iter().map(|(h, _)| *h).collect();
         drop(chain);
@@ -257,7 +257,7 @@ impl SyncManager {
             let best_height = if let Some(h) = best_height_opt {
                 h
             } else {
-                let chain = self.chain.lock().unwrap();
+                let chain = self.chain.read().unwrap();
                 chain
                     .state_store
                     .load_best_header()
@@ -275,7 +275,7 @@ impl SyncManager {
                 drop(state);
 
                 // Fetch next batch of headers from DB to request blocks
-                let chain = self.chain.lock().unwrap();
+                let chain = self.chain.read().unwrap();
                 let mut headers = Vec::new();
                 // Limit to 500 blocks per batch
                 let end_height = std::cmp::min(local_height + 500, best_height);
@@ -318,7 +318,7 @@ impl SyncManager {
                 // Or legacy state?
                 // For Phase 1, we assume we initiated it via start_sync.
                 // We'll load from DB as fallback.
-                let chain = self.chain.lock().unwrap();
+                let chain = self.chain.read().unwrap();
                 let tip = chain.get_tip().unwrap_or(None);
                 if let Some(t) = tip {
                     (t.height as u32, t.block.header.hash())
@@ -329,7 +329,7 @@ impl SyncManager {
         };
         drop(state); // Drop lock during validation loop to avoid long hold? No, we need chain lock.
 
-        let chain = self.chain.lock().unwrap();
+        let chain = self.chain.read().unwrap();
         let mut header_map = self.header_height_map.lock().unwrap();
 
         // Sliding window of up to 11 recent headers used for MTP timestamp validation.
@@ -562,7 +562,7 @@ impl SyncManager {
             drop(state); // Release lock
 
             // Send next getheaders
-            let chain = self.chain.lock().unwrap();
+            let chain = self.chain.read().unwrap();
             let locator = vec![current_best_hash]; // Use new best hash as locator
             drop(chain);
 
@@ -608,7 +608,7 @@ impl SyncManager {
         peer_id: u64,
         headers: &[crate::consensus::block::BlockHeader],
     ) -> Result<(), String> {
-        let chain = self.chain.lock().unwrap();
+        let chain = self.chain.read().unwrap();
         let mut pending = Vec::new();
 
         for header in headers {
@@ -664,7 +664,7 @@ impl SyncManager {
             "handle_getheaders called from peer {}, sending headers...",
             peer_id
         );
-        let chain = self.chain.lock().unwrap();
+        let chain = self.chain.read().unwrap();
 
         // Find common ancestor from locator
         let mut start_height = 0;
@@ -711,7 +711,7 @@ impl SyncManager {
     }
 
     fn resend_getheaders(&self, peer_id: u64) -> Result<(), String> {
-        let chain = self.chain.lock().unwrap();
+        let chain = self.chain.read().unwrap();
         let locator_with_heights = chain.get_block_locator_with_heights();
         let locator: Vec<[u8; 32]> = locator_with_heights.iter().map(|(h, _)| *h).collect();
         drop(chain);
