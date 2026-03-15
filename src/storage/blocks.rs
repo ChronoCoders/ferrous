@@ -223,6 +223,21 @@ impl BlockStore {
         batch.commit()
     }
 
+    /// Write a batch of (header, height) pairs in a single atomic DB commit.
+    /// Reduces 2 000 individual fsyncs per headers batch to one.
+    pub fn store_headers_batch(&self, headers: &[(BlockHeader, u64)]) -> Result<(), String> {
+        use crate::primitives::serialize::Encode;
+        let mut batch = self.db.batch();
+        for (header, height) in headers {
+            let hash = header.hash();
+            let header_bytes = header.encode();
+            let key = Self::header_height_key(*height);
+            batch.put(CF_HEADERS, &hash, &header_bytes)?;
+            batch.put(CF_HEADERS, &key, &hash)?;
+        }
+        batch.commit()
+    }
+
     pub fn get_header_by_height(&self, height: u64) -> Result<Option<BlockHeader>, String> {
         let key = Self::header_height_key(height);
         if let Some(hash_bytes) = self.db.get(CF_HEADERS, &key)? {
