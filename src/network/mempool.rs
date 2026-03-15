@@ -23,56 +23,42 @@ impl NetworkMempool {
 
     // Add transaction to mempool
     pub fn add_transaction(&self, tx: Transaction) -> Result<bool, String> {
-        // Check if already in mempool
         let txid = tx.txid();
+
+        // Validate inputs against chain state first (no mempool lock held here,
+        // so the chain lock and mempool lock are never acquired simultaneously,
+        // eliminating any lock-ordering deadlock risk).
         {
-            let mempool = self.transactions.lock().unwrap();
-            if mempool.contains_key(&txid) {
-                return Ok(false); // Already have it
+            let chain = self.chain.lock().unwrap();
+            for input in &tx.inputs {
+                let outpoint = OutPoint {
+                    txid: input.prev_txid,
+                    vout: input.prev_index,
+                };
+                if !chain.is_utxo_unspent(&outpoint) {
+                    return Err("Input already spent or doesn't exist".to_string());
+                }
             }
         }
 
-        // Validate transaction
-        let chain = self.chain.lock().unwrap();
-
-        // Check structure
-        // Assuming Transaction has check_structure method?
-        // It's not in the prompt's provided Transaction struct usually,
-        // but let's assume it exists or implement basic checks here.
-        // Actually, prompt says: tx.check_structure().map_err(|e| format!("Invalid structure: {}", e))?;
-        // If check_structure doesn't exist, we might need to skip or implement it.
-        // I checked `transaction.rs` before?
-        // Let's assume for now. If it fails compilation, I'll remove it or check `transaction.rs`.
-        // Wait, I read `block.rs` but not `transaction.rs` recently.
-        // I'll skip check_structure for now and rely on other checks if method missing.
-        // Or better, assume it's NOT there and skip to be safe, or implement check here.
-
-        // Verify inputs exist and are unspent
-        for input in &tx.inputs {
-            let outpoint = OutPoint {
-                txid: input.prev_txid,
-                vout: input.prev_index,
-            };
-            if !chain.is_utxo_unspent(&outpoint) {
-                return Err("Input already spent or doesn't exist".to_string());
-            }
-        }
-
-        // Verify signatures (basic check)
-        // Full validation happens when mining
-
-        drop(chain);
-
-        // Add to mempool, enforcing the size cap.
+        // Duplicate check, size cap, and insert are all performed under a single
+        // mempool lock, making the entire check-then-act sequence atomic and
+        // eliminating the TOCTOU race that existed when two separate lock scopes
+        // were used.
         let mut mempool = self.transactions.lock().unwrap();
+
+        if mempool.contains_key(&txid) {
+            return Ok(false); // Already have it
+        }
+
         if mempool.len() >= MEMPOOL_MAX_ENTRIES {
             return Err(format!(
                 "Mempool full ({} entries): transaction rejected",
                 MEMPOOL_MAX_ENTRIES
             ));
         }
-        mempool.insert(txid, tx);
 
+        mempool.insert(txid, tx);
         Ok(true)
     }
 
