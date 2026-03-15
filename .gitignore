@@ -36,3 +36,6 @@ Thumbs.db
 # Local operator notes / scripts
 TRAE.md
 monitor.sh
+
+# Understand-Anything knowledge graph
+.understand-anything/
