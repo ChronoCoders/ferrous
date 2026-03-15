@@ -12,11 +12,12 @@ use crate::wallet::builder::TransactionBuilder;
 use crate::wallet::manager::Wallet;
 use serde_json::{json, Value};
 use std::io::Read;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 use tiny_http::{Response, Server};
 
 pub struct RpcServerConfig {
-    pub chain: Arc<Mutex<ChainState>>,
+    pub chain: Arc<RwLock<ChainState>>,
     pub miner: Arc<Miner>,
     pub wallet: Arc<Mutex<Wallet>>,
     pub peer_manager: Arc<PeerManager>,
@@ -27,7 +28,7 @@ pub struct RpcServerConfig {
 }
 
 pub struct RpcServer {
-    chain: Arc<Mutex<ChainState>>,
+    chain: Arc<RwLock<ChainState>>,
     miner: Arc<Miner>,
     wallet: Arc<Mutex<Wallet>>,
     peer_manager: Arc<PeerManager>,
@@ -36,6 +37,10 @@ pub struct RpcServer {
     relay: Arc<BlockRelay>,
     mempool: Arc<NetworkMempool>,
     server: Server,
+    /// 1-second response cache for getblockchaininfo (timestamp, cached value).
+    blockchain_info_cache: Mutex<Option<(Instant, Value)>>,
+    /// 1-second response cache for getmininginfo (timestamp, cached value).
+    mininginfo_cache: Mutex<Option<(Instant, Value)>>,
 }
 
 impl RpcServer {
@@ -52,11 +57,16 @@ impl RpcServer {
             relay: config.relay,
             mempool: config.mempool,
             server,
+            blockchain_info_cache: Mutex::new(None),
+            mininginfo_cache: Mutex::new(None),
         })
     }
 
     pub fn run(&self) -> Result<(), String> {
         for mut request in self.server.incoming_requests() {
+            // All chain/wallet locks are acquired and released inside handle_request.
+            // respond() is called after handle_request returns, so no lock is held
+            // across the network send (Fix 3: lock-free send boundary).
             let (response, stop) = self.handle_request(&mut request);
             let _ = request.respond(response);
             if stop {
@@ -470,7 +480,17 @@ impl RpcServer {
     }
 
     fn getblockchaininfo(&self) -> Result<Value, String> {
-        let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+        // Serve from cache if the entry is less than 1 second old.
+        {
+            let cache = self.blockchain_info_cache.lock().unwrap();
+            if let Some((ts, ref v)) = *cache {
+                if ts.elapsed() < Duration::from_secs(1) {
+                    return Ok(v.clone());
+                }
+            }
+        }
+
+        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
 
         let height = tip.as_ref().map(|t| t.height as u32).unwrap_or(0);
@@ -486,11 +506,24 @@ impl RpcServer {
             bestblockhash,
         };
 
-        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+        let v =
+            serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))?;
+        *self.blockchain_info_cache.lock().unwrap() = Some((Instant::now(), v.clone()));
+        Ok(v)
     }
 
     fn getmininginfo(&self) -> Result<Value, String> {
-        let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+        // Serve from cache if the entry is less than 1 second old.
+        {
+            let cache = self.mininginfo_cache.lock().unwrap();
+            if let Some((ts, ref v)) = *cache {
+                if ts.elapsed() < Duration::from_secs(1) {
+                    return Ok(v.clone());
+                }
+            }
+        }
+
+        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
 
         let blocks = tip.as_ref().map(|t| t.height as u32).unwrap_or(0);
@@ -506,7 +539,10 @@ impl RpcServer {
             chain: "ferrous".to_string(),
         };
 
-        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+        let v =
+            serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))?;
+        *self.mininginfo_cache.lock().unwrap() = Some((Instant::now(), v.clone()));
+        Ok(v)
     }
 
     fn mineblocks(&self, params: &Value) -> Result<Value, String> {
@@ -525,7 +561,10 @@ impl RpcServer {
 
         for _ in 0..nblocks {
             let hash = {
-                let mut chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+                let mut chain = self
+                    .chain
+                    .write()
+                    .map_err(|_| "Lock poisoned".to_string())?;
                 let header = self
                     .miner
                     .mine_and_attach(&mut chain, Vec::new())
@@ -574,7 +613,7 @@ impl RpcServer {
             let hash = {
                 let mut chain = self
                     .chain
-                    .lock()
+                    .write()
                     .map_err(|_| "Chain lock failed".to_string())?;
                 let header = self
                     .miner
@@ -610,7 +649,7 @@ impl RpcServer {
             .wallet
             .lock()
             .map_err(|_| "Lock poisoned".to_string())?;
-        let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
         let sats = wallet.get_balance(&chain)?;
         let balance = sats as f64 / 100_000_000f64;
         let response = GetBalanceResponse { balance };
@@ -622,7 +661,7 @@ impl RpcServer {
             .wallet
             .lock()
             .map_err(|_| "Lock poisoned".to_string())?;
-        let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
         let utxos = wallet.get_utxos(&chain)?;
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
         let tip_height = tip.as_ref().map(|t| t.height).unwrap_or(0);
@@ -683,7 +722,10 @@ impl RpcServer {
             .wallet
             .lock()
             .map_err(|_| "Lock poisoned".to_string())?;
-        let mut chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+        let mut chain = self
+            .chain
+            .write()
+            .map_err(|_| "Lock poisoned".to_string())?;
 
         let tx = TransactionBuilder::create_transaction(&wallet, &chain, addr, sats, fee)
             .map_err(|e| format!("Transaction creation failed: {}", e))?;
@@ -716,7 +758,7 @@ impl RpcServer {
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&blockhash_bytes);
 
-        let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
 
         let block = chain
             .get_block(&hash)
@@ -751,7 +793,7 @@ impl RpcServer {
             .and_then(|v| v.as_u64())
             .ok_or("Invalid params: expected [height]")?;
 
-        let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
 
         let hash = chain
             .get_block_hash(height)
@@ -761,7 +803,7 @@ impl RpcServer {
     }
 
     fn getbestblockhash(&self) -> Result<Value, String> {
-        let chain = self.chain.lock().map_err(|_| "Lock poisoned".to_string())?;
+        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
 
         match tip {
