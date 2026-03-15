@@ -263,17 +263,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let miner_mine = miner.clone();
             let relay_mine = relay.clone();
             std::thread::spawn(move || loop {
-                let hash = {
-                    let mut chain_guard = chain_mine.write().unwrap();
-                    match miner_mine.mine_and_attach(&mut chain_guard, Vec::new()) {
-                        Ok(header) => Some(header.hash()),
-                        Err(e) => {
-                            eprintln!("Mining error: {:?}", e);
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                            None
+                // Phase 1: build template and run PoW with only a read lock so
+                // RPC and P2P threads can read chain state concurrently.
+                let mine_result = {
+                    let chain_guard = chain_mine.read().unwrap();
+                    miner_mine.mine_block(&chain_guard, Vec::new())
+                };
+
+                // Phase 2: commit the solved block — write lock held only for
+                // the brief add_block call, not for the entire PoW search.
+                let hash = match mine_result {
+                    Ok((header, txs)) => {
+                        use ferrous_node::consensus::block::Block;
+                        let mut chain_guard = chain_mine.write().unwrap();
+                        match chain_guard.add_block(Block {
+                            header,
+                            transactions: txs,
+                        }) {
+                            Ok(_) => Some(header.hash()),
+                            Err(e) => {
+                                eprintln!("Mining error (add_block): {:?}", e);
+                                std::thread::sleep(std::time::Duration::from_secs(1));
+                                None
+                            }
                         }
                     }
+                    Err(e) => {
+                        eprintln!("Mining error: {:?}", e);
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        None
+                    }
                 };
+
                 if let Some(hash) = hash {
                     let _ = relay_mine.announce_block(hash);
                 }
