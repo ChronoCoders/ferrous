@@ -4,7 +4,7 @@ use crate::consensus::validation::validate_timestamp;
 use crate::network::manager::PeerManager;
 use crate::network::message::NetworkMessage;
 use crate::network::protocol::{
-    GetDataMessage, GetHeadersMessage, HeadersMessage, InvVector, INV_BLOCK,
+    GetDataMessage, GetHeadersMessage, HeadersMessage, InvMessage, InvVector, INV_BLOCK,
 };
 use crate::primitives::serialize::Encode;
 use std::collections::{HashMap, VecDeque};
@@ -29,6 +29,7 @@ pub enum SyncState {
         peer_id: PeerId,
         best_header_height: u32,
         best_header_hash: [u8; 32],
+        fork_start_height: Option<u32>,
     },
     DownloadingBlocks {
         next_expected_height: u32,
@@ -63,9 +64,14 @@ impl SyncManager {
         )
     }
 
-    pub fn block_received(&self, _hash: [u8; 32]) {
+    pub fn block_received(&self, hash: [u8; 32]) {
         let chain = self.chain.read().unwrap();
-        let current_height = chain.get_height() as u32;
+        // Use the received block's own height rather than the canonical tip height.
+        // Fork/side-chain blocks don't advance the canonical tip, so get_height() would
+        // return the pre-fork canonical height and skip past all fork blocks.
+        let block_height = chain
+            .get_height_for_hash(&hash)
+            .unwrap_or_else(|| chain.get_height()) as u32;
         drop(chain);
 
         let mut state = self.sync_state.lock().unwrap();
@@ -73,8 +79,8 @@ impl SyncManager {
             next_expected_height,
         } = *state
         {
-            if current_height >= next_expected_height {
-                let next_height = current_height + 1;
+            if block_height >= next_expected_height {
+                let next_height = block_height + 1;
                 *state = SyncState::DownloadingBlocks {
                     next_expected_height: next_height,
                 };
@@ -209,6 +215,7 @@ impl SyncManager {
             peer_id,
             best_header_height: start_height,
             best_header_hash: start_hash,
+            fork_start_height: None,
         };
         drop(state);
 
@@ -223,6 +230,27 @@ impl SyncManager {
         let msg = NetworkMessage::new(magic, "getheaders", getheaders.encode());
 
         self.peer_manager.send_to_peer(peer_id, &msg)?;
+
+        // Announce our local chain tip so the peer can request our headers if we have
+        // more cumulative work.  This ensures both sides discover the heavier chain and
+        // let add_block's cumulative-work comparison trigger the reorg — rather than
+        // only the connecting side ever downloading the peer's chain.
+        let chain = self.chain.read().unwrap();
+        let local_tip_hash = chain
+            .get_tip()
+            .unwrap_or(None)
+            .map(|t| t.block.header.hash());
+        drop(chain);
+        if let Some(tip_hash) = local_tip_hash {
+            let inv = InvMessage {
+                inventory: vec![InvVector {
+                    inv_type: INV_BLOCK,
+                    hash: tip_hash,
+                }],
+            };
+            let inv_net = NetworkMessage::new(magic, "inv", inv.encode());
+            let _ = self.peer_manager.send_to_peer(peer_id, &inv_net);
+        }
 
         Ok(())
     }
@@ -246,11 +274,13 @@ impl SyncManager {
             let state = self.sync_state.lock().unwrap();
 
             // Get best header height from state or DB
-            let best_height_opt = match *state {
+            let (best_height_opt, empty_fork_start) = match *state {
                 SyncState::DownloadingHeaders {
-                    best_header_height, ..
-                } => Some(best_header_height),
-                _ => None,
+                    best_header_height,
+                    fork_start_height,
+                    ..
+                } => (Some(best_header_height), fork_start_height),
+                _ => (None, None),
             };
             drop(state);
 
@@ -267,10 +297,12 @@ impl SyncManager {
             };
 
             if local_height < best_height {
-                // We have headers but need blocks.
+                // We have headers but need blocks.  Use the fork start as the download
+                // cursor so we fetch from the actual divergence point, not canonical tip+1.
+                let first_missing = empty_fork_start.unwrap_or(local_height + 1);
                 let mut state = self.sync_state.lock().unwrap();
                 *state = SyncState::DownloadingBlocks {
-                    next_expected_height: local_height + 1,
+                    next_expected_height: first_missing,
                 };
                 drop(state);
 
@@ -278,8 +310,8 @@ impl SyncManager {
                 let chain = self.chain.read().unwrap();
                 let mut headers = Vec::new();
                 // Limit to 500 blocks per batch
-                let end_height = std::cmp::min(local_height + 500, best_height);
-                for h in (local_height + 1)..=end_height {
+                let end_height = std::cmp::min(first_missing + 499, best_height);
+                for h in first_missing..=end_height {
                     if let Some(header) = chain.get_header_at_height(h as u64) {
                         headers.push(header);
                     } else {
@@ -307,12 +339,13 @@ impl SyncManager {
         let state = self.sync_state.lock().unwrap();
 
         // Extract current best header info from state if we are in DownloadingHeaders
-        let (mut current_best_height, mut current_best_hash) = match *state {
+        let (mut current_best_height, mut current_best_hash, mut fork_start_height) = match *state {
             SyncState::DownloadingHeaders {
                 best_header_height,
                 best_header_hash,
+                fork_start_height,
                 ..
-            } => (best_header_height, best_header_hash),
+            } => (best_header_height, best_header_hash, fork_start_height),
             _ => {
                 // If not in DownloadingHeaders, maybe we are Idle or Synced and received unsolicited headers?
                 // Or legacy state?
@@ -321,9 +354,9 @@ impl SyncManager {
                 let chain = self.chain.read().unwrap();
                 let tip = chain.get_tip().unwrap_or(None);
                 if let Some(t) = tip {
-                    (t.height as u32, t.block.header.hash())
+                    (t.height as u32, t.block.header.hash(), None)
                 } else {
-                    (0, [0u8; 32])
+                    (0, [0u8; 32], None)
                 }
             }
         };
@@ -518,6 +551,21 @@ impl SyncManager {
 
             header_map.insert(new_hash, new_height);
 
+            // Detect the fork start: the first height where the peer's header hash
+            // differs from the canonical block we have at that same height.  This
+            // determines the block-download cursor so we fetch from the actual
+            // divergence point rather than canonical_tip + 1.
+            if fork_start_height.is_none() {
+                let canonical_height = chain.get_height() as u32;
+                if new_height <= canonical_height {
+                    if let Some(canonical) = chain.get_header_at_height(new_height as u64) {
+                        if canonical.hash() != new_hash {
+                            fork_start_height = Some(new_height);
+                        }
+                    }
+                }
+            }
+
             // Update best if we extended the chain
             // Note: We are following the peer's chain.
             // In DownloadingHeaders, we track *this peer's* best header.
@@ -554,6 +602,7 @@ impl SyncManager {
             peer_id,
             best_header_height: current_best_height,
             best_header_hash: current_best_hash,
+            fork_start_height,
         };
 
         // Check batch size
@@ -575,28 +624,36 @@ impl SyncManager {
             let msg = NetworkMessage::new(magic, "getheaders", getheaders.encode());
             self.peer_manager.send_to_peer(peer_id, &msg)?;
         } else {
-            // Headers complete
-            // Transition to DownloadingBlocks (Phase 2 marker)
-            let first_missing = self.get_local_height() + 1;
+            // Headers complete — use fork_start_height as the download cursor so that
+            // fork-chain blocks are fetched from the actual divergence point.  Without
+            // this, first_missing = canonical_tip + 1 which is past the fork: block at
+            // that height has a parent that doesn't exist in the peer's DB → OrphanBlock.
+            let first_missing = fork_start_height.unwrap_or_else(|| self.get_local_height() + 1);
 
             *state = SyncState::DownloadingBlocks {
                 next_expected_height: first_missing,
             };
             drop(state);
 
-            // Trigger legacy block download (Phase 1 fallback)
-            // We need to fetch the list of blocks to download.
-            // Since we have headers, we can walk from first_missing to current_best_height.
-            // But request_blocks_from_headers (legacy) expects a list of headers.
-            // We don't have the list of *all* headers in memory (we just processed a batch).
-            // But we can construct a request.
-            // Actually, existing request_blocks_from_headers takes `&[BlockHeader]`.
-            // We can pass the `headers_msg.headers` we just received?
-            // If we are catching up from scratch, we received 2000 headers.
-            // We should request blocks for those 2000 headers.
-            // Yes, passing the current batch to legacy downloader is a good strategy for now.
+            // Read headers stored in CF_HEADERS (which now hold the peer's fork chain)
+            // starting at first_missing so we request the correct blocks.
+            let chain = self.chain.read().unwrap();
+            let mut headers_to_dl: Vec<crate::consensus::block::BlockHeader> = Vec::new();
+            let end_height = std::cmp::min(first_missing + 499, current_best_height);
+            for h in first_missing..=end_height {
+                if let Some(hdr) = chain.get_header_at_height(h as u64) {
+                    headers_to_dl.push(hdr);
+                } else {
+                    break;
+                }
+            }
+            drop(chain);
 
-            self.request_blocks_from_headers(peer_id, &headers_msg.headers)?;
+            if !headers_to_dl.is_empty() {
+                self.request_blocks_from_headers(peer_id, &headers_to_dl)?;
+            } else {
+                self.request_blocks_from_headers(peer_id, &headers_msg.headers)?;
+            }
         }
 
         Ok(())
