@@ -338,6 +338,10 @@ impl SyncManager {
         let mut ts_window: VecDeque<crate::consensus::block::BlockHeader> =
             VecDeque::with_capacity(12);
 
+        // Cached prev_header from the previous iteration (idx > 0 sequential path).
+        // Avoids one DB round-trip per header once the chain is connected.
+        let mut cached_prev: Option<(crate::consensus::block::BlockHeader, u32)> = None;
+
         for (idx, header) in headers_msg.headers.iter().enumerate() {
             let prev_hash = header.prev_block_hash;
 
@@ -400,18 +404,24 @@ impl SyncManager {
                     }
                 }
             } else if prev_hash == current_best_hash {
-                // Subsequent headers should match previous best (which we updated)
-                if let Some(h) = chain
-                    .block_store
-                    .get_header(&prev_hash)
-                    .map_err(|e| e.to_string())?
-                {
-                    (h, current_best_height)
+                // Subsequent headers should match previous best (which we updated).
+                // Use the in-memory cache to avoid a DB round-trip.
+                if let Some(cached) = cached_prev {
+                    cached
                 } else {
-                    return Err(format!(
-                        "Best header not found in DB: {}",
-                        hex::encode(prev_hash)
-                    ));
+                    // Fallback to DB on the rare first-iteration mismatch path.
+                    if let Some(h) = chain
+                        .block_store
+                        .get_header(&prev_hash)
+                        .map_err(|e| e.to_string())?
+                    {
+                        (h, current_best_height)
+                    } else {
+                        return Err(format!(
+                            "Best header not found in DB: {}",
+                            hex::encode(prev_hash)
+                        ));
+                    }
                 }
             } else {
                 // Check map (should be rare if sequential)
@@ -493,6 +503,9 @@ impl SyncManager {
             if ts_window.len() > 11 {
                 ts_window.pop_back();
             }
+
+            // Cache this header so the next iteration can use it without a DB read.
+            cached_prev = Some((*header, new_height));
         }
 
         // Persist best header
