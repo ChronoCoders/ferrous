@@ -274,7 +274,6 @@ pub fn validate_p2pkh(
     if final_stack.is_empty() {
         return Ok(false);
     }
-
     Ok(is_true(final_stack.last().unwrap()))
 }
 
@@ -309,8 +308,38 @@ pub fn validate_p2wpkh(
         return Ok(false);
     }
 
-    // Verify signature (placeholder for now)
-    verify_signature(pubkey, signature, context)
+    if pubkey.len() != 33 {
+        return Err(ScriptError::InvalidPubkey);
+    }
+
+    let pubkey = PublicKey::from_slice(pubkey).map_err(|_| ScriptError::InvalidPubkey)?;
+
+    if signature.is_empty() {
+        return Ok(false);
+    }
+
+    let sig_bytes = if signature.last() == Some(&0x01) {
+        &signature[..signature.len() - 1]
+    } else {
+        signature
+    };
+
+    let sighash = compute_sighash(
+        context.transaction,
+        context.input_index,
+        context.spent_outputs,
+    )
+    .map_err(|_| ScriptError::ExecutionFailed)?;
+
+    let message =
+        Message::from_digest_slice(&sighash).map_err(|_| ScriptError::InvalidSignature)?;
+
+    let sig = Signature::from_der(sig_bytes).map_err(|_| ScriptError::InvalidSignature)?;
+
+    match SECP256K1.verify_ecdsa(&message, &sig, &pubkey) {
+        Ok(()) => Ok(true),
+        Err(_) => Ok(false),
+    }
 }
 
 fn is_true(item: &[u8]) -> bool {

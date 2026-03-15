@@ -92,6 +92,41 @@ impl BlockStore {
         batch.commit()
     }
 
+    /// Store block WITHOUT updating the canonical height index (CF_BLOCK_INDEX).
+    /// Use this for side-chain (non-canonical) blocks to avoid corrupting the
+    /// height → hash mapping for the active chain.
+    pub fn store_block_no_index(
+        &self,
+        block: &Block,
+        height: u64,
+        cumulative_work: U256,
+    ) -> Result<(), String> {
+        let block_hash = block.header.hash();
+        let block_bytes = bincode::serialize(block).map_err(|e| e.to_string())?;
+
+        let mut batch = self.db.batch();
+        batch.put(CF_BLOCKS, &block_hash, &block_bytes)?;
+
+        use crate::primitives::serialize::Encode;
+        let header_bytes = block.header.encode();
+        batch.put(CF_HEADERS, &block_hash, &header_bytes)?;
+
+        let meta = BlockMeta {
+            height,
+            hash: block_hash,
+            cumulative_work,
+        };
+        batch.put(CF_BLOCK_META, &block_hash, &meta.to_bytes())?;
+
+        batch.commit()
+    }
+
+    /// Overwrite the canonical height index entry for `height` to point to `hash`.
+    /// Called during chain reorganisation to update the active-chain height map.
+    pub fn update_height_index(&self, height: u64, hash: &Hash256) -> Result<(), String> {
+        self.db.put(CF_BLOCK_INDEX, &height.to_le_bytes(), hash)
+    }
+
     pub fn get_hash_by_height(&self, height: u64) -> Result<Option<Hash256>, String> {
         match self.db.get(CF_BLOCK_INDEX, &height.to_le_bytes())? {
             Some(h) => Ok(Some(h.try_into().map_err(|_| "Invalid hash")?)),
@@ -205,9 +240,8 @@ impl BlockStore {
     }
 
     pub fn get_block_meta(&self, hash: &Hash256) -> Result<Option<BlockMeta>, String> {
-        match self.db.get(CF_BLOCK_META, hash)? {
-            Some(b) => return Ok(Some(BlockMeta::from_bytes(&b)?)),
-            None => {}
+        if let Some(b) = self.db.get(CF_BLOCK_META, hash)? {
+            return Ok(Some(BlockMeta::from_bytes(&b)?));
         }
 
         Ok(None)

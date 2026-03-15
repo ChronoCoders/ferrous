@@ -180,11 +180,20 @@ impl Encode for Vec<u8> {
     }
 }
 
+/// Maximum number of bytes that a single `Vec<u8>` field may decode.
+/// Prevents a malicious peer from triggering a multi-gigabyte allocation
+/// via a crafted length varint.
+const MAX_VEC_DECODE_BYTES: usize = 32 * 1024 * 1024; // 32 MiB
+
 impl Decode for Vec<u8> {
     fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
         let (len_u64, consumed) = decode_varint(bytes).map_err(map_varint_error)?;
 
         let len_usize: usize = len_u64.try_into().map_err(|_| DecodeError::Overflow)?;
+
+        if len_usize > MAX_VEC_DECODE_BYTES {
+            return Err(DecodeError::Overflow);
+        }
 
         if bytes.len() < consumed + len_usize {
             return Err(DecodeError::UnexpectedEof);

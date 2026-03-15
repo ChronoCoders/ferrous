@@ -14,6 +14,7 @@ pub enum TxError {
     WitnessMismatch,
     ValueTooLarge,
     OutputSumOverflow,
+    InvalidVersion,
 }
 
 /// A reference to a previous transaction output being spent.
@@ -306,6 +307,11 @@ impl Transaction {
 
     /// Performs basic structural validation of the transaction.
     pub fn check_structure(&self) -> Result<(), TxError> {
+        // Only versions 1 and 2 are valid consensus versions.
+        if self.version == 0 || self.version > 2 {
+            return Err(TxError::InvalidVersion);
+        }
+
         if self.inputs.is_empty() {
             return Err(TxError::NoInputs);
         }

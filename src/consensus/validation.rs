@@ -7,6 +7,9 @@ use crate::primitives::hash::sha256d;
 
 pub const MAX_BLOCK_WEIGHT: u64 = 4_000_000;
 pub const COINBASE_MATURITY: u64 = 100;
+/// Maximum number of seconds a block timestamp may exceed the node's wall-clock time.
+/// Exposed as a constant so tests and per-network config can reference it directly.
+pub const MAX_FUTURE_BLOCK_TIME: u64 = 7_200;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
@@ -174,14 +177,12 @@ pub fn validate_timestamp(
     }
 
     // Timestamp must not be too far in future
-    // Using 2 hours (7200 seconds)
-    const MAX_FUTURE_OFFSET: u64 = 7200;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    if header.timestamp > now + MAX_FUTURE_OFFSET {
+    if header.timestamp > now + MAX_FUTURE_BLOCK_TIME {
         return Err(ValidationError::TimestampTooFarFuture);
     }
 
@@ -214,10 +215,13 @@ pub fn validate_witness_commitment(
             // Extract commitment
             let commitment = &output.script_pubkey[6..38];
 
-            // Compute witness merkle root
+            // Compute witness merkle root.
+            // `compute_witness_merkle_root` always prepends [0u8;32] as the coinbase
+            // placeholder, so passing `wtxids[1..]` (excluding the coinbase wtxid) is
+            // correct even when the slice is empty (coinbase-only block).
             let wtxids: Vec<_> = transactions.iter().map(|tx| tx.wtxid()).collect();
 
-            let witness_root = compute_witness_merkle_root(&wtxids[1..]); // Skip coinbase
+            let witness_root = compute_witness_merkle_root(&wtxids[1..]);
 
             // Witness reserved value from coinbase witness
             let reserved = if !coinbase.witnesses.is_empty()
