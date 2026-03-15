@@ -342,6 +342,12 @@ impl SyncManager {
         // Avoids one DB round-trip per header once the chain is connected.
         let mut cached_prev: Option<(crate::consensus::block::BlockHeader, u32)> = None;
 
+        // Accumulate validated headers for a single-batch DB write at the end of the loop.
+        // This collapses 2 000 individual WriteBatch+fsync calls into one, eliminating the
+        // dominant I/O cost on slow-disk nodes (~240 ms/write → minutes per batch).
+        let mut headers_to_store: Vec<(crate::consensus::block::BlockHeader, u64)> =
+            Vec::with_capacity(headers_msg.headers.len());
+
         for (idx, header) in headers_msg.headers.iter().enumerate() {
             let prev_hash = header.prev_block_hash;
 
@@ -481,10 +487,8 @@ impl SyncManager {
                     .map_err(|e| format!("Timestamp error: {:?}", e))?;
             }
 
-            // 6. Store
-            chain
-                .store_header_only_at_height(header, (prev_height + 1) as u64)
-                .map_err(|e| e.to_string())?;
+            // 6. Collect for batch write (committed once after the loop).
+            headers_to_store.push((*header, (prev_height + 1) as u64));
 
             // 7. Update tracking
             let new_height = prev_height + 1;
@@ -507,6 +511,12 @@ impl SyncManager {
             // Cache this header so the next iteration can use it without a DB read.
             cached_prev = Some((*header, new_height));
         }
+
+        // Batch write all validated headers in one atomic commit (single fsync).
+        chain
+            .block_store
+            .store_headers_batch(&headers_to_store)
+            .map_err(|e| e.to_string())?;
 
         // Persist best header
         chain
