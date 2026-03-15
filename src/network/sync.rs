@@ -331,6 +331,7 @@ impl SyncManager {
 
         let chain = self.chain.lock().unwrap();
         let mut header_map = self.header_height_map.lock().unwrap();
+        let t_batch_start = std::time::Instant::now();
 
         // Sliding window of up to 11 recent headers used for MTP timestamp validation.
         // Seeded from DB on the first header of the batch; updated in O(1) per iteration
@@ -534,16 +535,25 @@ impl SyncManager {
             cached_prev = Some((*header, new_height));
         }
 
+        println!("[HEADERS] loop done in {:.2}s, writing {} headers to DB",
+            t_batch_start.elapsed().as_secs_f64(), headers_to_store.len());
+        let t_write = std::time::Instant::now();
+
         // Batch write all validated headers in one atomic commit (single fsync).
         chain
             .block_store
             .store_headers_batch(&headers_to_store)
             .map_err(|e| e.to_string())?;
 
+        println!("[HEADERS] store_headers_batch done in {:.2}s", t_write.elapsed().as_secs_f64());
+        let t_state = std::time::Instant::now();
+
         // Persist best header
         chain
             .state_store
             .store_best_header(current_best_height, &current_best_hash)?;
+
+        println!("[HEADERS] store_best_header done in {:.2}s", t_state.elapsed().as_secs_f64());
 
         drop(header_map);
         drop(chain);
