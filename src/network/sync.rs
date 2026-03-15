@@ -373,22 +373,13 @@ impl SyncManager {
                                         hex::encode(prev_hash)
                                     )
                                 })?;
-                            // Confirm it is on our canonical chain, not a side branch.
-                            let canonical = chain
-                                .block_store
-                                .get_header_hash_from_height_index(h)
-                                .map_err(|e| e.to_string())?;
-                            if canonical == Some(prev_hash) {
-                                (prev_header_obj, h as u32)
-                            } else {
-                                println!(
-                                    "[HEADERS] prev_hash is on a side chain, re-requesting"
-                                );
-                                drop(header_map);
-                                drop(chain);
-                                self.resend_getheaders(peer_id)?;
-                                return Ok(());
-                            }
+                            // Accept the header as the anchor for this batch.  The header
+                            // is already in our DB (it passed PoW validation when stored),
+                            // and each subsequent header in the batch is validated below.
+                            // add_block handles the cumulative-work comparison and reorg
+                            // when the downloaded blocks are applied — no need to enforce
+                            // canonical-chain membership here.
+                            (prev_header_obj, h as u32)
                         }
                         Ok(None) => {
                             println!("[HEADERS] prev_hash not in DB, re-requesting headers");
