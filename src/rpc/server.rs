@@ -2,9 +2,11 @@ use crate::consensus::chain::ChainState;
 use crate::mining::Miner;
 use crate::network::diagnostics::NetworkDiagnostics;
 use crate::network::manager::PeerManager;
+use crate::network::mempool::NetworkMempool;
 use crate::network::recovery::RecoveryManager;
 use crate::network::relay::BlockRelay;
 use crate::network::stats::NetworkStats;
+use crate::primitives::serialize::Decode;
 use crate::rpc::methods::*;
 use crate::wallet::builder::TransactionBuilder;
 use crate::wallet::manager::Wallet;
@@ -21,6 +23,7 @@ pub struct RpcServerConfig {
     pub network_stats: Arc<NetworkStats>,
     pub recovery_manager: Arc<RecoveryManager>,
     pub relay: Arc<BlockRelay>,
+    pub mempool: Arc<NetworkMempool>,
 }
 
 pub struct RpcServer {
@@ -31,6 +34,7 @@ pub struct RpcServer {
     network_stats: Arc<NetworkStats>,
     recovery_manager: Arc<RecoveryManager>,
     relay: Arc<BlockRelay>,
+    mempool: Arc<NetworkMempool>,
     server: Server,
 }
 
@@ -46,6 +50,7 @@ impl RpcServer {
             network_stats: config.network_stats,
             recovery_manager: config.recovery_manager,
             relay: config.relay,
+            mempool: config.mempool,
             server,
         })
     }
@@ -211,6 +216,7 @@ impl RpcServer {
             "getrecoverystatus" => self.getrecoverystatus(),
             "forcereconnect" => self.forcereconnect(),
             "resetnetwork" => self.resetnetwork(),
+            "sendrawtransaction" => self.sendrawtransaction(params),
             "stop" => Ok(json!("stopping")),
             _ => return Err((-32601, "Method not found".to_string())),
         };
@@ -437,6 +443,29 @@ impl RpcServer {
         match self.recovery_manager.recover() {
             Ok(_) => Ok(json!({"result": "network reset initiated"})),
             Err(e) => Err(format!("Network reset failed: {}", e)),
+        }
+    }
+
+    fn sendrawtransaction(&self, params: &Value) -> Result<Value, String> {
+        let hex_str = params
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_str())
+            .ok_or("Invalid hex")?;
+
+        let raw = hex::decode(hex_str).map_err(|_| "Invalid hex".to_string())?;
+
+        let (tx, _) = crate::consensus::transaction::Transaction::decode(&raw)
+            .map_err(|_| "Failed to decode transaction".to_string())?;
+
+        tx.check_structure()
+            .map_err(|e| format!("Invalid transaction: {:?}", e))?;
+
+        let txid = tx.txid();
+
+        match self.mempool.add_transaction(tx) {
+            Ok(_) => Ok(json!(hex::encode(txid))),
+            Err(e) => Err(format!("Mempool rejected: {}", e)),
         }
     }
 

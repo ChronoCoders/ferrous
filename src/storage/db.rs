@@ -1,4 +1,4 @@
-use rocksdb::{IteratorMode, Options, WriteBatch, DB};
+use rocksdb::{IteratorMode, Options, WriteBatch, WriteOptions, DB};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -137,10 +137,15 @@ impl DatabaseBatch {
         Ok(())
     }
 
-    /// Commit batch atomically (durable — WAL + fsync).
+    /// Commit batch atomically. WAL is kept enabled for crash recovery; the
+    /// per-write fsync is skipped (`sync: false`) to avoid 30-60 s stalls
+    /// caused by RocksDB compaction pressure on the VPS disks.  The OS page
+    /// cache holds the write until the next graceful flush or WAL replay.
     pub fn commit(self) -> Result<(), String> {
+        let mut opts = WriteOptions::new();
+        opts.set_sync(false);
         self.db
-            .write(self.batch)
+            .write_opt(self.batch, &opts)
             .map_err(|e| format!("Batch commit failed: {}", e))
     }
 }
