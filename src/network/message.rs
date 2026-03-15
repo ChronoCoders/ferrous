@@ -47,6 +47,16 @@ impl NetworkMessage {
         }
     }
 
+    /// Returns `true` if the message's magic bytes match `expected`.
+    ///
+    /// Callers **must** call this after decoding a `NetworkMessage` received from
+    /// the network.  The `Decode` impl intentionally does not validate magic so
+    /// that the same parser works for all networks; magic validation is the
+    /// responsibility of the connection handler that knows which network it is on.
+    pub fn verify_magic(&self, expected: &[u8; 4]) -> bool {
+        &self.magic == expected
+    }
+
     pub fn command_string(&self) -> String {
         let mut end = 12;
         for i in 0..12 {

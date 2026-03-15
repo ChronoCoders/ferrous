@@ -1,5 +1,6 @@
 use crate::consensus::chain::ChainState;
 use crate::consensus::difficulty::validate_difficulty;
+use crate::consensus::validation::validate_timestamp;
 use crate::network::manager::PeerManager;
 use crate::network::message::NetworkMessage;
 use crate::network::protocol::{
@@ -480,12 +481,37 @@ impl SyncManager {
             validate_difficulty(Some(&prev_header), header, &chain.params)
                 .map_err(|e| format!("Difficulty error: {:?}", e))?;
 
-            // 4. Store
+            // 4. Timestamp check (MTP + future-time guard).
+            // Headers from earlier in this batch are already stored by the time
+            // we reach the current one (sequential loop), so get_header_by_height
+            // returns them correctly.
+            {
+                let mut prev_headers_for_ts: Vec<crate::consensus::block::BlockHeader> =
+                    Vec::with_capacity(11);
+                prev_headers_for_ts.push(prev_header);
+                let mut ts_h = prev_height.saturating_sub(1);
+                while prev_headers_for_ts.len() < 11 {
+                    match chain.block_store.get_header_by_height(ts_h as u64) {
+                        Ok(Some(ph)) => {
+                            prev_headers_for_ts.push(ph);
+                            if ts_h == 0 {
+                                break;
+                            }
+                            ts_h = ts_h.saturating_sub(1);
+                        }
+                        _ => break,
+                    }
+                }
+                validate_timestamp(header, &prev_headers_for_ts)
+                    .map_err(|e| format!("Timestamp error: {:?}", e))?;
+            }
+
+            // 6. Store
             chain
                 .store_header_only_at_height(header, (prev_height + 1) as u64)
                 .map_err(|e| e.to_string())?;
 
-            // 5. Update tracking
+            // 7. Update tracking
             let new_height = prev_height + 1;
             let new_hash = header.hash();
 

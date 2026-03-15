@@ -110,16 +110,7 @@ impl PeerConnection {
             return Ok(None);
         }
 
-        // Check magic
-        if self.buffer[0..4] != self.magic {
-            return Err(format!(
-                "Invalid magic bytes: expected {:?}, got {:?}",
-                self.magic,
-                &self.buffer[0..4]
-            ));
-        }
-
-        // Parse length
+        // Quick length check before allocating the full message.
         let length_bytes: [u8; 4] = self.buffer[16..20].try_into().unwrap();
         let length = u32::from_le_bytes(length_bytes);
 
@@ -135,11 +126,19 @@ impl PeerConnection {
             return Ok(None); // Need more data
         }
 
-        // Decode message
-        match NetworkMessage::decode(&self.buffer[..total_len]) {
-            Ok((msg, consumed)) => Ok(Some((msg, consumed))),
-            Err(e) => Err(format!("Failed to decode message: {:?}", e)),
+        // Decode message (validates checksum internally).
+        let (msg, consumed) = NetworkMessage::decode(&self.buffer[..total_len])
+            .map_err(|e| format!("Failed to decode message: {:?}", e))?;
+
+        // Validate network magic — reject and disconnect peers on any mismatch.
+        if !msg.verify_magic(&self.magic) {
+            return Err(format!(
+                "Invalid magic bytes: expected {:?}, got {:?}",
+                self.magic, msg.magic
+            ));
         }
+
+        Ok(Some((msg, consumed)))
     }
 
     pub fn peer_addr(&self) -> SocketAddr {

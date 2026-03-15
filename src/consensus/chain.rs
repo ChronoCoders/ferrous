@@ -10,7 +10,7 @@ use crate::primitives::hash::Hash256;
 use crate::script::engine::{validate_p2pkh, ScriptContext};
 use crate::storage::{BlockStore, ChainStateStore, ChainTip, Database, UtxoStore};
 use log::info;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -156,6 +156,13 @@ impl ChainState {
             current_hash = header.prev_block_hash;
         }
 
+        // Timestamp and PoW re-validation is intentionally skipped here.
+        // Every block was validated in full (including validate_timestamp) when it
+        // was first accepted via add_block().  Re-validating on startup would be
+        // expensive and would incorrectly reject historical headers whose timestamps
+        // are now "far in the future" relative to the network-adjusted wall clock.
+        // A --reindex flag could be added in future to force full re-validation.
+
         // Now iterate forward
         for hash in chain_hashes.iter().rev() {
             let block = self
@@ -234,19 +241,29 @@ impl ChainState {
 
         while old_curr != new_curr {
             if old_curr == [0u8; 32] || new_curr == [0u8; 32] {
-                break;
+                return Err(ChainError::DbError(format!(
+                    "Reorg failed: no common ancestor found between {} and {}",
+                    hex::encode(old_tip),
+                    hex::encode(new_tip)
+                )));
             }
             old_chain.push(old_curr);
             new_chain.push(new_curr);
             if let Some(data) = self.blocks.get(&old_curr) {
                 old_curr = data.block.header.prev_block_hash;
             } else {
-                break;
+                return Err(ChainError::DbError(format!(
+                    "Reorg failed: block {} not found in memory index",
+                    hex::encode(old_curr)
+                )));
             }
             if let Some(data) = self.blocks.get(&new_curr) {
                 new_curr = data.block.header.prev_block_hash;
             } else {
-                break;
+                return Err(ChainError::DbError(format!(
+                    "Reorg failed: block {} not found in memory index",
+                    hex::encode(new_curr)
+                )));
             }
         }
 
@@ -311,6 +328,14 @@ impl ChainState {
                     .map_err(ChainError::DbError)?;
                 self.utxo_store
                     .store_undo_data(&bh, &spent_entries)
+                    .map_err(ChainError::DbError)?;
+
+                // Reconnected blocks become part of the canonical chain: update
+                // the height index so height-based lookups return the correct hash.
+                // (These blocks were originally stored via store_block_no_index when
+                // they arrived as side-chain candidates.)
+                self.block_store
+                    .update_height_index(height, hash)
                     .map_err(ChainError::DbError)?;
             }
         }
@@ -453,8 +478,12 @@ impl ChainState {
                 .map_err(ChainError::DbError)?;
             self.tip = Some(block_hash);
         } else {
+            // Side-chain block: persist data but do NOT update the canonical
+            // height index (CF_BLOCK_INDEX).  Updating it here would overwrite
+            // the active chain's height → hash mapping and corrupt any lookup
+            // that relies on it (e.g. get_block_by_height).
             self.block_store
-                .store_block(&block, height, cumulative_work)
+                .store_block_no_index(&block, height, cumulative_work)
                 .map_err(ChainError::DbError)?;
         }
 
@@ -478,6 +507,7 @@ impl ChainState {
             if !is_coinbase {
                 let mut spent_outputs = Vec::with_capacity(tx.inputs.len());
                 let mut input_sum: u64 = 0;
+                let mut seen_outpoints: HashSet<OutPoint> = HashSet::with_capacity(tx.inputs.len());
 
                 for input in &tx.inputs {
                     let outpoint = OutPoint {
@@ -485,13 +515,19 @@ impl ChainState {
                         vout: input.prev_index,
                     };
 
+                    if !seen_outpoints.insert(outpoint) {
+                        return Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent));
+                    }
+
                     let utxo_entry = self
                         .utxo_store
                         .get_utxo(&outpoint)
                         .map_err(ChainError::DbError)?
                         .ok_or(ChainError::UtxoError(UtxoError::UtxoNotFound))?;
 
-                    if utxo_entry.coinbase && height < utxo_entry.height + COINBASE_MATURITY {
+                    if utxo_entry.coinbase
+                        && height < utxo_entry.height.saturating_add(COINBASE_MATURITY)
+                    {
                         return Err(ChainError::UtxoError(UtxoError::ImmatureCoinbase));
                     }
 
@@ -509,8 +545,11 @@ impl ChainState {
                     return Err(ChainError::UtxoError(UtxoError::InsufficientValue));
                 }
 
+                let fee = input_sum
+                    .checked_sub(output_sum)
+                    .ok_or(ChainError::UtxoError(UtxoError::InsufficientValue))?;
                 block_fees = block_fees
-                    .checked_add(input_sum - output_sum)
+                    .checked_add(fee)
                     .ok_or(ChainError::UtxoError(UtxoError::ValueOverflow))?;
 
                 for (input_idx, input) in tx.inputs.iter().enumerate() {
@@ -610,6 +649,9 @@ impl ChainState {
 
         timestamps.sort_unstable();
         let len = timestamps.len();
+        // For a full chain len == 11 and the median is index 5.
+        // Near genesis (len < 11) we use all available ancestors; the median
+        // index is still len/2, which is correct for both odd and even counts.
         timestamps[len / 2]
     }
 
