@@ -37,3 +37,6 @@ Thumbs.db
 TRAE.md
 monitor.sh
 .claude/
+
+# Understand-Anything knowledge graph
+.understand-anything/
