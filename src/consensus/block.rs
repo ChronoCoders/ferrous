@@ -90,8 +90,8 @@ impl Block {
         self.header.hash()
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap_or_default()
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        bincode::serialize(self).map_err(|e| e.to_string())
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {

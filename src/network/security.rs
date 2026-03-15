@@ -7,6 +7,8 @@ pub const MIN_SUBNET_DIVERSITY: usize = 8; // Min different /16 subnets
 pub const MAX_PEERS_PER_SUBNET: usize = 3; // Max peers from same /16
 pub const ANCHOR_CONNECTIONS: usize = 2; // Always-on trusted peers
 pub const FEELER_INTERVAL: Duration = Duration::from_secs(120); // 2 minutes
+/// Entries older than this are pruned from `connection_history` on every update.
+pub const CONNECTION_HISTORY_MAX_AGE: Duration = Duration::from_secs(60);
 pub const MAX_NETGROUP_PERCENTAGE: f32 = 0.30; // Max 30% from one netgroup
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -122,10 +124,14 @@ impl NetworkSecurity {
 
         self.netgroups_by_peer.insert(peer_id, netgroup);
 
-        // Track connection history for Eclipse detection
+        // Track connection history for Eclipse detection.
         self.connection_history.push((Instant::now(), ip));
 
-        // Keep last 100 connections
+        // Time-based pruning: drop entries older than CONNECTION_HISTORY_MAX_AGE.
+        self.connection_history
+            .retain(|(t, _)| t.elapsed() < CONNECTION_HISTORY_MAX_AGE);
+
+        // Count-based cap: keep at most 100 entries as a secondary safety bound.
         if self.connection_history.len() > 100 {
             self.connection_history.remove(0);
         }
