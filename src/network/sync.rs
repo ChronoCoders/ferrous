@@ -179,9 +179,16 @@ impl SyncManager {
             our_height, start_height, peer_id, peer_height
         );
 
-        if (peer_height as u64) <= start_height as u64 {
-            println!("SyncManager: Peer height is lower or equal, not requesting headers.");
-            return Ok(());
+        // Always request headers regardless of the peer's reported height from the VERSION
+        // handshake — that value is stale within seconds of connection. Skipping based on
+        // height alone prevents fork detection when both nodes are at similar heights.
+        // Instead, skip only when a headers download is already in flight.
+        {
+            let state = self.sync_state.lock().unwrap();
+            if matches!(*state, SyncState::DownloadingHeaders { .. }) {
+                println!("SyncManager: Already downloading headers, skipping duplicate sync.");
+                return Ok(());
+            }
         }
 
         let chain = self.chain.lock().unwrap();
@@ -350,89 +357,49 @@ impl SyncManager {
                         ));
                     }
                 } else {
-                    println!("[HEADERS] best_header_hash mismatch, trying highest locator in DB");
-
-                    let locator = self.last_locator.lock().unwrap().clone();
-                    let mut best: Option<([u8; 32], u64)> = None;
-
-                    for (hash, height) in locator {
-                        match chain.block_store.get_header(&hash) {
-                            Ok(Some(_)) => {}
-                            Ok(None) => {
+                    // prev_hash doesn't match our current best header.  Directly look up
+                    // prev_hash in the DB — this handles divergent chains where the peer
+                    // sends headers anchored at a common ancestor behind our tip.
+                    println!(
+                        "[HEADERS] best_header_hash mismatch, looking up prev_hash {} in DB",
+                        hex::encode(prev_hash)
+                    );
+                    match chain.block_store.get_header(&prev_hash) {
+                        Ok(Some(prev_header_obj)) => {
+                            let h =
+                                chain.get_height_for_hash(&prev_hash).ok_or_else(|| {
+                                    format!(
+                                        "prev_hash {} in DB but no height mapping",
+                                        hex::encode(prev_hash)
+                                    )
+                                })?;
+                            // Confirm it is on our canonical chain, not a side branch.
+                            let canonical = chain
+                                .block_store
+                                .get_header_hash_from_height_index(h)
+                                .map_err(|e| e.to_string())?;
+                            if canonical == Some(prev_hash) {
+                                (prev_header_obj, h as u32)
+                            } else {
                                 println!(
-                                    "[HEADERS] Locator inconsistency: header missing in DB for hash={}",
-                                    hex::encode(hash)
+                                    "[HEADERS] prev_hash is on a side chain, re-requesting"
                                 );
-                                continue;
-                            }
-                            Err(e) => {
-                                println!(
-                                    "[HEADERS] Locator inconsistency: failed to load header for hash={} err={}",
-                                    hex::encode(hash),
-                                    e
-                                );
-                                continue;
+                                drop(header_map);
+                                drop(chain);
+                                self.resend_getheaders(peer_id)?;
+                                return Ok(());
                             }
                         }
-
-                        let height_index_hash = chain
-                            .block_store
-                            .get_header_hash_from_height_index(height)
-                            .map_err(|e| e.to_string())?;
-                        let height_index_hash = match height_index_hash {
-                            Some(h) => h,
-                            None => {
-                                println!(
-                                    "[HEADERS] Locator inconsistency: height index missing for height={} hash={}",
-                                    height,
-                                    hex::encode(hash)
-                                );
-                                continue;
-                            }
-                        };
-
-                        if height_index_hash != hash {
-                            println!(
-                                "[HEADERS] Locator inconsistency: height index mismatch height={} expected_hash={} got_hash={}",
-                                height,
-                                hex::encode(hash),
-                                hex::encode(height_index_hash)
-                            );
-                            continue;
-                        }
-
-                        if best.is_none() || height > best.unwrap().1 {
-                            best = Some((hash, height));
-                        }
-                    }
-
-                    if let Some((best_hash, best_height)) = best {
-                        println!(
-                            "[HEADERS] Highest locator in DB: height={} hash={}",
-                            best_height,
-                            hex::encode(best_hash)
-                        );
-
-                        if prev_hash != best_hash {
-                            println!("[HEADERS] No match found, re-requesting headers");
+                        Ok(None) => {
+                            println!("[HEADERS] prev_hash not in DB, re-requesting headers");
                             drop(header_map);
                             drop(chain);
                             self.resend_getheaders(peer_id)?;
                             return Ok(());
                         }
-
-                        let prev_header = chain
-                            .block_store
-                            .get_header(&best_hash)
-                            .map_err(|e| e.to_string())?
-                            .ok_or("Best locator header missing in DB")?;
-                        (prev_header, best_height as u32)
-                    } else {
-                        println!("[HEADERS] No match found, re-requesting headers");
-                        drop(header_map);
-                        drop(chain);
-                        self.resend_getheaders(peer_id)?;
-                        return Ok(());
+                        Err(e) => {
+                            return Err(format!("DB error looking up prev_hash: {}", e));
+                        }
                     }
                 }
             } else if prev_hash == current_best_hash {
