@@ -7,7 +7,7 @@ use crate::network::protocol::{
     GetDataMessage, GetHeadersMessage, HeadersMessage, InvVector, INV_BLOCK,
 };
 use crate::primitives::serialize::Encode;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 type PeerId = u64;
@@ -332,6 +332,12 @@ impl SyncManager {
         let chain = self.chain.lock().unwrap();
         let mut header_map = self.header_height_map.lock().unwrap();
 
+        // Sliding window of up to 11 recent headers used for MTP timestamp validation.
+        // Seeded from DB on the first header of the batch; updated in O(1) per iteration
+        // thereafter — eliminates 11 DB reads per header (≈22 000 reads/batch).
+        let mut ts_window: VecDeque<crate::consensus::block::BlockHeader> =
+            VecDeque::with_capacity(12);
+
         for (idx, header) in headers_msg.headers.iter().enumerate() {
             let prev_hash = header.prev_block_hash;
 
@@ -440,26 +446,27 @@ impl SyncManager {
                 .map_err(|e| format!("Difficulty error: {:?}", e))?;
 
             // 4. Timestamp check (MTP + future-time guard).
-            // Headers from earlier in this batch are already stored by the time
-            // we reach the current one (sequential loop), so get_header_by_height
-            // returns them correctly.
+            // Seed the sliding window from DB on the very first header of the batch
+            // (≤11 reads, done once).  Subsequent headers are validated in O(1) using
+            // the in-memory window, avoiding ≈11 DB reads per header.
             {
-                let mut prev_headers_for_ts: Vec<crate::consensus::block::BlockHeader> =
-                    Vec::with_capacity(11);
-                prev_headers_for_ts.push(prev_header);
-                let mut ts_h = prev_height.saturating_sub(1);
-                while prev_headers_for_ts.len() < 11 {
-                    match chain.block_store.get_header_by_height(ts_h as u64) {
-                        Ok(Some(ph)) => {
-                            prev_headers_for_ts.push(ph);
-                            if ts_h == 0 {
-                                break;
+                if ts_window.is_empty() {
+                    ts_window.push_back(prev_header);
+                    let mut ts_h = prev_height.saturating_sub(1);
+                    while ts_window.len() < 11 {
+                        match chain.block_store.get_header_by_height(ts_h as u64) {
+                            Ok(Some(ph)) => {
+                                ts_window.push_back(ph);
+                                if ts_h == 0 {
+                                    break;
+                                }
+                                ts_h = ts_h.saturating_sub(1);
                             }
-                            ts_h = ts_h.saturating_sub(1);
+                            _ => break,
                         }
-                        _ => break,
                     }
                 }
+                let prev_headers_for_ts: Vec<_> = ts_window.iter().cloned().collect();
                 validate_timestamp(header, &prev_headers_for_ts)
                     .map_err(|e| format!("Timestamp error: {:?}", e))?;
             }
@@ -480,6 +487,12 @@ impl SyncManager {
             // In DownloadingHeaders, we track *this peer's* best header.
             current_best_height = new_height;
             current_best_hash = new_hash;
+
+            // Slide the window forward: new header becomes the most-recent entry.
+            ts_window.push_front(*header);
+            if ts_window.len() > 11 {
+                ts_window.pop_back();
+            }
         }
 
         // Persist best header
