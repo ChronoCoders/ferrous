@@ -224,7 +224,9 @@ impl BlockStore {
     }
 
     /// Write a batch of (header, height) pairs in a single atomic DB commit.
-    /// Reduces 2 000 individual fsyncs per headers batch to one.
+    /// WAL is disabled for this write: headers are recoverable from peers, so
+    /// durability is not required. This eliminates the fsync bottleneck on
+    /// slow-disk VPS nodes (~30-60 s/batch → < 1 s).
     pub fn store_headers_batch(&self, headers: &[(BlockHeader, u64)]) -> Result<(), String> {
         use crate::primitives::serialize::Encode;
         let mut batch = self.db.batch();
@@ -235,7 +237,7 @@ impl BlockStore {
             batch.put(CF_HEADERS, &hash, &header_bytes)?;
             batch.put(CF_HEADERS, &key, &hash)?;
         }
-        batch.commit()
+        batch.commit_no_wal()
     }
 
     pub fn get_header_by_height(&self, height: u64) -> Result<Option<BlockHeader>, String> {
