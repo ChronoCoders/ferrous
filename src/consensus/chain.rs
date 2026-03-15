@@ -163,7 +163,17 @@ impl ChainState {
         // are now "far in the future" relative to the network-adjusted wall clock.
         // A --reindex flag could be added in future to force full re-validation.
 
-        // Now iterate forward
+        // Forward pass: load blocks from genesis toward tip, validating canonical
+        // chain linkage at each step.
+        //
+        // Two invariants are enforced per block:
+        //   1. The block's computed hash matches the key recorded during backward
+        //      traversal (detects a block stored under the wrong key).
+        //   2. The block's prev_block_hash equals the hash of the immediately
+        //      preceding block in the canonical sequence (detects any gap or fork
+        //      in the stored chain).
+        let mut expected_prev_hash: Option<Hash256> = None;
+
         for hash in chain_hashes.iter().rev() {
             let block = self
                 .block_store
@@ -172,6 +182,42 @@ impl ChainState {
 
             let header = block.header;
             let block_hash = header.hash();
+
+            // Invariant 1: stored key must match the block's actual hash.
+            if block_hash != *hash {
+                return Err(format!(
+                    "Recovery: hash mismatch — stored key {} but block hashes to {}",
+                    hex::encode(hash),
+                    hex::encode(block_hash)
+                ));
+            }
+
+            // Invariant 2: chain must be strictly linear.
+            match expected_prev_hash {
+                None => {
+                    // First block processed must be genesis (prev == all-zeros).
+                    if header.prev_block_hash != [0u8; 32] {
+                        return Err(format!(
+                            "Recovery: first block {} is not genesis (prev_hash={})",
+                            hex::encode(block_hash),
+                            hex::encode(header.prev_block_hash)
+                        ));
+                    }
+                }
+                Some(prev) => {
+                    if header.prev_block_hash != prev {
+                        return Err(format!(
+                            "Recovery: chain linkage broken at block {} \
+                             (expected prev={}, got {})",
+                            hex::encode(block_hash),
+                            hex::encode(prev),
+                            hex::encode(header.prev_block_hash)
+                        ));
+                    }
+                }
+            }
+
+            expected_prev_hash = Some(block_hash);
 
             let (height, cumulative_work) = if header.prev_block_hash == [0u8; 32] {
                 (0, header.work())
@@ -183,10 +229,7 @@ impl ChainState {
                 (
                     prev_data.height + 1,
                     prev_data.cumulative_work + header.work(),
-                ) // Add u128 to U256? U256 + U256
-                  // header.work() returns U256
-                  // prev_data.cumulative_work is U256
-                  // We need impl Add for U256
+                )
             };
 
             self.blocks.insert(
@@ -194,7 +237,7 @@ impl ChainState {
                 BlockData {
                     block,
                     height,
-                    cumulative_work, // Assumes U256 has Add or we implement it
+                    cumulative_work,
                 },
             );
         }

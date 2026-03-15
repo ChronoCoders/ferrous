@@ -4,6 +4,10 @@ use crate::consensus::utxo::OutPoint;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// Maximum number of unconfirmed transactions held in memory.
+/// Transactions beyond this limit are rejected; no eviction is performed.
+pub const MEMPOOL_MAX_ENTRIES: usize = 5_000;
+
 pub struct NetworkMempool {
     transactions: Arc<Mutex<HashMap<[u8; 32], Transaction>>>,
     chain: Arc<Mutex<ChainState>>,
@@ -59,8 +63,14 @@ impl NetworkMempool {
 
         drop(chain);
 
-        // Add to mempool
+        // Add to mempool, enforcing the size cap.
         let mut mempool = self.transactions.lock().unwrap();
+        if mempool.len() >= MEMPOOL_MAX_ENTRIES {
+            return Err(format!(
+                "Mempool full ({} entries): transaction rejected",
+                MEMPOOL_MAX_ENTRIES
+            ));
+        }
         mempool.insert(txid, tx);
 
         Ok(true)
