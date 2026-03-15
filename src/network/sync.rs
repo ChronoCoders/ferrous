@@ -382,8 +382,30 @@ impl SyncManager {
                     );
                     match chain.block_store.get_header(&prev_hash) {
                         Ok(Some(prev_header_obj)) => {
-                            let h =
-                                chain.get_height_for_hash(&prev_hash).ok_or_else(|| {
+                            // get_height_for_hash only covers in-memory (add_block) blocks.
+                            // For headers-only entries (stored via store_header_at_height
+                            // during a previous partial sync), fall back to:
+                            //   1. our saved locator — the common ancestor is always one of
+                            //      our locator hashes, stored with its height; or
+                            //   2. block_meta — populated for fully-downloaded side-chain blocks.
+                            let h = chain
+                                .get_height_for_hash(&prev_hash)
+                                .or_else(|| {
+                                    let last_locator = self.last_locator.lock().unwrap();
+                                    last_locator
+                                        .iter()
+                                        .find(|(lh, _)| lh == &prev_hash)
+                                        .map(|(_, h)| *h)
+                                })
+                                .or_else(|| {
+                                    chain
+                                        .block_store
+                                        .get_block_meta(&prev_hash)
+                                        .ok()
+                                        .flatten()
+                                        .map(|m| m.height)
+                                })
+                                .ok_or_else(|| {
                                     format!(
                                         "prev_hash {} in DB but no height mapping",
                                         hex::encode(prev_hash)
