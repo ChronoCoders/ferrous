@@ -490,7 +490,16 @@ impl RpcServer {
             }
         }
 
-        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
+        let chain = match self.chain.try_read() {
+            Ok(c) => c,
+            Err(_) => {
+                let cache = self.blockchain_info_cache.lock().unwrap();
+                if let Some((_, ref v)) = *cache {
+                    return Ok(v.clone());
+                }
+                return Err("Chain busy".to_string());
+            }
+        };
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
 
         let height = tip.as_ref().map(|t| t.height as u32).unwrap_or(0);
@@ -523,7 +532,16 @@ impl RpcServer {
             }
         }
 
-        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
+        let chain = match self.chain.try_read() {
+            Ok(c) => c,
+            Err(_) => {
+                let cache = self.mininginfo_cache.lock().unwrap();
+                if let Some((_, ref v)) = *cache {
+                    return Ok(v.clone());
+                }
+                return Err("Chain busy".to_string());
+            }
+        };
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
 
         let blocks = tip.as_ref().map(|t| t.height as u32).unwrap_or(0);
