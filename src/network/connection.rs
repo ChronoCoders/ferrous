@@ -74,15 +74,7 @@ impl PeerConnection {
 
         let mut chunk = [0u8; 4096];
         match self.stream.read(&mut chunk) {
-            Ok(0) => {
-                // Connection closed by peer?
-                // For try_read, this might mean EOF.
-                // If buffer is empty, return None (or error?).
-                // Usually try_read returns None if no message.
-                // But if EOF, connection is dead.
-                // We'll return None here, but ideally we should signal disconnect.
-                // But for now, let's just return None and let subsequent calls fail or handle it.
-            }
+            Ok(0) => return Err("Connection closed".to_string()),
             Ok(n) => {
                 self.buffer.extend_from_slice(&chunk[..n]);
             }

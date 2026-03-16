@@ -8,6 +8,8 @@ use crate::network::protocol::{
 };
 use crate::primitives::serialize::Encode;
 use std::collections::HashSet;
+
+const MAX_ANNOUNCED_BLOCKS: usize = 1000;
 use std::sync::{Arc, Mutex, RwLock};
 
 pub struct BlockRelay {
@@ -39,6 +41,12 @@ impl BlockRelay {
             return Ok(()); // Already announced
         }
 
+        // Prune when full — old entries are no longer useful (peers already have those blocks).
+        // Worst case: we re-announce a pruned hash, which the peer silently ignores.
+        if announced.len() >= MAX_ANNOUNCED_BLOCKS {
+            announced.clear();
+        }
+
         // Mark as announced
         announced.insert(block_hash);
 
@@ -61,48 +69,44 @@ impl BlockRelay {
 
     // Handle received INV message
     pub fn handle_inv(&self, peer_id: u64, inv: &InvMessage) -> Result<(), String> {
-        let chain = self.chain.read().unwrap();
+        let mut trigger_sync = false;
         let mut to_request = Vec::new();
 
-        for inv_vec in &inv.inventory {
-            match inv_vec.inv_type {
-                INV_BLOCK => {
-                    if !chain.has_block(&inv_vec.hash) {
-                        drop(chain);
-                        let sync_guard = self.peer_manager.sync_manager();
-                        let sync = sync_guard.lock().unwrap();
-                        if let Some(sync) = &*sync {
-                            if !sync.is_syncing() {
-                                let _ = sync.request_headers_force(peer_id);
-                            }
+        {
+            let chain = self.chain.read().unwrap();
+            for inv_vec in &inv.inventory {
+                match inv_vec.inv_type {
+                    INV_BLOCK => {
+                        if !chain.has_block(&inv_vec.hash) {
+                            trigger_sync = true;
                         }
-                        return Ok(());
                     }
-                }
-                INV_TX => {
-                    // Check if we have this tx
-                    if !self.mempool.has_transaction(&inv_vec.hash) {
-                        // Also check chain? Usually unnecessary if we assume confirmed txs are not relayed via INV.
-                        // But good practice to check if already mined?
-                        // For now just check mempool.
-                        to_request.push(*inv_vec);
+                    INV_TX => {
+                        if !self.mempool.has_transaction(&inv_vec.hash) {
+                            to_request.push(*inv_vec);
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
-        drop(chain);
+        if trigger_sync {
+            let sync_guard = self.peer_manager.sync_manager();
+            let sync = sync_guard.lock().unwrap();
+            if let Some(sync) = &*sync {
+                if !sync.is_syncing() {
+                    let _ = sync.request_headers_force(peer_id);
+                }
+            }
+        }
 
-        // Request unknown items
         if !to_request.is_empty() {
             let getdata = GetDataMessage {
                 inventory: to_request,
             };
-
             let magic = self.peer_manager.magic();
             let msg = NetworkMessage::new(magic, CMD_GETDATA, getdata.encode());
-
             self.peer_manager.send_to_peer(peer_id, &msg)?;
         }
 
