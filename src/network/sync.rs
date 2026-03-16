@@ -552,14 +552,23 @@ impl SyncManager {
             header_map.insert(new_hash, new_height);
 
             // Detect the fork start: the first height where the peer's header hash
-            // differs from the canonical block we have at that same height.  This
-            // determines the block-download cursor so we fetch from the actual
-            // divergence point rather than canonical_tip + 1.
+            // differs from OUR canonical block at that same height.
+            //
+            // IMPORTANT: use block_store.get_block_by_height (CF_BLOCK_INDEX, updated
+            // only by add_block), NOT get_header_at_height (CF_HEADERS, which may have
+            // been overwritten by a previous peer header sync).  Using CF_HEADERS would
+            // compare peer-vs-peer and never detect the fork.
             if fork_start_height.is_none() {
                 let canonical_height = chain.get_height() as u32;
                 if new_height <= canonical_height {
-                    if let Some(canonical) = chain.get_header_at_height(new_height as u64) {
-                        if canonical.hash() != new_hash {
+                    match chain.block_store.get_block_by_height(new_height as u64) {
+                        Ok(Some(canonical_block)) => {
+                            if canonical_block.header.hash() != new_hash {
+                                fork_start_height = Some(new_height);
+                            }
+                        }
+                        _ => {
+                            // Canonical block missing at this height — treat as fork start.
                             fork_start_height = Some(new_height);
                         }
                     }
