@@ -827,6 +827,24 @@ impl SyncManager {
                 peer_map.insert(*height as u32, hash);
                 hash_map.insert(hash, *height as u32);
             }
+
+            // Also record the anchor block — the parent of the first received header.
+            // The anchor is the common-ancestor block that the peer's fork chain builds on.
+            // If it exists only in CF_HEADERS (e.g., from a prior header-only sync) but
+            // NOT in CF_BLOCKS, find_first_missing will flag it as missing and download it
+            // from the peer before attempting to apply the fork chain.  Without this,
+            // add_block for the first fork block fails with OrphanBlock because the parent
+            // cannot be found in self.blocks or CF_BLOCKS.
+            if let Some(&(_, first_height)) = headers_to_store.first() {
+                if first_height > 0 {
+                    let anchor_height = first_height as u32 - 1;
+                    let anchor_hash = headers_msg.headers[0].prev_block_hash;
+                    // or_insert is a no-op on subsequent batches where this height is
+                    // already populated from the previous batch's final entry.
+                    peer_map.entry(anchor_height).or_insert(anchor_hash);
+                    hash_map.entry(anchor_hash).or_insert(anchor_height);
+                }
+            }
         }
 
         // Update state with latest header tip.
