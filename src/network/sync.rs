@@ -638,6 +638,10 @@ impl SyncManager {
             // this, first_missing = canonical_tip + 1 which is past the fork: block at
             // that height has a parent that doesn't exist in the peer's DB → OrphanBlock.
             let first_missing = fork_start_height.unwrap_or_else(|| self.get_local_height() + 1);
+            println!(
+                "SyncManager: fork_start_height={:?} first_missing={} current_best_height={}",
+                fork_start_height, first_missing, current_best_height
+            );
 
             *state = SyncState::DownloadingBlocks {
                 next_expected_height: first_missing,
