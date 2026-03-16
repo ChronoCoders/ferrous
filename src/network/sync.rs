@@ -596,10 +596,14 @@ impl SyncManager {
                                 }
                             }
                         } else {
+                            // Use CF_BLOCK_INDEX (canonical chain) to get the parent hash.
+                            // CF_HEADERS can be stale from prior sync sessions and must not
+                            // be used here — a wrong hash would cause prev_hash mismatches.
                             let chain = self.chain.read().unwrap();
-                            match chain.block_store.get_header_by_height(parent_height as u64) {
-                                Ok(Some(header)) => {
-                                    let hash = header.hash();
+                            match chain.block_store.get_hash_by_height(parent_height as u64) {
+                                Ok(Some(hash)) => {
+                                    let have_block =
+                                        chain.block_store.get_block(&hash).ok().flatten().is_some();
                                     drop(chain);
                                     self.peer_header_map
                                         .lock()
@@ -609,7 +613,11 @@ impl SyncManager {
                                         .lock()
                                         .unwrap()
                                         .insert(hash, parent_height);
-                                    start = parent_height;
+                                    if have_block {
+                                        break;
+                                    } else {
+                                        start = parent_height;
+                                    }
                                 }
                                 _ => break,
                             }
@@ -928,10 +936,14 @@ impl SyncManager {
                         }
                     }
                 } else {
+                    // Use CF_BLOCK_INDEX (canonical chain) to get the parent hash.
+                    // CF_HEADERS can be stale from prior sync sessions and must not
+                    // be used here — a wrong hash would cause prev_hash mismatches.
                     let chain = self.chain.read().unwrap();
-                    match chain.block_store.get_header_by_height(parent_height as u64) {
-                        Ok(Some(header)) => {
-                            let hash = header.hash();
+                    match chain.block_store.get_hash_by_height(parent_height as u64) {
+                        Ok(Some(hash)) => {
+                            let have_block =
+                                chain.block_store.get_block(&hash).ok().flatten().is_some();
                             drop(chain);
                             self.peer_header_map
                                 .lock()
@@ -941,7 +953,11 @@ impl SyncManager {
                                 .lock()
                                 .unwrap()
                                 .insert(hash, parent_height);
-                            start = parent_height;
+                            if have_block {
+                                break;
+                            } else {
+                                start = parent_height;
+                            }
                         }
                         _ => break,
                     }
@@ -980,12 +996,22 @@ impl SyncManager {
         );
         let chain = self.chain.read().unwrap();
 
-        // Find common ancestor from locator
+        // Find common ancestor from locator.
+        // Try in-memory first (fast path for tip-adjacent blocks), then fall back to
+        // CF_BLOCK_META + CF_BLOCK_INDEX for historical blocks that are not cached.
         let mut start_height = 0;
         for hash in &msg.block_locator {
-            if let Some(height) = chain.get_height_for_hash(hash) {
-                if let Some(active_block) = chain.get_block_by_height(height) {
-                    if active_block.hash() == *hash {
+            let height_opt = chain.get_height_for_hash(hash).or_else(|| {
+                chain
+                    .block_store
+                    .get_block_meta(hash)
+                    .ok()
+                    .flatten()
+                    .map(|m| m.height)
+            });
+            if let Some(height) = height_opt {
+                if let Ok(Some(canonical)) = chain.block_store.get_hash_by_height(height) {
+                    if canonical == *hash {
                         start_height = height + 1;
                         break;
                     }
