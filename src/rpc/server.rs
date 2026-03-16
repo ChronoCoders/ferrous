@@ -760,11 +760,26 @@ impl RpcServer {
 
         let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
 
-        let block = chain
-            .get_block(&hash)
-            .ok_or("Block not found".to_string())?;
+        let block = match chain.get_block(&hash) {
+            Some(b) => b.clone(),
+            None => chain
+                .block_store
+                .get_block(&hash)
+                .map_err(|e| e.to_string())?
+                .ok_or("Block not found".to_string())?,
+        };
 
-        let height = chain.get_height_for_hash(&hash).unwrap_or(0) as u32;
+        let height = chain
+            .get_height_for_hash(&hash)
+            .or_else(|| {
+                chain
+                    .block_store
+                    .get_block_meta(&hash)
+                    .ok()
+                    .flatten()
+                    .map(|m| m.height)
+            })
+            .unwrap_or(0) as u32;
 
         let txids: Vec<String> = block
             .transactions
@@ -796,7 +811,9 @@ impl RpcServer {
         let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
 
         let hash = chain
-            .get_block_hash(height)
+            .block_store
+            .get_hash_by_height(height)
+            .map_err(|e| e.to_string())?
             .ok_or("Block height out of range".to_string())?;
 
         Ok(json!(hex::encode(hash)))

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -613,7 +613,9 @@ impl PeerManager {
                         let _ = relay.handle_inv(id, inv);
                     }
                     MessagePayload::GetData(getdata) => {
-                        let _ = relay.handle_getdata(id, getdata);
+                        if let Err(e) = relay.handle_getdata(id, getdata) {
+                            println!("dispatch: handle_getdata error from peer {}: {}", id, e);
+                        }
                     }
                     MessagePayload::Block(block) => {
                         println!("dispatch: received block message from peer {}", id);
@@ -730,6 +732,51 @@ impl PeerManager {
         let magic = self.magic;
 
         thread::spawn(move || {
+            let (block_tx, block_rx) = mpsc::sync_channel::<(u64, NetworkMessage)>(1024);
+
+            {
+                let relay = Arc::clone(&relay_clone);
+                std::thread::Builder::new()
+                    .name("block-dispatch-worker".into())
+                    .spawn(move || {
+                        while let Ok((peer_id, msg)) = block_rx.recv() {
+                            let payload = match msg.parse_payload() {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    println!(
+                                        "block-worker: failed to parse block message from peer {}: {:?}",
+                                        peer_id, e
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            if let Err(e) = payload.validate() {
+                                println!(
+                                    "block-worker: invalid block payload from peer {}: {:?}",
+                                    peer_id, e
+                                );
+                                continue;
+                            }
+
+                            let MessagePayload::Block(block) = payload else {
+                                continue;
+                            };
+
+                            let relay_guard = relay.lock().unwrap();
+                            if let Some(relay) = &*relay_guard {
+                                if let Err(e) = relay.handle_block(peer_id, &block) {
+                                    println!(
+                                        "block-worker: handle_block error from peer {}: {}",
+                                        peer_id, e
+                                    );
+                                }
+                            }
+                        }
+                    })
+                    .expect("failed to spawn block-dispatch-worker");
+            }
+
             loop {
                 // Collect IDs first to avoid holding lock while processing
                 let mut peer_ids: Vec<u64> = Vec::new();
@@ -742,7 +789,7 @@ impl PeerManager {
                     }
                 }
 
-                for id in peer_ids {
+                'peer_loop: for id in peer_ids {
                     // We need to manage peer disconnection outside of holding the peer reference
                     let mut should_disconnect = false;
 
@@ -806,18 +853,33 @@ impl PeerManager {
                                     if !should_disconnect {
                                         drop(peers); // Drop lock before handling
 
-                                        // Parse first to avoid cloning for dispatch
-                                        if msg.command_string() == "block" {
+                                        let command = msg.command_string();
+                                        if command == "block" {
                                             println!(
-                                                "dispatch: attempting block decode, payload_len={}",
+                                                "dispatch: queueing block message from peer {}, payload_len={}",
+                                                id,
                                                 msg.payload.len()
                                             );
+                                            if let Err(e) = block_tx.send((id, msg)) {
+                                                println!(
+                                                    "dispatch: failed to enqueue block message from peer {}: {}",
+                                                    id, e
+                                                );
+                                            } else {
+                                                let stats_guard = stats_clone.lock().unwrap();
+                                                if let Some(stats) = &*stats_guard {
+                                                    stats.record_block_received();
+                                                }
+                                                let recovery_guard = recovery_clone.lock().unwrap();
+                                                if let Some(recovery) = &*recovery_guard {
+                                                    recovery.on_new_block();
+                                                }
+                                            }
+                                            continue 'peer_loop;
                                         }
+
                                         match msg.parse_payload() {
                                             Ok(payload) => {
-                                                if let MessagePayload::Block(_) = payload {
-                                                    println!("dispatch: decoded block message from peer {}", id);
-                                                }
                                                 // VALIDATION CHECKPOINT 2: Payload content
                                                 if let Err(e) = payload.validate() {
                                                     println!(

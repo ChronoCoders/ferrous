@@ -359,18 +359,16 @@ impl SyncManager {
             return;
         }
 
-        let inv_vecs: Vec<InvVector> = pending
-            .iter()
-            .map(|hash| InvVector {
-                inv_type: INV_BLOCK,
-                hash: *hash,
-            })
-            .collect();
-
-        let getdata = GetDataMessage {
-            inventory: inv_vecs,
-        };
         let magic = self.peer_manager.magic();
+        let getdata = GetDataMessage {
+            inventory: pending
+                .iter()
+                .map(|hash| InvVector {
+                    inv_type: INV_BLOCK,
+                    hash: *hash,
+                })
+                .collect(),
+        };
         let msg = NetworkMessage::new(magic, "getdata", getdata.encode());
         let _ = self.peer_manager.send_to_peer(peer_id, &msg);
         println!(
