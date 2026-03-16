@@ -254,7 +254,11 @@ impl BlockRelay {
                 Ok(())
             }
             Err(ChainError::OrphanBlock) => {
-                println!("Relay: block {} is orphan", hex::encode(block_hash));
+                println!(
+                    "Relay: block {} is orphan (parent={})",
+                    hex::encode(block_hash),
+                    hex::encode(block.header.prev_block_hash)
+                );
                 drop(chain);
                 Ok(())
             }
