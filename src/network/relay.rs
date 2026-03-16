@@ -199,10 +199,46 @@ impl BlockRelay {
             peer_id
         );
 
+        // Try routing through SyncManager first.  During a fork-sync the manager
+        // buffers out-of-order blocks and applies them sequentially, preventing
+        // OrphanBlock errors caused by gaps in the fork chain.
+        use crate::consensus::block::Block;
+        let maybe_applied = {
+            let sync_guard = self.peer_manager.sync_manager();
+            let sync_lock = sync_guard.lock().unwrap();
+            sync_lock.as_ref().and_then(|sync| {
+                sync.receive_block_for_sync(Block {
+                    header: block.header,
+                    transactions: block.transactions.clone(),
+                })
+            })
+        };
+
+        if let Some(applied_pairs) = maybe_applied {
+            // SyncManager handled this block (applied in order or buffered).
+            // applied_pairs is empty when the block was only buffered.
+            // Each entry is (block, height) for blocks actually committed.
+            for (applied, height) in &applied_pairs {
+                println!(
+                    "Relay: sync applied block {} at height {}",
+                    hex::encode(applied.header.hash()),
+                    height
+                );
+                self.mempool
+                    .remove_block_transactions(&applied.transactions);
+            }
+            // Update peer height from the last applied block.  The height comes directly
+            // from the sync session's peer_header_map so it's valid for fork-chain blocks
+            // that may not yet be on the canonical chain.
+            if let Some((_, height)) = applied_pairs.last() {
+                self.peer_manager.update_peer_height(peer_id, *height);
+            }
+            return Ok(());
+        }
+
+        // Normal relay path: not a tracked sync block.
         let mut chain = self.chain.write().unwrap();
 
-        // Validate and add block
-        use crate::consensus::block::Block;
         match chain.add_block(Block {
             header: block.header,
             transactions: block.transactions.clone(),
@@ -215,7 +251,6 @@ impl BlockRelay {
 
                 let height = chain.get_height_for_hash(&block_hash);
 
-                // Check if it's the new tip
                 let is_tip = chain
                     .get_tip()
                     .map(|t| {
@@ -224,21 +259,13 @@ impl BlockRelay {
                     })
                     .unwrap_or(false);
 
-                // Drop chain lock BEFORE calling sync.block_received to avoid deadlock
                 drop(chain);
 
-                // Notify SyncManager that we received this block (to clear pending state)
-                if let Some(sync) = &*self.peer_manager.sync_manager().lock().unwrap() {
-                    sync.block_received(block_hash);
-                }
-
-                // Update peer height
                 if let Some(h) = height {
                     self.peer_manager.update_peer_height(peer_id, h as u32);
                 }
 
                 if is_tip {
-                    // Check if syncing
                     let syncing = {
                         let sync_guard = self.peer_manager.sync_manager();
                         let sync = sync_guard.lock().unwrap();
@@ -248,7 +275,6 @@ impl BlockRelay {
                     if !syncing {
                         self.announce_block(block_hash)?;
                     }
-                    // Remove mined transactions from mempool
                     self.mempool.remove_block_transactions(&block.transactions);
                 }
                 Ok(())

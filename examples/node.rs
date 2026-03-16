@@ -152,6 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     peer_manager.set_relay(relay.clone());
     peer_manager.set_sync_manager(sync_manager.clone());
+    sync_manager.start_stall_checker();
 
     // Start P2P listener
     if let Ok(addr) = args.p2p_addr.parse() {
