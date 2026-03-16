@@ -454,9 +454,19 @@ impl ChainState {
                         break;
                     }
                     curr = d.block.header.prev_block_hash;
-                } else {
-                    break;
+                    continue;
                 }
+
+                if let Ok(Some(hdr)) = self.block_store.get_header(&curr) {
+                    prev_headers.push(hdr);
+                    if hdr.prev_block_hash == [0u8; 32] {
+                        break;
+                    }
+                    curr = hdr.prev_block_hash;
+                    continue;
+                }
+
+                break;
             }
             validate_timestamp(&block.header, &prev_headers).map_err(ChainError::InvalidBlock)?;
 
