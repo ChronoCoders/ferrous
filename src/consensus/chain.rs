@@ -749,7 +749,14 @@ impl ChainState {
             }
             current_height = current_height.saturating_sub(step);
 
-            match self.block_store.get_header_hash_by_height(current_height) {
+            // Use CF_BLOCK_INDEX (canonical chain) — NOT get_header_hash_by_height
+            // which reads CF_HEADERS first.  CF_HEADERS is overwritten by
+            // store_headers_batch on every sync session, so after syncing from a
+            // divergent peer the height keys there point to that peer's hashes,
+            // not our canonical chain.  Sending a locator full of the peer's own
+            // hashes causes the peer to match at the wrong height and send only
+            // a tail of its chain instead of headers from the true fork point.
+            match self.block_store.get_hash_by_height(current_height) {
                 Ok(Some(hash)) => entries.push((hash, current_height)),
                 _ => break,
             }
