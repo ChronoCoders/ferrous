@@ -12,17 +12,6 @@ target/
 # User-specific wallet and data files
 wallet.dat
 test-wallet.dat
-dbg-wallet.dat
-e2e_wallet.dat
-maturity-wallet.dat
-node-prod-wallet.dat
-
-# Data directories
-data/
-dbg-data/
-e2e_data/
-maturity-data/
-node-prod-data/
 
 # IDE files
 .vscode/
@@ -33,10 +22,5 @@ node-prod-data/
 .DS_Store
 Thumbs.db
 
-# Local operator notes / scripts
-TRAE.md
-monitor.sh
-.claude/
 
-# Understand-Anything knowledge graph
-.understand-anything/
+

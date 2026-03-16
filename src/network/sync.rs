@@ -578,20 +578,57 @@ impl SyncManager {
                 if peer_map_len > 0 {
                     // Use peer_header_map (built from received headers) to find first missing.
                     let first_missing = self.find_first_missing(best_height);
+                    let mut start = first_missing;
+                    while start > 0 {
+                        let parent_height = start - 1;
+                        let hash_opt = self
+                            .peer_header_map
+                            .lock()
+                            .unwrap()
+                            .get(&parent_height)
+                            .copied();
+                        if let Some(hash) = hash_opt {
+                            let chain = self.chain.read().unwrap();
+                            match chain.block_store.get_block(&hash) {
+                                Ok(Some(_)) => break,
+                                _ => {
+                                    start = parent_height;
+                                }
+                            }
+                        } else {
+                            let chain = self.chain.read().unwrap();
+                            match chain.block_store.get_header_by_height(parent_height as u64) {
+                                Ok(Some(header)) => {
+                                    let hash = header.hash();
+                                    drop(chain);
+                                    self.peer_header_map
+                                        .lock()
+                                        .unwrap()
+                                        .insert(parent_height, hash);
+                                    self.peer_hash_to_height
+                                        .lock()
+                                        .unwrap()
+                                        .insert(hash, parent_height);
+                                    start = parent_height;
+                                }
+                                _ => break,
+                            }
+                        }
+                    }
                     println!(
-                        "SyncManager: empty-headers path: first_missing={} total_height={}",
-                        first_missing, best_height
+                        "SyncManager: empty-headers path: first_missing={} start={} total_height={}",
+                        first_missing, start, best_height
                     );
                     {
                         let mut state = self.sync_state.lock().unwrap();
                         *state = SyncState::DownloadingBlocks {
                             peer_id: sync_peer_id,
-                            next_apply_height: first_missing,
+                            next_apply_height: start,
                             total_height: best_height,
                         };
                     }
-                    if first_missing <= best_height {
-                        self.ensure_in_flight_window(sync_peer_id, first_missing, best_height);
+                    if start <= best_height {
+                        self.ensure_in_flight_window(sync_peer_id, start, best_height);
                         return Ok(());
                     }
                 }
@@ -873,22 +910,59 @@ impl SyncManager {
             // Use hash-existence check against peer_header_map (peer's heights), never
             // local height indexes (those reflect our canonical chain, not the fork).
             let first_missing = self.find_first_missing(current_best_height);
+            let mut start = first_missing;
+            while start > 0 {
+                let parent_height = start - 1;
+                let hash_opt = self
+                    .peer_header_map
+                    .lock()
+                    .unwrap()
+                    .get(&parent_height)
+                    .copied();
+                if let Some(hash) = hash_opt {
+                    let chain = self.chain.read().unwrap();
+                    match chain.block_store.get_block(&hash) {
+                        Ok(Some(_)) => break,
+                        _ => {
+                            start = parent_height;
+                        }
+                    }
+                } else {
+                    let chain = self.chain.read().unwrap();
+                    match chain.block_store.get_header_by_height(parent_height as u64) {
+                        Ok(Some(header)) => {
+                            let hash = header.hash();
+                            drop(chain);
+                            self.peer_header_map
+                                .lock()
+                                .unwrap()
+                                .insert(parent_height, hash);
+                            self.peer_hash_to_height
+                                .lock()
+                                .unwrap()
+                                .insert(hash, parent_height);
+                            start = parent_height;
+                        }
+                        _ => break,
+                    }
+                }
+            }
             println!(
-                "SyncManager: headers done: first_missing={} total_height={} fork_start={:?}",
-                first_missing, current_best_height, fork_start_height
+                "SyncManager: headers done: first_missing={} start={} total_height={} fork_start={:?}",
+                first_missing, start, current_best_height, fork_start_height
             );
 
             {
                 let mut state = self.sync_state.lock().unwrap();
                 *state = SyncState::DownloadingBlocks {
                     peer_id,
-                    next_apply_height: first_missing,
+                    next_apply_height: start,
                     total_height: current_best_height,
                 };
             }
 
-            if first_missing <= current_best_height {
-                self.ensure_in_flight_window(peer_id, first_missing, current_best_height);
+            if start <= current_best_height {
+                self.ensure_in_flight_window(peer_id, start, current_best_height);
             } else {
                 let mut state = self.sync_state.lock().unwrap();
                 *state = SyncState::Synced;
