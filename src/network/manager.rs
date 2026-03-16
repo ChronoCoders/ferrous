@@ -650,10 +650,14 @@ impl PeerManager {
             if let Some(sync) = &*sync_guard {
                 match payload {
                     MessagePayload::Headers(headers) => {
-                        let _ = sync.handle_headers(id, headers);
+                        if let Err(e) = sync.handle_headers(id, headers) {
+                            println!("SyncManager: handle_headers error from peer {}: {}", id, e);
+                        }
                     }
                     MessagePayload::GetHeaders(getheaders) => {
-                        let _ = sync.handle_getheaders(id, getheaders);
+                        if let Err(e) = sync.handle_getheaders(id, getheaders) {
+                            println!("SyncManager: handle_getheaders error from peer {}: {}", id, e);
+                        }
                     }
                     _ => {}
                 }
