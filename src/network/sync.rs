@@ -1025,24 +1025,27 @@ impl SyncManager {
             matched_at, start_height
         );
 
+        // Serve canonical headers by looking up each height via CF_BLOCK_INDEX first,
+        // then fetching the header by hash.  get_header_at_height / get_header_by_height
+        // prefers the CF_HEADERS height key (hh: prefix) which is overwritten by
+        // store_headers_batch during every peer sync, so using it here would serve
+        // stale headers from a prior sync session instead of the canonical chain.
         let mut headers = Vec::new();
         let mut height = start_height;
-        loop {
-            if headers.len() >= 2000 {
+        while headers.len() < 2000 {
+            let hash = match chain.block_store.get_hash_by_height(height) {
+                Ok(Some(h)) => h,
+                _ => break,
+            };
+            let header = match chain.block_store.get_header(&hash) {
+                Ok(Some(h)) => h,
+                _ => break,
+            };
+            headers.push(header);
+            if msg.stop_hash != [0u8; 32] && hash == msg.stop_hash {
                 break;
             }
-
-            if let Some(header) = chain.get_header_at_height(height) {
-                let hash = header.hash();
-                headers.push(header);
-
-                if msg.stop_hash != [0u8; 32] && hash == msg.stop_hash {
-                    break;
-                }
-                height += 1;
-            } else {
-                break;
-            }
+            height += 1;
         }
 
         drop(chain);
