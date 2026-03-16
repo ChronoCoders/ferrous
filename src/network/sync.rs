@@ -1,3 +1,4 @@
+use crate::consensus::block::Block;
 use crate::consensus::chain::ChainState;
 use crate::consensus::difficulty::validate_difficulty;
 use crate::consensus::validation::validate_timestamp;
@@ -7,8 +8,12 @@ use crate::network::protocol::{
     GetDataMessage, GetHeadersMessage, HeadersMessage, InvMessage, InvVector, INV_BLOCK,
 };
 use crate::primitives::serialize::Encode;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
+
+/// Number of blocks to keep in-flight simultaneously during block download.
+const DOWNLOAD_WINDOW: u32 = 64;
 
 type PeerId = u64;
 type LocatorEntry = ([u8; 32], u64);
@@ -20,6 +25,18 @@ pub struct SyncManager {
     sync_state: Arc<Mutex<SyncState>>,
     header_height_map: Arc<Mutex<HashMap<[u8; 32], u32>>>,
     last_locator: Arc<Mutex<Locator>>,
+    /// Peer's header chain from the current sync session: height → hash.
+    /// Built incrementally from every incoming headers batch.  Never read from
+    /// local DB — contains only what the remote peer sent us.
+    peer_header_map: Arc<Mutex<HashMap<u32, [u8; 32]>>>,
+    /// Reverse of peer_header_map for O(1) block lookup: hash → height.
+    peer_hash_to_height: Arc<Mutex<HashMap<[u8; 32], u32>>>,
+    /// Blocks received out-of-order, waiting for their predecessor to be applied.
+    block_buffer: Arc<Mutex<HashMap<u32, Block>>>,
+    /// Hashes currently requested via getdata but not yet received.
+    inflight: Arc<Mutex<HashSet<[u8; 32]>>>,
+    /// Timestamp of the last recheck_stalled_window execution (for rate limiting).
+    last_recheck: Mutex<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,7 +49,11 @@ pub enum SyncState {
         fork_start_height: Option<u32>,
     },
     DownloadingBlocks {
-        next_expected_height: u32,
+        peer_id: PeerId,
+        /// Next block height we must apply before advancing.
+        next_apply_height: u32,
+        /// Highest block height in the peer's chain (sync target).
+        total_height: u32,
     },
     Synced,
 }
@@ -45,6 +66,11 @@ impl SyncManager {
             sync_state: Arc::new(Mutex::new(SyncState::Idle)),
             header_height_map: Arc::new(Mutex::new(HashMap::new())),
             last_locator: Arc::new(Mutex::new(Vec::new())),
+            peer_header_map: Arc::new(Mutex::new(HashMap::new())),
+            peer_hash_to_height: Arc::new(Mutex::new(HashMap::new())),
+            block_buffer: Arc::new(Mutex::new(HashMap::new())),
+            inflight: Arc::new(Mutex::new(HashSet::new())),
+            last_recheck: Mutex::new(Instant::now()),
         }
     }
 
@@ -64,66 +90,332 @@ impl SyncManager {
         )
     }
 
-    pub fn block_received(&self, hash: [u8; 32]) {
-        let chain = self.chain.read().unwrap();
-        // Use the received block's own height rather than the canonical tip height.
-        // Fork/side-chain blocks don't advance the canonical tip, so get_height() would
-        // return the pre-fork canonical height and skip past all fork blocks.
-        let block_height = chain
-            .get_height_for_hash(&hash)
-            .unwrap_or_else(|| chain.get_height()) as u32;
-        drop(chain);
+    /// Called by the relay for every received block.
+    ///
+    /// Returns `None`  → not a tracked sync block; relay should handle via normal add_block.
+    /// Returns `Some(applied)` → sync handled this block (applied or buffered).
+    ///   Each entry is `(block, height)` for a block that was successfully added to the chain;
+    ///   the relay should perform post-apply cleanup (mempool, peer-height) for each.
+    ///   An empty vec means the block was buffered and no apply happened yet.
+    pub fn receive_block_for_sync(&self, block: Block) -> Option<Vec<(Block, u32)>> {
+        let block_hash = block.header.hash();
 
-        let mut state = self.sync_state.lock().unwrap();
-        if let SyncState::DownloadingBlocks {
-            next_expected_height,
-        } = *state
-        {
-            if block_height >= next_expected_height {
-                let next_height = block_height + 1;
-                *state = SyncState::DownloadingBlocks {
-                    next_expected_height: next_height,
-                };
-                drop(state); // Drop lock before requesting
+        // Is this block part of the current sync session?
+        let height = self
+            .peer_hash_to_height
+            .lock()
+            .unwrap()
+            .get(&block_hash)
+            .copied()?;
 
-                let peer_id = match self.select_best_peer() {
-                    Some(p) => p,
-                    None => return,
-                };
+        // Remove from in-flight set (unconditional — keeps window accounting correct for
+        // stale/duplicate arrivals too).
+        self.inflight.lock().unwrap().remove(&block_hash);
 
-                let chain = self.chain.read().unwrap();
-                let best_header_height = chain
-                    .state_store
-                    .load_best_header()
-                    .unwrap_or(None)
-                    .map(|(h, _)| h)
-                    .unwrap_or(0);
-
-                if next_height > best_header_height {
-                    drop(chain);
-                    let mut state = self.sync_state.lock().unwrap();
-                    *state = SyncState::Synced;
-                    return;
+        // Read the current download cursor (must not hold state lock while calling add_block).
+        let (next_apply_height, peer_id, total_height) = {
+            let state = self.sync_state.lock().unwrap();
+            match *state {
+                SyncState::DownloadingBlocks {
+                    peer_id,
+                    next_apply_height,
+                    total_height,
+                } => (next_apply_height, peer_id, total_height),
+                _ => {
+                    // Arrived before we transitioned to DownloadingBlocks — buffer it.
+                    self.block_buffer.lock().unwrap().insert(height, block);
+                    return Some(vec![]);
                 }
+            }
+        };
 
-                let mut headers = Vec::new();
-                let end_height = std::cmp::min(next_height + 500, best_header_height);
-                for h in next_height..=end_height {
-                    if let Some(header) = chain.get_header_at_height(h as u64) {
-                        headers.push(header);
-                    } else {
-                        break;
+        if height < next_apply_height {
+            // Stale/duplicate — already applied; inflight already cleaned above.
+            return Some(vec![]);
+        }
+
+        if height > next_apply_height {
+            // Out-of-order — buffer it.
+            let buf_len = {
+                let mut buf = self.block_buffer.lock().unwrap();
+                buf.insert(height, block);
+                buf.len()
+            };
+            // If the buffer keeps growing the block at next_apply_height may have been
+            // dropped by the network.  Force it back into the request window.
+            if buf_len >= DOWNLOAD_WINDOW as usize {
+                let stalled_hash = self
+                    .peer_header_map
+                    .lock()
+                    .unwrap()
+                    .get(&next_apply_height)
+                    .copied();
+                if let Some(h) = stalled_hash {
+                    self.inflight.lock().unwrap().remove(&h);
+                }
+            }
+            self.ensure_in_flight_window(peer_id, next_apply_height, total_height);
+            return Some(vec![]);
+        }
+
+        // height == next_apply_height.
+        // Hash-at-height guard: the block we received must be exactly the one the peer
+        // advertised at this height (peer_header_map[height] == block_hash).
+        let expected_hash = self.peer_header_map.lock().unwrap().get(&height).copied();
+        if expected_hash != Some(block_hash) {
+            println!(
+                "SyncManager: hash mismatch at height {}: expected {} got {} — discarding",
+                height,
+                expected_hash
+                    .map(hex::encode)
+                    .unwrap_or_else(|| "none".into()),
+                hex::encode(block_hash)
+            );
+            // Re-add expected hash to window so it gets re-requested.
+            if let Some(h) = expected_hash {
+                self.inflight.lock().unwrap().remove(&h);
+            }
+            self.ensure_in_flight_window(peer_id, next_apply_height, total_height);
+            return Some(vec![]);
+        }
+
+        // Prev-hash guard (height > 0): block.prev_hash must equal peer_header_map[height-1].
+        if height > 0 {
+            let expected_prev = self
+                .peer_header_map
+                .lock()
+                .unwrap()
+                .get(&(height - 1))
+                .copied();
+            if let Some(ep) = expected_prev {
+                if block.header.prev_block_hash != ep {
+                    println!(
+                        "SyncManager: prev_hash mismatch at height {} — discarding and re-requesting",
+                        height
+                    );
+                    // Remove the expected hash from inflight so ensure_in_flight_window
+                    // will re-request it.  next_apply_height is NOT advanced.
+                    let expected_hash = self.peer_header_map.lock().unwrap().get(&height).copied();
+                    if let Some(h) = expected_hash {
+                        self.inflight.lock().unwrap().remove(&h);
                     }
-                }
-                drop(chain);
-
-                if !headers.is_empty() {
-                    let _ = self.request_blocks_from_headers(peer_id, &headers);
+                    self.ensure_in_flight_window(peer_id, next_apply_height, total_height);
+                    return Some(vec![]);
                 }
             }
         }
+
+        // Apply the block and drain any consecutive buffered blocks.
+        let mut applied: Vec<(Block, u32)> = Vec::new();
+        let mut current_height = height;
+        let mut current_block = block;
+
+        loop {
+            let result = {
+                let mut chain = self.chain.write().unwrap();
+                chain.add_block(current_block.clone())
+            };
+            // chain write lock is released here — safe to send network messages below.
+
+            match result {
+                Ok(()) => {
+                    applied.push((current_block, current_height));
+                    current_height += 1;
+
+                    if current_height > total_height {
+                        let mut state = self.sync_state.lock().unwrap();
+                        *state = SyncState::Synced;
+                        println!("SyncManager: sync complete at height {}", total_height);
+                        break;
+                    }
+
+                    {
+                        let mut state = self.sync_state.lock().unwrap();
+                        *state = SyncState::DownloadingBlocks {
+                            peer_id,
+                            next_apply_height: current_height,
+                            total_height,
+                        };
+                    }
+
+                    // Slide the download window forward.
+                    self.ensure_in_flight_window(peer_id, current_height, total_height);
+
+                    // Drain buffer: if the next block is already buffered, apply it now.
+                    let next_block = self.block_buffer.lock().unwrap().remove(&current_height);
+                    match next_block {
+                        Some(b) => {
+                            // Hash guard for buffer-drained blocks.
+                            let exp = self
+                                .peer_header_map
+                                .lock()
+                                .unwrap()
+                                .get(&current_height)
+                                .copied();
+                            if exp != Some(b.header.hash()) {
+                                println!(
+                                    "SyncManager: buffered block hash mismatch at height \
+                                     {} — stopping drain",
+                                    current_height
+                                );
+                                break;
+                            }
+                            // Buffered blocks were never in inflight (only requested hashes
+                            // go into inflight; buffering happens on receipt).
+                            current_block = b;
+                        }
+                        None => break,
+                    }
+                }
+                Err(e) => {
+                    println!(
+                        "SyncManager: add_block at height {} failed: {:?}, aborting ordered apply",
+                        current_height, e
+                    );
+                    break;
+                }
+            }
+        }
+
+        Some(applied)
     }
 
+    /// Re-request the block at `next_apply_height` if the download appears stalled.
+    /// Rate-limited to at most once every 10 seconds to prevent getdata spam under
+    /// packet loss.  Safe to call from a timer loop or a peer-reconnect handler.
+    pub fn recheck_stalled_window(&self) {
+        const MIN_RECHECK_INTERVAL: Duration = Duration::from_secs(10);
+        {
+            let mut last = self.last_recheck.lock().unwrap();
+            if last.elapsed() < MIN_RECHECK_INTERVAL {
+                return;
+            }
+            *last = Instant::now();
+        }
+
+        let (peer_id, next_apply_height, total_height) = {
+            let state = self.sync_state.lock().unwrap();
+            match *state {
+                SyncState::DownloadingBlocks {
+                    peer_id,
+                    next_apply_height,
+                    total_height,
+                } => (peer_id, next_apply_height, total_height),
+                _ => return,
+            }
+        };
+        // Clear the stalled height from inflight so ensure_in_flight_window will re-request it.
+        let stalled_hash = self
+            .peer_header_map
+            .lock()
+            .unwrap()
+            .get(&next_apply_height)
+            .copied();
+        if let Some(h) = stalled_hash {
+            self.inflight.lock().unwrap().remove(&h);
+        }
+        self.ensure_in_flight_window(peer_id, next_apply_height, total_height);
+    }
+
+    /// Spawn a background thread that calls `recheck_stalled_window` every 30 seconds.
+    /// Uses a weak reference so the thread exits automatically when the manager is dropped.
+    /// Call once, immediately after constructing the `SyncManager`.
+    pub fn start_stall_checker(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        std::thread::Builder::new()
+            .name("sync-stall-checker".into())
+            .spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(30));
+                match weak.upgrade() {
+                    Some(mgr) => mgr.recheck_stalled_window(),
+                    None => break, // SyncManager has been dropped; exit thread.
+                }
+            })
+            .expect("failed to spawn sync-stall-checker thread");
+    }
+
+    /// Fill the download window [next_apply_height .. next_apply_height+W) by
+    /// sending getdata for any peer-chain blocks not already in-flight.
+    fn ensure_in_flight_window(&self, peer_id: u64, next_apply_height: u32, total_height: u32) {
+        let mut inflight = self.inflight.lock().unwrap();
+        let peer_map = self.peer_header_map.lock().unwrap();
+
+        let window_end = std::cmp::min(next_apply_height + DOWNLOAD_WINDOW, total_height + 1);
+        let mut pending: Vec<[u8; 32]> = Vec::new();
+
+        for h in next_apply_height..window_end {
+            if let Some(&hash) = peer_map.get(&h) {
+                if !inflight.contains(&hash) {
+                    inflight.insert(hash);
+                    pending.push(hash);
+                }
+            }
+        }
+
+        drop(inflight);
+        drop(peer_map);
+
+        if pending.is_empty() {
+            return;
+        }
+
+        let inv_vecs: Vec<InvVector> = pending
+            .iter()
+            .map(|hash| InvVector {
+                inv_type: INV_BLOCK,
+                hash: *hash,
+            })
+            .collect();
+
+        let getdata = GetDataMessage {
+            inventory: inv_vecs,
+        };
+        let magic = self.peer_manager.magic();
+        let msg = NetworkMessage::new(magic, "getdata", getdata.encode());
+        let _ = self.peer_manager.send_to_peer(peer_id, &msg);
+        println!(
+            "SyncManager: window [{}..{}] → {} blocks requested from peer {}",
+            next_apply_height,
+            window_end - 1,
+            pending.len(),
+            peer_id
+        );
+    }
+
+    /// Walk peer_header_map (sorted by height) and return the first height where
+    /// we don't already have the block in our DB.  Returns `total_height + 1` if
+    /// we have every block (nothing to download).
+    fn find_first_missing(&self, total_height: u32) -> u32 {
+        let peer_map = self.peer_header_map.lock().unwrap();
+        let chain = self.chain.read().unwrap();
+
+        let mut sorted: Vec<u32> = peer_map.keys().cloned().collect();
+        sorted.sort_unstable();
+
+        for h in sorted {
+            if let Some(&hash) = peer_map.get(&h) {
+                match chain.block_store.get_block(&hash) {
+                    Ok(Some(_)) => {} // already have it
+                    _ => return h,
+                }
+            }
+        }
+
+        total_height + 1 // have everything
+    }
+
+    /// Clear all per-session sync state before starting a new sync.
+    fn reset_sync_state(&self) {
+        self.peer_header_map.lock().unwrap().clear();
+        self.peer_hash_to_height.lock().unwrap().clear();
+        self.block_buffer.lock().unwrap().clear();
+        self.inflight.lock().unwrap().clear();
+    }
+
+    // Legacy notification — kept for API compatibility; no longer drives block downloads.
+    pub fn block_received(&self, _hash: [u8; 32]) {}
+
+    #[allow(dead_code)]
     fn select_best_peer(&self) -> Option<u64> {
         let peers = self.peer_manager.get_connected_peers();
         let mut best_peer: Option<u64> = None;
@@ -145,10 +437,21 @@ impl SyncManager {
     pub fn start_sync(&self, peer_id: u64) -> Result<(), String> {
         println!("SyncManager: Starting sync check with peer {}", peer_id);
 
+        // Always skip if already downloading headers.
+        {
+            let state = self.sync_state.lock().unwrap();
+            if matches!(*state, SyncState::DownloadingHeaders { .. }) {
+                println!("SyncManager: Already downloading headers, skipping duplicate sync.");
+                return Ok(());
+            }
+        }
+
+        // Clear state from any prior sync session.
+        self.reset_sync_state();
+
         let chain = self.chain.read().unwrap();
         let our_height = chain.get_height() as u32;
 
-        // Determine current best header (from DB or memory)
         let (best_header_height, best_header_hash) = match chain.state_store.load_best_header() {
             Ok(Some((h, hash))) => (h, hash),
             _ => {
@@ -161,11 +464,9 @@ impl SyncManager {
             }
         };
 
-        // Use the better of local chain tip or best header
         let (start_height, start_hash) = if best_header_height > our_height {
             (best_header_height, best_header_hash)
         } else {
-            // Use tip
             let tip = chain.get_tip().unwrap_or(None);
             if let Some(t) = tip {
                 (t.height as u32, t.block.header.hash())
@@ -174,7 +475,14 @@ impl SyncManager {
             }
         };
 
+        let locator_with_heights = chain.get_block_locator_with_heights();
+        let locator: Vec<[u8; 32]> = locator_with_heights.iter().map(|(h, _)| *h).collect();
         drop(chain);
+
+        {
+            let mut last = self.last_locator.lock().unwrap();
+            *last = locator_with_heights;
+        }
 
         let peer_height = self
             .peer_manager
@@ -185,56 +493,27 @@ impl SyncManager {
             our_height, start_height, peer_id, peer_height
         );
 
-        // Always request headers regardless of the peer's reported height from the VERSION
-        // handshake — that value is stale within seconds of connection. Skipping based on
-        // height alone prevents fork detection when both nodes are at similar heights.
-        // Instead, skip only when a headers download is already in flight.
         {
-            let state = self.sync_state.lock().unwrap();
-            if matches!(*state, SyncState::DownloadingHeaders { .. }) {
-                println!("SyncManager: Already downloading headers, skipping duplicate sync.");
-                return Ok(());
-            }
+            let mut state = self.sync_state.lock().unwrap();
+            *state = SyncState::DownloadingHeaders {
+                peer_id,
+                best_header_height: start_height,
+                best_header_hash: start_hash,
+                fork_start_height: None,
+            };
         }
 
-        let chain = self.chain.read().unwrap();
-        let locator_with_heights = chain.get_block_locator_with_heights();
-        let locator: Vec<[u8; 32]> = locator_with_heights.iter().map(|(h, _)| *h).collect();
-        drop(chain);
-
-        {
-            let mut last = self.last_locator.lock().unwrap();
-            *last = locator_with_heights;
-        }
-
-        println!("SyncManager: Requesting headers from peer {}", peer_id);
-
-        // Update state to DownloadingHeaders
-        let mut state = self.sync_state.lock().unwrap();
-        *state = SyncState::DownloadingHeaders {
-            peer_id,
-            best_header_height: start_height,
-            best_header_hash: start_hash,
-            fork_start_height: None,
-        };
-        drop(state);
-
-        // Request headers
         let getheaders = GetHeadersMessage {
             version: 70015,
             block_locator: locator,
-            stop_hash: [0u8; 32], // Get all headers
+            stop_hash: [0u8; 32],
         };
 
         let magic = self.peer_manager.magic();
         let msg = NetworkMessage::new(magic, "getheaders", getheaders.encode());
-
         self.peer_manager.send_to_peer(peer_id, &msg)?;
 
-        // Announce our local chain tip so the peer can request our headers if we have
-        // more cumulative work.  This ensures both sides discover the heavier chain and
-        // let add_block's cumulative-work comparison trigger the reorg — rather than
-        // only the connecting side ever downloading the peer's chain.
+        // Announce our local tip so the peer can discover our chain and request our headers.
         let chain = self.chain.read().unwrap();
         let local_tip_hash = chain
             .get_tip()
@@ -256,7 +535,6 @@ impl SyncManager {
     }
 
     pub fn request_headers_force(&self, peer_id: u64) -> Result<(), String> {
-        // Similar to start_sync but force request
         self.start_sync(peer_id)
     }
 
@@ -269,20 +547,18 @@ impl SyncManager {
         );
 
         if headers_msg.headers.is_empty() {
-            // Check if we need to download blocks (Headers are synced, but blocks might not be)
-            let local_height = self.get_local_height();
-            let state = self.sync_state.lock().unwrap();
-
-            // Get best header height from state or DB
-            let (best_height_opt, empty_fork_start) = match *state {
-                SyncState::DownloadingHeaders {
-                    best_header_height,
-                    fork_start_height,
-                    ..
-                } => (Some(best_header_height), fork_start_height),
-                _ => (None, None),
+            // No new headers — transition to block download if we have peer headers to fetch.
+            let (best_height_opt, sync_peer_id) = {
+                let state = self.sync_state.lock().unwrap();
+                match *state {
+                    SyncState::DownloadingHeaders {
+                        best_header_height,
+                        peer_id: spid,
+                        ..
+                    } => (Some(best_header_height), spid),
+                    _ => (None, peer_id),
+                }
             };
-            drop(state);
 
             let best_height = if let Some(h) = best_height_opt {
                 h
@@ -296,38 +572,28 @@ impl SyncManager {
                     .unwrap_or(0)
             };
 
+            let local_height = self.get_local_height();
             if local_height < best_height {
-                // We have headers but need blocks.  Use the fork start as the download
-                // cursor so we fetch from the actual divergence point, not canonical tip+1.
-                let first_missing = empty_fork_start.unwrap_or(local_height + 1);
-                let mut state = self.sync_state.lock().unwrap();
-                *state = SyncState::DownloadingBlocks {
-                    next_expected_height: first_missing,
-                };
-                drop(state);
-
-                // Fetch next batch of headers from DB to request blocks
-                let chain = self.chain.read().unwrap();
-                let mut headers = Vec::new();
-                // Limit to 500 blocks per batch
-                let end_height = std::cmp::min(first_missing + 499, best_height);
-                for h in first_missing..=end_height {
-                    if let Some(header) = chain.get_header_at_height(h as u64) {
-                        headers.push(header);
-                    } else {
-                        break;
-                    }
-                }
-                drop(chain);
-
-                if !headers.is_empty() {
+                let peer_map_len = self.peer_header_map.lock().unwrap().len();
+                if peer_map_len > 0 {
+                    // Use peer_header_map (built from received headers) to find first missing.
+                    let first_missing = self.find_first_missing(best_height);
                     println!(
-                        "SyncManager: Headers synced, downloading {} blocks from height {}",
-                        headers.len(),
-                        local_height + 1
+                        "SyncManager: empty-headers path: first_missing={} total_height={}",
+                        first_missing, best_height
                     );
-                    self.request_blocks_from_headers(peer_id, &headers)?;
-                    return Ok(());
+                    {
+                        let mut state = self.sync_state.lock().unwrap();
+                        *state = SyncState::DownloadingBlocks {
+                            peer_id: sync_peer_id,
+                            next_apply_height: first_missing,
+                            total_height: best_height,
+                        };
+                    }
+                    if first_missing <= best_height {
+                        self.ensure_in_flight_window(sync_peer_id, first_missing, best_height);
+                        return Ok(());
+                    }
                 }
             }
 
@@ -338,7 +604,6 @@ impl SyncManager {
 
         let state = self.sync_state.lock().unwrap();
 
-        // Extract current best header info from state if we are in DownloadingHeaders
         let (mut current_best_height, mut current_best_hash, mut fork_start_height) = match *state {
             SyncState::DownloadingHeaders {
                 best_header_height,
@@ -347,10 +612,6 @@ impl SyncManager {
                 ..
             } => (best_header_height, best_header_hash, fork_start_height),
             _ => {
-                // If not in DownloadingHeaders, maybe we are Idle or Synced and received unsolicited headers?
-                // Or legacy state?
-                // For Phase 1, we assume we initiated it via start_sync.
-                // We'll load from DB as fallback.
                 let chain = self.chain.read().unwrap();
                 let tip = chain.get_tip().unwrap_or(None);
                 if let Some(t) = tip {
@@ -360,31 +621,20 @@ impl SyncManager {
                 }
             }
         };
-        drop(state); // Drop lock during validation loop to avoid long hold? No, we need chain lock.
+        drop(state);
 
         let chain = self.chain.read().unwrap();
         let mut header_map = self.header_height_map.lock().unwrap();
 
-        // Sliding window of up to 11 recent headers used for MTP timestamp validation.
-        // Seeded from DB on the first header of the batch; updated in O(1) per iteration
-        // thereafter — eliminates 11 DB reads per header (≈22 000 reads/batch).
         let mut ts_window: VecDeque<crate::consensus::block::BlockHeader> =
             VecDeque::with_capacity(12);
-
-        // Cached prev_header from the previous iteration (idx > 0 sequential path).
-        // Avoids one DB round-trip per header once the chain is connected.
         let mut cached_prev: Option<(crate::consensus::block::BlockHeader, u32)> = None;
-
-        // Accumulate validated headers for a single-batch DB write at the end of the loop.
-        // This collapses 2 000 individual WriteBatch+fsync calls into one, eliminating the
-        // dominant I/O cost on slow-disk nodes (~240 ms/write → minutes per batch).
         let mut headers_to_store: Vec<(crate::consensus::block::BlockHeader, u64)> =
             Vec::with_capacity(headers_msg.headers.len());
 
         for (idx, header) in headers_msg.headers.iter().enumerate() {
             let prev_hash = header.prev_block_hash;
 
-            // 1. Determine prev_header and prev_height
             let (prev_header, prev_height) = if idx == 0 {
                 println!(
                     "[HEADERS] Trying prev_hash match: best_header_hash={}",
@@ -406,21 +656,12 @@ impl SyncManager {
                         ));
                     }
                 } else {
-                    // prev_hash doesn't match our current best header.  Directly look up
-                    // prev_hash in the DB — this handles divergent chains where the peer
-                    // sends headers anchored at a common ancestor behind our tip.
                     println!(
                         "[HEADERS] best_header_hash mismatch, looking up prev_hash {} in DB",
                         hex::encode(prev_hash)
                     );
                     match chain.block_store.get_header(&prev_hash) {
                         Ok(Some(prev_header_obj)) => {
-                            // get_height_for_hash only covers in-memory (add_block) blocks.
-                            // For headers-only entries (stored via store_header_at_height
-                            // during a previous partial sync), fall back to:
-                            //   1. our saved locator — the common ancestor is always one of
-                            //      our locator hashes, stored with its height; or
-                            //   2. block_meta — populated for fully-downloaded side-chain blocks.
                             let h = chain
                                 .get_height_for_hash(&prev_hash)
                                 .or_else(|| {
@@ -431,12 +672,13 @@ impl SyncManager {
                                         .map(|(_, h)| *h)
                                 })
                                 .or_else(|| {
-                                    chain
-                                        .block_store
-                                        .get_block_meta(&prev_hash)
-                                        .ok()
-                                        .flatten()
-                                        .map(|m| m.height)
+                                    // Check peer_header_map (heights we've already received).
+                                    self.peer_header_map
+                                        .lock()
+                                        .unwrap()
+                                        .iter()
+                                        .find(|(_, &ph)| ph == prev_hash)
+                                        .map(|(&height, _)| height as u64)
                                 })
                                 .ok_or_else(|| {
                                     format!(
@@ -444,12 +686,6 @@ impl SyncManager {
                                         hex::encode(prev_hash)
                                     )
                                 })?;
-                            // Accept the header as the anchor for this batch.  The header
-                            // is already in our DB (it passed PoW validation when stored),
-                            // and each subsequent header in the batch is validated below.
-                            // add_block handles the cumulative-work comparison and reorg
-                            // when the downloaded blocks are applied — no need to enforce
-                            // canonical-chain membership here.
                             (prev_header_obj, h as u32)
                         }
                         Ok(None) => {
@@ -465,43 +701,35 @@ impl SyncManager {
                     }
                 }
             } else if prev_hash == current_best_hash {
-                // Subsequent headers should match previous best (which we updated).
-                // Use the in-memory cache to avoid a DB round-trip.
                 if let Some(cached) = cached_prev {
                     cached
+                } else if let Some(h) = chain
+                    .block_store
+                    .get_header(&prev_hash)
+                    .map_err(|e| e.to_string())?
+                {
+                    (h, current_best_height)
                 } else {
-                    // Fallback to DB on the rare first-iteration mismatch path.
-                    if let Some(h) = chain
-                        .block_store
-                        .get_header(&prev_hash)
-                        .map_err(|e| e.to_string())?
-                    {
-                        (h, current_best_height)
-                    } else {
-                        return Err(format!(
-                            "Best header not found in DB: {}",
-                            hex::encode(prev_hash)
-                        ));
-                    }
+                    return Err(format!(
+                        "Best header not found in DB: {}",
+                        hex::encode(prev_hash)
+                    ));
                 }
+            } else if let Some(&h) = header_map.get(&prev_hash) {
+                let header_obj = chain
+                    .block_store
+                    .get_header(&prev_hash)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("Header in map but not DB")?;
+                (header_obj, h)
+            } else if let Some(h) = chain.get_height_for_hash(&prev_hash) {
+                let block = chain.get_block(&prev_hash).ok_or("Prev block not found")?;
+                (block.header, h as u32)
             } else {
-                // Check map (should be rare if sequential)
-                if let Some(&h) = header_map.get(&prev_hash) {
-                    let header_obj = chain
-                        .block_store
-                        .get_header(&prev_hash)
-                        .map_err(|e| e.to_string())?
-                        .ok_or("Header in map but not DB")?;
-                    (header_obj, h)
-                } else if let Some(h) = chain.get_height_for_hash(&prev_hash) {
-                    let block = chain.get_block(&prev_hash).ok_or("Prev block not found")?;
-                    (block.header, h as u32)
-                } else {
-                    return Err(format!("Prev header not found: {}", hex::encode(prev_hash)));
-                }
+                return Err(format!("Prev header not found: {}", hex::encode(prev_hash)));
             };
 
-            // 2. PoW Check
+            // PoW check
             if !header
                 .check_proof_of_work()
                 .map_err(|_| "PoW check error")?
@@ -512,14 +740,11 @@ impl SyncManager {
                 ));
             }
 
-            // 3. Difficulty Check
+            // Difficulty check
             validate_difficulty(Some(&prev_header), header, &chain.params)
                 .map_err(|e| format!("Difficulty error: {:?}", e))?;
 
-            // 4. Timestamp check (MTP + future-time guard).
-            // Seed the sliding window from DB on the very first header of the batch
-            // (≤11 reads, done once).  Subsequent headers are validated in O(1) using
-            // the in-memory window, avoiding ≈11 DB reads per header.
+            // Timestamp check (MTP + future-time guard).
             {
                 if ts_window.is_empty() {
                     ts_window.push_back(prev_header);
@@ -542,22 +767,16 @@ impl SyncManager {
                     .map_err(|e| format!("Timestamp error: {:?}", e))?;
             }
 
-            // 6. Collect for batch write (committed once after the loop).
             headers_to_store.push((*header, (prev_height + 1) as u64));
 
-            // 7. Update tracking
             let new_height = prev_height + 1;
             let new_hash = header.hash();
 
             header_map.insert(new_hash, new_height);
 
-            // Detect the fork start: the first height where the peer's header hash
-            // differs from OUR canonical block at that same height.
-            //
-            // IMPORTANT: use block_store.get_block_by_height (CF_BLOCK_INDEX, updated
-            // only by add_block), NOT get_header_at_height (CF_HEADERS, which may have
-            // been overwritten by a previous peer header sync).  Using CF_HEADERS would
-            // compare peer-vs-peer and never detect the fork.
+            // Fork detection: first height where peer's hash differs from our canonical block.
+            // Use block_store.get_block_by_height (CF_BLOCK_INDEX, written only by add_block)
+            // NOT get_header_at_height (CF_HEADERS, overwritten by store_headers_batch).
             if fork_start_height.is_none() {
                 let canonical_height = chain.get_height() as u32;
                 if new_height <= canonical_height {
@@ -568,36 +787,29 @@ impl SyncManager {
                             }
                         }
                         _ => {
-                            // Canonical block missing at this height — treat as fork start.
                             fork_start_height = Some(new_height);
                         }
                     }
                 }
             }
 
-            // Update best if we extended the chain
-            // Note: We are following the peer's chain.
-            // In DownloadingHeaders, we track *this peer's* best header.
             current_best_height = new_height;
             current_best_hash = new_hash;
 
-            // Slide the window forward: new header becomes the most-recent entry.
             ts_window.push_front(*header);
             if ts_window.len() > 11 {
                 ts_window.pop_back();
             }
-
-            // Cache this header so the next iteration can use it without a DB read.
             cached_prev = Some((*header, new_height));
         }
 
-        // Batch write all validated headers in one atomic commit (no WAL).
+        // Batch write all validated headers.
         chain
             .block_store
             .store_headers_batch(&headers_to_store)
             .map_err(|e| e.to_string())?;
 
-        // Persist best header
+        // Persist best header.
         chain
             .state_store
             .store_best_header(current_best_height, &current_best_hash)?;
@@ -605,130 +817,70 @@ impl SyncManager {
         drop(header_map);
         drop(chain);
 
-        // Update state
-        let mut state = self.sync_state.lock().unwrap();
-        *state = SyncState::DownloadingHeaders {
-            peer_id,
-            best_header_height: current_best_height,
-            best_header_hash: current_best_hash,
-            fork_start_height,
-        };
+        // Populate peer_header_map and peer_hash_to_height from this batch.
+        // This is the authoritative source for fork-chain heights — never use local DB indexes.
+        {
+            let mut peer_map = self.peer_header_map.lock().unwrap();
+            let mut hash_map = self.peer_hash_to_height.lock().unwrap();
+            for (header, height) in &headers_to_store {
+                let hash = header.hash();
+                peer_map.insert(*height as u32, hash);
+                hash_map.insert(hash, *height as u32);
+            }
+        }
 
-        // Check batch size
+        // Update state with latest header tip.
+        {
+            let mut state = self.sync_state.lock().unwrap();
+            *state = SyncState::DownloadingHeaders {
+                peer_id,
+                best_header_height: current_best_height,
+                best_header_hash: current_best_hash,
+                fork_start_height,
+            };
+        }
+
         if headers_msg.headers.len() >= 2000 {
-            // Continue downloading
-            drop(state); // Release lock
-
-            // Send next getheaders
-            let chain = self.chain.read().unwrap();
-            let locator = vec![current_best_hash]; // Use new best hash as locator
-            drop(chain);
-
+            // More headers to fetch — continue header sync.
             let getheaders = GetHeadersMessage {
                 version: 70015,
-                block_locator: locator,
+                block_locator: vec![current_best_hash],
                 stop_hash: [0u8; 32],
             };
             let magic = self.peer_manager.magic();
             let msg = NetworkMessage::new(magic, "getheaders", getheaders.encode());
             self.peer_manager.send_to_peer(peer_id, &msg)?;
         } else {
-            // Headers complete — use fork_start_height as the download cursor so that
-            // fork-chain blocks are fetched from the actual divergence point.  Without
-            // this, first_missing = canonical_tip + 1 which is past the fork: block at
-            // that height has a parent that doesn't exist in the peer's DB → OrphanBlock.
-            let first_missing = fork_start_height.unwrap_or_else(|| self.get_local_height() + 1);
+            // Headers complete — determine the first block we actually need to download.
+            // Use hash-existence check against peer_header_map (peer's heights), never
+            // local height indexes (those reflect our canonical chain, not the fork).
+            let first_missing = self.find_first_missing(current_best_height);
             println!(
-                "SyncManager: fork_start_height={:?} first_missing={} current_best_height={}",
-                fork_start_height, first_missing, current_best_height
+                "SyncManager: headers done: first_missing={} total_height={} fork_start={:?}",
+                first_missing, current_best_height, fork_start_height
             );
 
-            *state = SyncState::DownloadingBlocks {
-                next_expected_height: first_missing,
-            };
-            drop(state);
-
-            // Read headers stored in CF_HEADERS (which now hold the peer's fork chain)
-            // starting at first_missing so we request the correct blocks.
-            let chain = self.chain.read().unwrap();
-            let mut headers_to_dl: Vec<crate::consensus::block::BlockHeader> = Vec::new();
-            let end_height = std::cmp::min(first_missing + 499, current_best_height);
-            for h in first_missing..=end_height {
-                if let Some(hdr) = chain.get_header_at_height(h as u64) {
-                    headers_to_dl.push(hdr);
-                } else {
-                    break;
-                }
+            {
+                let mut state = self.sync_state.lock().unwrap();
+                *state = SyncState::DownloadingBlocks {
+                    peer_id,
+                    next_apply_height: first_missing,
+                    total_height: current_best_height,
+                };
             }
-            drop(chain);
 
-            if !headers_to_dl.is_empty() {
-                self.request_blocks_from_headers(peer_id, &headers_to_dl)?;
+            if first_missing <= current_best_height {
+                self.ensure_in_flight_window(peer_id, first_missing, current_best_height);
             } else {
-                self.request_blocks_from_headers(peer_id, &headers_msg.headers)?;
+                let mut state = self.sync_state.lock().unwrap();
+                *state = SyncState::Synced;
             }
         }
 
         Ok(())
     }
 
-    // Legacy block downloader (adapted to work with new flow)
-    fn request_blocks_from_headers(
-        &self,
-        peer_id: u64,
-        headers: &[crate::consensus::block::BlockHeader],
-    ) -> Result<(), String> {
-        let chain = self.chain.read().unwrap();
-        let mut pending = Vec::new();
-
-        for header in headers {
-            let hash = header.hash();
-            if chain.get_block(&hash).is_none() {
-                pending.push(hash);
-            }
-            if pending.len() >= 500 {
-                break;
-            }
-        }
-        drop(chain);
-
-        if !pending.is_empty() {
-            // Send GetData
-            let inv_vecs: Vec<InvVector> = pending
-                .iter()
-                .map(|hash| InvVector {
-                    inv_type: INV_BLOCK,
-                    hash: *hash,
-                })
-                .collect();
-
-            let getdata = GetDataMessage {
-                inventory: inv_vecs,
-            };
-
-            let magic = self.peer_manager.magic();
-            let msg = NetworkMessage::new(magic, "getdata", getdata.encode());
-            self.peer_manager.send_to_peer(peer_id, &msg)?;
-            println!(
-                "SyncManager: Sent getdata for {} blocks to peer {}",
-                pending.len(),
-                peer_id
-            );
-
-            // We are already in DownloadingBlocks state or transitioning to it.
-            // We don't update state here as we rely on block_received to track progress.
-        } else {
-            // If no blocks needed from this batch, maybe we are synced?
-            // Or maybe we need to check next batch?
-            // For now, assume Synced if no pending.
-            let mut state = self.sync_state.lock().unwrap();
-            *state = SyncState::Synced;
-        }
-
-        Ok(())
-    }
-
-    // Handle getheaders request (Unchanged logic, just ensure it works)
+    // Handle getheaders request — serve our canonical chain headers to the peer.
     pub fn handle_getheaders(&self, peer_id: u64, msg: &GetHeadersMessage) -> Result<(), String> {
         println!(
             "handle_getheaders called from peer {}, sending headers...",
