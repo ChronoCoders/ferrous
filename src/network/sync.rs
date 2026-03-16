@@ -997,18 +997,14 @@ impl SyncManager {
         let chain = self.chain.read().unwrap();
 
         // Find common ancestor from locator.
-        // Try in-memory first (fast path for tip-adjacent blocks), then fall back to
-        // CF_BLOCK_META + CF_BLOCK_INDEX for historical blocks that are not cached.
+        // Use only self.blocks (the in-memory canonical chain index) for height lookup.
+        // get_block_meta would return a height for ANY stored block including side-chain
+        // blocks, so using it here would allow a contaminated CF_BLOCK_INDEX entry to
+        // pass the canonical check incorrectly.  self.blocks is authoritative: it is
+        // populated exclusively from the canonical tip walk in recover_from_storage.
         let mut start_height = 0;
         for hash in &msg.block_locator {
-            let height_opt = chain.get_height_for_hash(hash).or_else(|| {
-                chain
-                    .block_store
-                    .get_block_meta(hash)
-                    .ok()
-                    .flatten()
-                    .map(|m| m.height)
-            });
+            let height_opt = chain.get_height_for_hash(hash);
             if let Some(height) = height_opt {
                 if let Ok(Some(canonical)) = chain.block_store.get_hash_by_height(height) {
                     if canonical == *hash {

@@ -240,6 +240,18 @@ impl ChainState {
                     cumulative_work,
                 },
             );
+
+            // Repair CF_BLOCK_INDEX for this canonical height.  An incomplete reorg or
+            // a side-chain store_block call may have left a stale hash here; overwriting
+            // it on every startup guarantees CF_BLOCK_INDEX matches self.blocks exactly.
+            self.block_store
+                .update_height_index(height, &block_hash)
+                .map_err(|e| {
+                    format!(
+                        "Recovery: failed to repair height index at {}: {}",
+                        height, e
+                    )
+                })?;
         }
 
         self.tip = Some(chain_tip.hash);
