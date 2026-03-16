@@ -1,4 +1,4 @@
-use crate::consensus::block::Block;
+use crate::consensus::block::{Block, U256};
 use crate::consensus::chain::ChainState;
 use crate::consensus::difficulty::validate_difficulty;
 use crate::consensus::validation::validate_timestamp;
@@ -410,6 +410,44 @@ impl SyncManager {
         self.inflight.lock().unwrap().clear();
     }
 
+    fn compute_cumulative_work_for_tip(&self, tip_hash: [u8; 32]) -> Result<U256, String> {
+        let chain = self.chain.read().unwrap();
+        let mut cursor = tip_hash;
+        let mut works: Vec<U256> = Vec::new();
+
+        loop {
+            if let Some(meta) = chain
+                .block_store
+                .get_block_meta(&cursor)
+                .map_err(|e| e.to_string())?
+            {
+                let mut total = meta.cumulative_work;
+                for w in works.iter().rev() {
+                    total = total + *w;
+                }
+                return Ok(total);
+            }
+
+            let header = chain
+                .block_store
+                .get_header(&cursor)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("Missing header {}", hex::encode(cursor)))?;
+
+            works.push(header.work());
+
+            if header.prev_block_hash == [0u8; 32] {
+                let mut total = U256::from(0u64);
+                for w in works.iter().rev() {
+                    total = total + *w;
+                }
+                return Ok(total);
+            }
+
+            cursor = header.prev_block_hash;
+        }
+    }
+
     // Legacy notification — kept for API compatibility; no longer drives block downloads.
     pub fn block_received(&self, _hash: [u8; 32]) {}
 
@@ -545,37 +583,58 @@ impl SyncManager {
         );
 
         if headers_msg.headers.is_empty() {
-            // No new headers — transition to block download if we have peer headers to fetch.
-            let (best_height_opt, sync_peer_id) = {
+            let (best_height_opt, best_hash_opt, fork_start_height_opt, sync_peer_id) = {
                 let state = self.sync_state.lock().unwrap();
                 match *state {
                     SyncState::DownloadingHeaders {
                         best_header_height,
+                        best_header_hash,
+                        fork_start_height,
                         peer_id: spid,
                         ..
-                    } => (Some(best_header_height), spid),
-                    _ => (None, peer_id),
+                    } => (
+                        Some(best_header_height),
+                        Some(best_header_hash),
+                        fork_start_height,
+                        spid,
+                    ),
+                    _ => (None, None, None, peer_id),
                 }
             };
 
-            let best_height = if let Some(h) = best_height_opt {
-                h
-            } else {
-                let chain = self.chain.read().unwrap();
-                chain
-                    .state_store
-                    .load_best_header()
-                    .unwrap_or(None)
-                    .map(|(h, _)| h)
-                    .unwrap_or(0)
-            };
+            let (best_height, best_hash) =
+                if let (Some(h), Some(hash)) = (best_height_opt, best_hash_opt) {
+                    (h, hash)
+                } else {
+                    let chain = self.chain.read().unwrap();
+                    chain
+                        .state_store
+                        .load_best_header()
+                        .unwrap_or(None)
+                        .unwrap_or((0, [0u8; 32]))
+                };
 
             let local_height = self.get_local_height();
-            if local_height < best_height {
-                let peer_map_len = self.peer_header_map.lock().unwrap().len();
-                if peer_map_len > 0 {
-                    // Use peer_header_map (built from received headers) to find first missing.
-                    let first_missing = self.find_first_missing(best_height);
+            let peer_map_len = self.peer_header_map.lock().unwrap().len();
+            if peer_map_len > 0 {
+                let chain = self.chain.read().unwrap();
+                let local_work = chain
+                    .state_store
+                    .get_tip()
+                    .ok()
+                    .flatten()
+                    .map(|t| t.cumulative_work)
+                    .unwrap_or(U256::from(0u64));
+                drop(chain);
+
+                let peer_work = if best_hash != [0u8; 32] {
+                    self.compute_cumulative_work_for_tip(best_hash).ok()
+                } else {
+                    None
+                };
+
+                let first_missing = self.find_first_missing(best_height);
+                if first_missing <= best_height {
                     let mut start = first_missing;
                     while start > 0 {
                         let parent_height = start - 1;
@@ -594,9 +653,6 @@ impl SyncManager {
                                 }
                             }
                         } else {
-                            // Use CF_BLOCK_INDEX (canonical chain) to get the parent hash.
-                            // CF_HEADERS can be stale from prior sync sessions and must not
-                            // be used here — a wrong hash would cause prev_hash mismatches.
                             let chain = self.chain.read().unwrap();
                             match chain.block_store.get_hash_by_height(parent_height as u64) {
                                 Ok(Some(hash)) => {
@@ -621,19 +677,36 @@ impl SyncManager {
                             }
                         }
                     }
+
+                    let should_download = if local_height < best_height {
+                        true
+                    } else if let Some(pw) = peer_work {
+                        pw > local_work || (pw == local_work && fork_start_height_opt.is_some())
+                    } else {
+                        fork_start_height_opt.is_some()
+                    };
+
                     println!(
-                        "SyncManager: empty-headers path: first_missing={} start={} total_height={}",
-                        first_missing, start, best_height
+                        "SyncManager: empty-headers decision: local_height={} best_height={} first_missing={} start={} peer_work={:?} local_work={:?} fork_start={:?} download={}",
+                        local_height,
+                        best_height,
+                        first_missing,
+                        start,
+                        peer_work.map(|w| w.0),
+                        local_work.0,
+                        fork_start_height_opt,
+                        should_download
                     );
-                    {
+
+                    if should_download && start <= best_height {
                         let mut state = self.sync_state.lock().unwrap();
                         *state = SyncState::DownloadingBlocks {
                             peer_id: sync_peer_id,
                             next_apply_height: start,
                             total_height: best_height,
                         };
-                    }
-                    if start <= best_height {
+                        drop(state);
+
                         self.ensure_in_flight_window(sync_peer_id, start, best_height);
                         return Ok(());
                     }
@@ -970,16 +1043,49 @@ impl SyncManager {
                 first_missing, start, current_best_height, fork_start_height
             );
 
-            {
+            let local_height = self.get_local_height();
+            let chain = self.chain.read().unwrap();
+            let local_work = chain
+                .state_store
+                .get_tip()
+                .ok()
+                .flatten()
+                .map(|t| t.cumulative_work)
+                .unwrap_or(U256::from(0u64));
+            drop(chain);
+
+            let peer_work = self.compute_cumulative_work_for_tip(current_best_hash).ok();
+
+            let should_download = if start > current_best_height {
+                false
+            } else if local_height < current_best_height {
+                true
+            } else if let Some(pw) = peer_work {
+                pw > local_work || (pw == local_work && fork_start_height.is_some())
+            } else {
+                fork_start_height.is_some()
+            };
+
+            println!(
+                "SyncManager: headers done decision: local_height={} best_height={} start={} peer_work={:?} local_work={:?} fork_start={:?} download={}",
+                local_height,
+                current_best_height,
+                start,
+                peer_work.map(|w| w.0),
+                local_work.0,
+                fork_start_height,
+                should_download
+            );
+
+            if should_download {
                 let mut state = self.sync_state.lock().unwrap();
                 *state = SyncState::DownloadingBlocks {
                     peer_id,
                     next_apply_height: start,
                     total_height: current_best_height,
                 };
-            }
+                drop(state);
 
-            if start <= current_best_height {
                 self.ensure_in_flight_window(peer_id, start, current_best_height);
             } else {
                 let mut state = self.sync_state.lock().unwrap();
