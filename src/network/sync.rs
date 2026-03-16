@@ -707,30 +707,34 @@ impl SyncManager {
                     );
                     match chain.block_store.get_header(&prev_hash) {
                         Ok(Some(prev_header_obj)) => {
-                            let h = chain
-                                .get_height_for_hash(&prev_hash)
-                                .or_else(|| {
-                                    let last_locator = self.last_locator.lock().unwrap();
-                                    last_locator
-                                        .iter()
-                                        .find(|(lh, _)| lh == &prev_hash)
-                                        .map(|(_, h)| *h)
-                                })
-                                .or_else(|| {
-                                    // Check peer_header_map (heights we've already received).
-                                    self.peer_header_map
-                                        .lock()
-                                        .unwrap()
-                                        .iter()
-                                        .find(|(_, &ph)| ph == prev_hash)
-                                        .map(|(&height, _)| height as u64)
-                                })
-                                .ok_or_else(|| {
-                                    format!(
-                                        "prev_hash {} in DB but no height mapping",
-                                        hex::encode(prev_hash)
-                                    )
-                                })?;
+                            let h_mem = chain.get_height_for_hash(&prev_hash);
+                            let h_loc = h_mem.or_else(|| {
+                                let last_locator = self.last_locator.lock().unwrap();
+                                last_locator
+                                    .iter()
+                                    .find(|(lh, _)| lh == &prev_hash)
+                                    .map(|(_, h)| *h)
+                            });
+                            let h_map = h_loc.or_else(|| {
+                                // Check peer_header_map (heights we've already received).
+                                self.peer_header_map
+                                    .lock()
+                                    .unwrap()
+                                    .iter()
+                                    .find(|(_, &ph)| ph == prev_hash)
+                                    .map(|(&height, _)| height as u64)
+                            });
+                            println!(
+                                "[HEADERS] prev_hash height: mem={:?} loc={:?} map={:?} locator_len={}",
+                                h_mem, h_loc, h_map,
+                                self.last_locator.lock().unwrap().len()
+                            );
+                            let h = h_map.ok_or_else(|| {
+                                format!(
+                                    "prev_hash {} in DB but no height mapping",
+                                    hex::encode(prev_hash)
+                                )
+                            })?;
                             (prev_header_obj, h as u32)
                         }
                         Ok(None) => {
@@ -1003,17 +1007,23 @@ impl SyncManager {
         // pass the canonical check incorrectly.  self.blocks is authoritative: it is
         // populated exclusively from the canonical tip walk in recover_from_storage.
         let mut start_height = 0;
+        let mut matched_at: Option<u64> = None;
         for hash in &msg.block_locator {
             let height_opt = chain.get_height_for_hash(hash);
             if let Some(height) = height_opt {
                 if let Ok(Some(canonical)) = chain.block_store.get_hash_by_height(height) {
                     if canonical == *hash {
                         start_height = height + 1;
+                        matched_at = Some(height);
                         break;
                     }
                 }
             }
         }
+        println!(
+            "handle_getheaders: matched at height {:?}, sending from {}",
+            matched_at, start_height
+        );
 
         let mut headers = Vec::new();
         let mut height = start_height;
