@@ -36,11 +36,23 @@ struct NodeStats {
     difficulty: f64,
     hash_rate: f64,
     peer_count: Option<u32>,
+    connections: Option<u32>,
+    connections_in: Option<u32>,
+    connections_out: Option<u32>,
+    send_rate_mbps: Option<f64>,
+    recv_rate_mbps: Option<f64>,
+    uptime_secs: Option<u64>,
+    partition_detected: Option<bool>,
+    recovery_attempts: Option<u32>,
+    last_block_age_secs: Option<u64>,
+    rpc_rtt_ms: Option<u64>,
     recent_blocks: Vec<RecentBlock>,
     reachable: bool,
     last_updated: Instant,
     mining_error: Option<String>,
     blocks_error: Option<String>,
+    network_error: Option<String>,
+    recovery_error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -143,7 +155,7 @@ fn render(f: &mut Frame, seed1: &NodeStats, seed4: &NodeStats, last_updated_at: 
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(10),
-            Constraint::Length(5),
+            Constraint::Length(8),
             Constraint::Length(1),
         ])
         .split(f.size());
@@ -240,6 +252,18 @@ fn render_node_panel(f: &mut Frame, area: Rect, node: &NodeStats) {
                 Style::default().fg(Color::Yellow),
             )));
         }
+        if let Some(err) = &node.network_error {
+            lines.push(Line::from(Span::styled(
+                err.as_str(),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+        if let Some(err) = &node.recovery_error {
+            lines.push(Line::from(Span::styled(
+                err.as_str(),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
         lines.push(Line::from(format!(
             "Chain: {}  Blocks: {}",
             node.chain, node.blocks
@@ -283,6 +307,10 @@ fn render_node_panel(f: &mut Frame, area: Rect, node: &NodeStats) {
 
 fn render_summary_row(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &NodeStats) {
     let height_diff = seed1.blocks.abs_diff(seed4.blocks);
+    let tip_match = seed1.reachable
+        && seed4.reachable
+        && !seed1.best_hash.is_empty()
+        && seed1.best_hash == seed4.best_hash;
 
     let combined_peers = match (seed1.peer_count, seed4.peer_count) {
         (Some(a), Some(b)) => Some(a.saturating_add(b)),
@@ -296,16 +324,106 @@ fn render_summary_row(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &Node
         None => "N/A".to_string(),
     };
 
+    let tip_status = if tip_match { "MATCH" } else { "FORK" };
+    let tip_style = if tip_match {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    };
+
+    let last_block_seed1 = seed1
+        .last_block_age_secs
+        .or_else(|| seed1.recent_blocks.first().map(|b| b.time_ago_secs));
+    let last_block_seed4 = seed4
+        .last_block_age_secs
+        .or_else(|| seed4.recent_blocks.first().map(|b| b.time_ago_secs));
+
+    let last_block_line = format!(
+        "Last block age (s): seed1={}  seed4={}",
+        last_block_seed1
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "N/A".to_string()),
+        last_block_seed4
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+
+    let rec_seed1 = match seed1.partition_detected {
+        Some(true) => format!(
+            "seed1=PARTITION attempts={} age={}",
+            seed1.recovery_attempts.unwrap_or(0),
+            seed1.last_block_age_secs.unwrap_or(0)
+        ),
+        Some(false) => format!(
+            "seed1=OK attempts={} age={}",
+            seed1.recovery_attempts.unwrap_or(0),
+            seed1.last_block_age_secs.unwrap_or(0)
+        ),
+        None => "seed1=N/A".to_string(),
+    };
+    let rec_seed4 = match seed4.partition_detected {
+        Some(true) => format!(
+            "seed4=PARTITION attempts={} age={}",
+            seed4.recovery_attempts.unwrap_or(0),
+            seed4.last_block_age_secs.unwrap_or(0)
+        ),
+        Some(false) => format!(
+            "seed4=OK attempts={} age={}",
+            seed4.recovery_attempts.unwrap_or(0),
+            seed4.last_block_age_secs.unwrap_or(0)
+        ),
+        None => "seed4=N/A".to_string(),
+    };
+
+    let net_seed1 = match seed1.connections {
+        Some(c) => format!("seed1 conn={}", c),
+        None => "seed1 conn=N/A".to_string(),
+    };
+    let net_seed4 = match seed4.connections {
+        Some(c) => format!("seed4 conn={}", c),
+        None => "seed4 conn=N/A".to_string(),
+    };
+
+    let rtt_seed1 = seed1
+        .rpc_rtt_ms
+        .map(|v| format!("seed1={}ms", v))
+        .unwrap_or_else(|| "seed1=N/A".to_string());
+    let rtt_seed4 = seed4
+        .rpc_rtt_ms
+        .map(|v| format!("seed4={}ms", v))
+        .unwrap_or_else(|| "seed4=N/A".to_string());
+
     let lines = vec![
-        Line::from(Span::styled(
-            "Network Summary",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
+        Line::from(vec![
+            Span::styled(
+                "Network Summary",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Tip: "),
+            Span::styled(tip_status, tip_style),
+        ]),
         Line::from(format!(
             "seed1: {}  |  seed4: {}  |  Difference: {}",
             seed1.blocks, seed4.blocks, height_diff
         )),
-        Line::from(format!("Combined peers: {}", peers_line)),
+        Line::from(format!(
+            "Peers: seed1={} seed4={}  |  Combined: {}",
+            seed1
+                .peer_count
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "N/A".to_string()),
+            seed4
+                .peer_count
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "N/A".to_string()),
+            peers_line
+        )),
+        Line::from(format!("P2P connections: {}  {}", net_seed1, net_seed4)),
+        Line::from(last_block_line),
+        Line::from(format!("Recovery: {}  {}", rec_seed1, rec_seed4)),
+        Line::from(format!("RPC RTT: {}  {}", rtt_seed1, rtt_seed4)),
     ];
 
     let paragraph = Paragraph::new(lines).block(Block::default().borders(Borders::ALL));
@@ -400,6 +518,7 @@ fn poll_node(
     }
 
     // getblockchaininfo
+    let t0 = Instant::now();
     let info = match rpc_call(local_port, "getblockchaininfo", Value::Array(vec![])) {
         Ok(v) => v,
         Err(e) => {
@@ -408,6 +527,7 @@ fn poll_node(
             return (stats, false);
         }
     };
+    stats.rpc_rtt_ms = Some(t0.elapsed().as_millis() as u64);
 
     stats.reachable = true;
     stats.chain = info
@@ -467,6 +587,45 @@ fn poll_node(
                     }
                 }
             }
+        }
+    }
+
+    match rpc_call(local_port, "getnetworkinfo", Value::Array(vec![])) {
+        Ok(v) => {
+            stats.connections = v
+                .get("connections")
+                .and_then(|n| n.as_u64())
+                .map(|n| n as u32);
+            stats.connections_in = v
+                .get("connections_in")
+                .and_then(|n| n.as_u64())
+                .map(|n| n as u32);
+            stats.connections_out = v
+                .get("connections_out")
+                .and_then(|n| n.as_u64())
+                .map(|n| n as u32);
+            stats.send_rate_mbps = v.get("send_rate_mbps").and_then(|n| n.as_f64());
+            stats.recv_rate_mbps = v.get("recv_rate_mbps").and_then(|n| n.as_f64());
+            stats.uptime_secs = v.get("uptime").and_then(|n| n.as_u64());
+            stats.network_error = None;
+        }
+        Err(e) => {
+            stats.network_error = Some(format!("Network: getnetworkinfo unavailable ({})", e));
+        }
+    }
+
+    match rpc_call(local_port, "getrecoverystatus", Value::Array(vec![])) {
+        Ok(v) => {
+            stats.partition_detected = v.get("partition_detected").and_then(|b| b.as_bool());
+            stats.recovery_attempts = v
+                .get("recovery_attempts")
+                .and_then(|n| n.as_u64())
+                .map(|n| n as u32);
+            stats.last_block_age_secs = v.get("last_block_age").and_then(|n| n.as_u64());
+            stats.recovery_error = None;
+        }
+        Err(e) => {
+            stats.recovery_error = Some(format!("Recovery: getrecoverystatus unavailable ({})", e));
         }
     }
 
@@ -633,11 +792,23 @@ fn default_node_stats(name: &str, ip: &str, rpc_port: u16) -> NodeStats {
         difficulty: f64::NAN,
         hash_rate: f64::NAN,
         peer_count: None,
+        connections: None,
+        connections_in: None,
+        connections_out: None,
+        send_rate_mbps: None,
+        recv_rate_mbps: None,
+        uptime_secs: None,
+        partition_detected: None,
+        recovery_attempts: None,
+        last_block_age_secs: None,
+        rpc_rtt_ms: None,
         recent_blocks: Vec::new(),
         reachable: false,
         last_updated: Instant::now(),
         mining_error: None,
         blocks_error: None,
+        network_error: None,
+        recovery_error: None,
     }
 }
 
@@ -650,6 +821,18 @@ fn last_good_snapshot(prev: &NodeStats, delta_secs: u64) -> NodeStats {
     s.difficulty = prev.difficulty;
     s.hash_rate = prev.hash_rate;
     s.peer_count = prev.peer_count;
+    s.connections = prev.connections;
+    s.connections_in = prev.connections_in;
+    s.connections_out = prev.connections_out;
+    s.send_rate_mbps = prev.send_rate_mbps;
+    s.recv_rate_mbps = prev.recv_rate_mbps;
+    s.uptime_secs = prev.uptime_secs;
+    s.partition_detected = prev.partition_detected;
+    s.recovery_attempts = prev.recovery_attempts;
+    s.last_block_age_secs = prev
+        .last_block_age_secs
+        .map(|a| a.saturating_add(delta_secs));
+    s.rpc_rtt_ms = prev.rpc_rtt_ms;
     s.reachable = prev.reachable;
     s.last_updated = prev.last_updated;
     s.recent_blocks = prev
