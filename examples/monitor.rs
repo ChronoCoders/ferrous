@@ -310,7 +310,7 @@ fn render_summary_row(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &Node
     let tip_match = seed1.reachable
         && seed4.reachable
         && !seed1.best_hash.is_empty()
-        && seed1.best_hash == seed4.best_hash;
+        && (seed1.blocks != seed4.blocks || seed1.best_hash == seed4.best_hash);
 
     let combined_peers = match (seed1.peer_count, seed4.peer_count) {
         (Some(a), Some(b)) => Some(a.saturating_add(b)),
