@@ -10,7 +10,9 @@ use crate::primitives::hash::Hash256;
 use crate::script::engine::{validate_p2pkh, ScriptContext};
 use crate::storage::{BlockStore, ChainStateStore, ChainTip, Database, UtxoStore};
 use log::info;
-use std::collections::{HashMap, HashSet};
+use lru::LruCache;
+use std::collections::HashSet;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -56,8 +58,9 @@ pub struct ChainState {
     pub utxo_store: Arc<UtxoStore>,
     pub state_store: Arc<ChainStateStore>,
 
-    // In-memory index (block hash -> BlockData)
-    blocks: HashMap<Hash256, BlockData>,
+    // In-memory LRU cache (block hash -> BlockData); keeps the most recently
+    // accessed blocks to bound memory usage.  Older blocks are served from RocksDB.
+    blocks: LruCache<Hash256, BlockData>,
 
     // Cached tip (synced with storage)
     tip: Option<Hash256>,
@@ -81,13 +84,14 @@ impl ChainState {
         let utxo_store = Arc::new(UtxoStore::new(Arc::clone(&db)));
         let state_store = Arc::new(ChainStateStore::new(Arc::clone(&db)));
 
+        const BLOCK_CACHE_SIZE: usize = 2048;
         let mut chain = Self {
             params,
             db,
             block_store,
             utxo_store,
             state_store,
-            blocks: HashMap::new(),
+            blocks: LruCache::new(NonZeroUsize::new(BLOCK_CACHE_SIZE).unwrap()),
             tip: None,
         };
 
@@ -131,20 +135,19 @@ impl ChainState {
             hex::encode(chain_tip.hash)
         );
 
-        // Load blocks into memory index
-        // Start from genesis and load all blocks up to tip
-        // This is inefficient for large chains but acceptable for now.
-        // A better approach would be to load headers only or load on demand.
-        // But the prompt says "In-memory index (block hash -> BlockData)"
-        // For 100 blocks it's instant.
+        // Load the most recent BLOCK_CACHE_SIZE blocks into the LRU cache.
+        // Older blocks remain in RocksDB and are fetched on demand.
+        let cache_capacity = self.blocks.cap().get();
 
-        // We need to reconstruct the chain from tip backwards to genesis, then load them.
         let mut current_hash = chain_tip.hash;
         let mut chain_hashes = Vec::new();
 
-        // Loop backwards
+        // Walk backwards from tip, collecting up to cache_capacity hashes.
         loop {
             chain_hashes.push(current_hash);
+            if chain_hashes.len() >= cache_capacity {
+                break;
+            }
             let header = self
                 .block_store
                 .get_header(&current_hash)?
@@ -156,22 +159,17 @@ impl ChainState {
             current_hash = header.prev_block_hash;
         }
 
-        // Timestamp and PoW re-validation is intentionally skipped here.
-        // Every block was validated in full (including validate_timestamp) when it
-        // was first accepted via add_block().  Re-validating on startup would be
-        // expensive and would incorrectly reject historical headers whose timestamps
-        // are now "far in the future" relative to the network-adjusted wall clock.
-        // A --reindex flag could be added in future to force full re-validation.
-
-        // Forward pass: load blocks from genesis toward tip, validating canonical
-        // chain linkage at each step.
+        // Forward pass: load blocks oldest-first into the LRU cache.
+        // Height and cumulative_work come from stored BlockMeta (set at accept time),
+        // so no incremental recomputation is needed.  We still verify hash integrity
+        // and chain linkage within the loaded window.
         //
         // Two invariants are enforced per block:
         //   1. The block's computed hash matches the key recorded during backward
         //      traversal (detects a block stored under the wrong key).
         //   2. The block's prev_block_hash equals the hash of the immediately
         //      preceding block in the canonical sequence (detects any gap or fork
-        //      in the stored chain).
+        //      in the stored chain within the loaded window).
         let mut expected_prev_hash: Option<Hash256> = None;
 
         for hash in chain_hashes.iter().rev() {
@@ -180,8 +178,12 @@ impl ChainState {
                 .get_block(hash)?
                 .ok_or_else(|| format!("Missing block {}", hex::encode(hash)))?;
 
-            let header = block.header;
-            let block_hash = header.hash();
+            let meta = self
+                .block_store
+                .get_block_meta(hash)?
+                .ok_or_else(|| format!("Missing block meta for {}", hex::encode(hash)))?;
+
+            let block_hash = block.header.hash();
 
             // Invariant 1: stored key must match the block's actual hash.
             if block_hash != *hash {
@@ -192,47 +194,25 @@ impl ChainState {
                 ));
             }
 
-            // Invariant 2: chain must be strictly linear.
-            match expected_prev_hash {
-                None => {
-                    // First block processed must be genesis (prev == all-zeros).
-                    if header.prev_block_hash != [0u8; 32] {
-                        return Err(format!(
-                            "Recovery: first block {} is not genesis (prev_hash={})",
-                            hex::encode(block_hash),
-                            hex::encode(header.prev_block_hash)
-                        ));
-                    }
-                }
-                Some(prev) => {
-                    if header.prev_block_hash != prev {
-                        return Err(format!(
-                            "Recovery: chain linkage broken at block {} \
-                             (expected prev={}, got {})",
-                            hex::encode(block_hash),
-                            hex::encode(prev),
-                            hex::encode(header.prev_block_hash)
-                        ));
-                    }
+            // Invariant 2: chain linkage within the loaded window.
+            if let Some(prev) = expected_prev_hash {
+                if block.header.prev_block_hash != prev {
+                    return Err(format!(
+                        "Recovery: chain linkage broken at block {} \
+                         (expected prev={}, got {})",
+                        hex::encode(block_hash),
+                        hex::encode(prev),
+                        hex::encode(block.header.prev_block_hash)
+                    ));
                 }
             }
 
             expected_prev_hash = Some(block_hash);
 
-            let (height, cumulative_work) = if header.prev_block_hash == [0u8; 32] {
-                (0, header.work())
-            } else {
-                let prev_data = self
-                    .blocks
-                    .get(&header.prev_block_hash)
-                    .ok_or("Previous block not loaded during recovery")?;
-                (
-                    prev_data.height + 1,
-                    prev_data.cumulative_work + header.work(),
-                )
-            };
+            let height = meta.height;
+            let cumulative_work = meta.cumulative_work;
 
-            self.blocks.insert(
+            self.blocks.put(
                 block_hash,
                 BlockData {
                     block,
@@ -241,9 +221,7 @@ impl ChainState {
                 },
             );
 
-            // Repair CF_BLOCK_INDEX for this canonical height.  An incomplete reorg or
-            // a side-chain store_block call may have left a stale hash here; overwriting
-            // it on every startup guarantees CF_BLOCK_INDEX matches self.blocks exactly.
+            // Repair CF_BLOCK_INDEX for this canonical height.
             self.block_store
                 .update_height_index(height, &block_hash)
                 .map_err(|e| {
@@ -273,24 +251,54 @@ impl ChainState {
         let mut old_curr = *old_tip;
         let mut new_curr = *new_tip;
 
-        let old_height = self.blocks.get(&old_curr).map(|d| d.height).unwrap_or(0);
-        let new_height = self.blocks.get(&new_curr).map(|d| d.height).unwrap_or(0);
+        // Helper: get block height from cache (peek) or DB.
+        let block_height = |blocks: &LruCache<Hash256, BlockData>,
+                            block_store: &BlockStore,
+                            hash: &Hash256|
+         -> u64 {
+            if let Some(d) = blocks.peek(hash) {
+                return d.height;
+            }
+            block_store
+                .get_block_meta(hash)
+                .ok()
+                .flatten()
+                .map(|m| m.height)
+                .unwrap_or(0)
+        };
 
-        while self.blocks.get(&old_curr).map(|d| d.height).unwrap_or(0) > new_height {
+        // Helper: get prev_block_hash from cache (peek) or DB.
+        let prev_hash_of =
+            |blocks: &LruCache<Hash256, BlockData>,
+             block_store: &BlockStore,
+             hash: &Hash256|
+             -> Option<Hash256> {
+                if let Some(d) = blocks.peek(hash) {
+                    return Some(d.block.header.prev_block_hash);
+                }
+                block_store
+                    .get_header(hash)
+                    .ok()
+                    .flatten()
+                    .map(|h| h.prev_block_hash)
+            };
+
+        let old_height = block_height(&self.blocks, &self.block_store, &old_curr);
+        let new_height = block_height(&self.blocks, &self.block_store, &new_curr);
+
+        while block_height(&self.blocks, &self.block_store, &old_curr) > new_height {
             old_chain.push(old_curr);
-            if let Some(data) = self.blocks.get(&old_curr) {
-                old_curr = data.block.header.prev_block_hash;
-            } else {
-                break;
+            match prev_hash_of(&self.blocks, &self.block_store, &old_curr) {
+                Some(prev) => old_curr = prev,
+                None => break,
             }
         }
 
-        while self.blocks.get(&new_curr).map(|d| d.height).unwrap_or(0) > old_height {
+        while block_height(&self.blocks, &self.block_store, &new_curr) > old_height {
             new_chain.push(new_curr);
-            if let Some(data) = self.blocks.get(&new_curr) {
-                new_curr = data.block.header.prev_block_hash;
-            } else {
-                break;
+            match prev_hash_of(&self.blocks, &self.block_store, &new_curr) {
+                Some(prev) => new_curr = prev,
+                None => break,
             }
         }
 
@@ -304,21 +312,23 @@ impl ChainState {
             }
             old_chain.push(old_curr);
             new_chain.push(new_curr);
-            if let Some(data) = self.blocks.get(&old_curr) {
-                old_curr = data.block.header.prev_block_hash;
-            } else {
-                return Err(ChainError::DbError(format!(
-                    "Reorg failed: block {} not found in memory index",
-                    hex::encode(old_curr)
-                )));
+            match prev_hash_of(&self.blocks, &self.block_store, &old_curr) {
+                Some(prev) => old_curr = prev,
+                None => {
+                    return Err(ChainError::DbError(format!(
+                        "Reorg failed: block {} not found in cache or DB",
+                        hex::encode(old_curr)
+                    )))
+                }
             }
-            if let Some(data) = self.blocks.get(&new_curr) {
-                new_curr = data.block.header.prev_block_hash;
-            } else {
-                return Err(ChainError::DbError(format!(
-                    "Reorg failed: block {} not found in memory index",
-                    hex::encode(new_curr)
-                )));
+            match prev_hash_of(&self.blocks, &self.block_store, &new_curr) {
+                Some(prev) => new_curr = prev,
+                None => {
+                    return Err(ChainError::DbError(format!(
+                        "Reorg failed: block {} not found in cache or DB",
+                        hex::encode(new_curr)
+                    )))
+                }
             }
         }
 
@@ -329,12 +339,14 @@ impl ChainState {
         );
 
         for block_hash in &old_chain {
-            let block = self
-                .blocks
-                .get(block_hash)
-                .ok_or(ChainError::BlockNotFound)?
-                .block
-                .clone();
+            let block = if let Some(d) = self.blocks.peek(block_hash) {
+                d.block.clone()
+            } else {
+                self.block_store
+                    .get_block(block_hash)
+                    .map_err(ChainError::DbError)?
+                    .ok_or(ChainError::BlockNotFound)?
+            };
 
             let mut created_outpoints = Vec::new();
             for tx in &block.transactions {
@@ -368,31 +380,48 @@ impl ChainState {
         }
 
         for hash in new_chain.iter().rev() {
-            if let Some(data) = self.blocks.get(hash) {
-                let block = data.block.clone();
-                let height = data.height;
-                let bh = block.hash();
-                let (created_utxos, spent_utxos, spent_entries, fees) =
-                    self.apply_block_to_utxo(&block, height)?;
+            let (block, height) = if let Some(d) = self.blocks.peek(hash) {
+                (d.block.clone(), d.height)
+            } else {
+                let b = self
+                    .block_store
+                    .get_block(hash)
+                    .map_err(ChainError::DbError)?
+                    .ok_or(ChainError::BlockNotFound)?;
+                let meta = self
+                    .block_store
+                    .get_block_meta(hash)
+                    .map_err(ChainError::DbError)?
+                    .ok_or_else(|| {
+                        ChainError::DbError(format!(
+                            "Missing block meta for {}",
+                            hex::encode(hash)
+                        ))
+                    })?;
+                (b, meta.height)
+            };
 
-                validate_coinbase_reward(&block.transactions[0], fees, height as u32)
-                    .map_err(ChainError::InvalidBlock)?;
+            let bh = block.hash();
+            let (created_utxos, spent_utxos, spent_entries, fees) =
+                self.apply_block_to_utxo(&block, height)?;
 
-                self.utxo_store
-                    .apply_block(&created_utxos, &spent_utxos)
-                    .map_err(ChainError::DbError)?;
-                self.utxo_store
-                    .store_undo_data(&bh, &spent_entries)
-                    .map_err(ChainError::DbError)?;
+            validate_coinbase_reward(&block.transactions[0], fees, height as u32)
+                .map_err(ChainError::InvalidBlock)?;
 
-                // Reconnected blocks become part of the canonical chain: update
-                // the height index so height-based lookups return the correct hash.
-                // (These blocks were originally stored via store_block_no_index when
-                // they arrived as side-chain candidates.)
-                self.block_store
-                    .update_height_index(height, hash)
-                    .map_err(ChainError::DbError)?;
-            }
+            self.utxo_store
+                .apply_block(&created_utxos, &spent_utxos)
+                .map_err(ChainError::DbError)?;
+            self.utxo_store
+                .store_undo_data(&bh, &spent_entries)
+                .map_err(ChainError::DbError)?;
+
+            // Reconnected blocks become part of the canonical chain: update
+            // the height index so height-based lookups return the correct hash.
+            // (These blocks were originally stored via store_block_no_index when
+            // they arrived as side-chain candidates.)
+            self.block_store
+                .update_height_index(height, hash)
+                .map_err(ChainError::DbError)?;
         }
 
         Ok(())
@@ -406,8 +435,8 @@ impl ChainState {
         let (height, cumulative_work) = if block.header.prev_block_hash == [0u8; 32] {
             (0, block.header.work())
         } else {
-            // Check memory first, then DB
-            if !self.blocks.contains_key(&block.header.prev_block_hash) {
+            // Check cache first, then DB
+            if self.blocks.peek(&block.header.prev_block_hash).is_none() {
                 if let Ok(Some(prev_block)) = self.block_store.get_block(&block.header.prev_block_hash) {
                     let prev_hash = prev_block.header.hash();
                     let meta = self
@@ -421,13 +450,13 @@ impl ChainState {
                         height: prev_height,
                         cumulative_work: meta.cumulative_work,
                     };
-                    self.blocks.insert(prev_hash, prev_data_owned);
+                    self.blocks.put(prev_hash, prev_data_owned);
                 }
             }
 
             let prev_data = self
                 .blocks
-                .get(&block.header.prev_block_hash)
+                .peek(&block.header.prev_block_hash)
                 .ok_or(ChainError::OrphanBlock)?;
 
             validate_difficulty(Some(&prev_data.block.header), &block.header, &self.params)
@@ -436,7 +465,7 @@ impl ChainState {
             let mut prev_headers = Vec::new();
             let mut curr = block.header.prev_block_hash;
             for _ in 0..11 {
-                if let Some(d) = self.blocks.get(&curr) {
+                if let Some(d) = self.blocks.peek(&curr) {
                     prev_headers.push(d.block.header);
                     if d.block.header.prev_block_hash == [0u8; 32] {
                         break;
@@ -469,7 +498,7 @@ impl ChainState {
                 .map_err(ChainError::InvalidBlock)?;
         }
 
-        self.blocks.insert(
+        self.blocks.put(
             block_hash,
             BlockData {
                 block: block.clone(),
@@ -483,7 +512,7 @@ impl ChainState {
             Some(current_tip) => {
                 let current_work = self
                     .blocks
-                    .get(&current_tip)
+                    .peek(&current_tip)
                     .map(|d| d.cumulative_work)
                     .unwrap_or(U256::from(0u64));
                 cumulative_work > current_work
@@ -642,14 +671,14 @@ impl ChainState {
     }
 
     pub fn get_block(&self, hash: &Hash256) -> Option<&Block> {
-        self.blocks.get(hash).map(|data| &data.block)
+        self.blocks.peek(hash).map(|data| &data.block)
     }
 
     pub fn get_block_by_height(&self, height: u64) -> Option<&Block> {
-        // Use storage for lookup, then get from memory
+        // Use storage for lookup, then check cache
         if let Ok(Some(block)) = self.block_store.get_block_by_height(height) {
             let hash = block.hash();
-            return self.blocks.get(&hash).map(|data| &data.block);
+            return self.blocks.peek(&hash).map(|data| &data.block);
         }
         None
     }
@@ -657,7 +686,7 @@ impl ChainState {
     pub fn get_tip(&self) -> Result<Option<BlockData>, String> {
         match self.tip {
             Some(hash) => {
-                let data = self.blocks.get(&hash).cloned();
+                let data = self.blocks.peek(&hash).cloned();
                 Ok(data)
             }
             None => Ok(None),
@@ -685,7 +714,7 @@ impl ChainState {
         let mut current = tip;
 
         for _ in 0..11 {
-            if let Some(data) = self.blocks.get(&current) {
+            if let Some(data) = self.blocks.peek(&current) {
                 timestamps.push(data.block.header.timestamp);
                 if data.block.header.prev_block_hash == [0u8; 32] {
                     break;
@@ -717,20 +746,8 @@ impl ChainState {
     }
 
     pub fn get_block_hash(&self, height: u64) -> Option<Hash256> {
-        let mut current_hash = self.tip?;
-        let mut current_data = self.blocks.get(&current_hash)?;
-
-        if height > current_data.height {
-            return None;
-        }
-
-        // Walk back
-        while current_data.height > height {
-            current_hash = current_data.block.header.prev_block_hash;
-            current_data = self.blocks.get(&current_hash)?;
-        }
-
-        Some(current_hash)
+        // Use canonical DB index directly — avoids walking the cache.
+        self.block_store.get_hash_by_height(height).ok().flatten()
     }
 
     pub fn get_block_locator(&self) -> Vec<Hash256> {
@@ -780,7 +797,7 @@ impl ChainState {
     }
 
     pub fn get_height_for_hash(&self, hash: &Hash256) -> Option<u64> {
-        self.blocks.get(hash).map(|d| d.height)
+        self.blocks.peek(hash).map(|d| d.height)
     }
 
     pub fn validate_header_standalone(&self, _header: &BlockHeader) -> Result<(), String> {
