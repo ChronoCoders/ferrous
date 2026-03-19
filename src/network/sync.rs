@@ -163,7 +163,7 @@ impl SyncManager {
         // advertised at this height (peer_header_map[height] == block_hash).
         let expected_hash = self.peer_header_map.lock().unwrap().get(&height).copied();
         if expected_hash != Some(block_hash) {
-            println!(
+            log::warn!(
                 "SyncManager: hash mismatch at height {}: expected {} got {} — discarding",
                 height,
                 expected_hash
@@ -189,7 +189,7 @@ impl SyncManager {
                 .copied();
             if let Some(ep) = expected_prev {
                 if block.header.prev_block_hash != ep {
-                    println!(
+                    log::warn!(
                         "SyncManager: prev_hash mismatch at height {} — discarding and re-requesting",
                         height
                     );
@@ -225,7 +225,7 @@ impl SyncManager {
                     if current_height > total_height {
                         let mut state = self.sync_state.lock().unwrap();
                         *state = SyncState::Synced;
-                        println!("SyncManager: sync complete at height {}", total_height);
+                        log::info!("SyncManager: sync complete at height {}", total_height);
                         break;
                     }
 
@@ -253,7 +253,7 @@ impl SyncManager {
                                 .get(&current_height)
                                 .copied();
                             if exp != Some(b.header.hash()) {
-                                println!(
+                                log::warn!(
                                     "SyncManager: buffered block hash mismatch at height \
                                      {} — stopping drain",
                                     current_height
@@ -268,7 +268,7 @@ impl SyncManager {
                     }
                 }
                 Err(e) => {
-                    println!(
+                    log::warn!(
                         "SyncManager: add_block at height {} failed: {:?}, aborting ordered apply",
                         current_height, e
                     );
@@ -371,7 +371,7 @@ impl SyncManager {
         };
         let msg = NetworkMessage::new(magic, "getdata", getdata.encode());
         let _ = self.peer_manager.send_to_peer(peer_id, &msg);
-        println!(
+        log::debug!(
             "SyncManager: window [{}..{}] → {} blocks requested from peer {}",
             next_apply_height,
             window_end - 1,
@@ -471,13 +471,13 @@ impl SyncManager {
 
     // Start sync process with a peer
     pub fn start_sync(&self, peer_id: u64) -> Result<(), String> {
-        println!("SyncManager: Starting sync check with peer {}", peer_id);
+        log::debug!("SyncManager: Starting sync check with peer {}", peer_id);
 
         // Always skip if already downloading headers.
         {
             let state = self.sync_state.lock().unwrap();
             if matches!(*state, SyncState::DownloadingHeaders { .. }) {
-                println!("SyncManager: Already downloading headers, skipping duplicate sync.");
+                log::debug!("SyncManager: Already downloading headers, skipping duplicate sync.");
                 return Ok(());
             }
         }
@@ -524,7 +524,7 @@ impl SyncManager {
             .peer_manager
             .get_peer_start_height(peer_id)
             .unwrap_or(0);
-        println!(
+        log::debug!(
             "SyncManager: Local height: {}, Best Header: {}, Peer {} height: {}",
             our_height, start_height, peer_id, peer_height
         );
@@ -576,7 +576,7 @@ impl SyncManager {
 
     // Handle received headers
     pub fn handle_headers(&self, peer_id: u64, headers_msg: &HeadersMessage) -> Result<(), String> {
-        println!(
+        log::debug!(
             "SyncManager: Received {} headers from peer {}",
             headers_msg.headers.len(),
             peer_id
@@ -686,7 +686,7 @@ impl SyncManager {
                         fork_start_height_opt.is_some()
                     };
 
-                    println!(
+                    log::debug!(
                         "SyncManager: empty-headers decision: local_height={} best_height={} first_missing={} start={} peer_work={:?} local_work={:?} fork_start={:?} download={}",
                         local_height,
                         best_height,
@@ -752,7 +752,7 @@ impl SyncManager {
             let prev_hash = header.prev_block_hash;
 
             let (prev_header, prev_height) = if idx == 0 {
-                println!(
+                log::debug!(
                     "[HEADERS] Trying prev_hash match: best_header_hash={}",
                     hex::encode(current_best_hash)
                 );
@@ -772,7 +772,7 @@ impl SyncManager {
                         ));
                     }
                 } else {
-                    println!(
+                    log::debug!(
                         "[HEADERS] best_header_hash mismatch, looking up prev_hash {} in DB",
                         hex::encode(prev_hash)
                     );
@@ -795,7 +795,7 @@ impl SyncManager {
                                     .find(|(_, &ph)| ph == prev_hash)
                                     .map(|(&height, _)| height as u64)
                             });
-                            println!(
+                            log::debug!(
                                 "[HEADERS] prev_hash height: mem={:?} loc={:?} map={:?} locator_len={}",
                                 h_mem, h_loc, h_map,
                                 self.last_locator.lock().unwrap().len()
@@ -809,7 +809,7 @@ impl SyncManager {
                             (prev_header_obj, h as u32)
                         }
                         Ok(None) => {
-                            println!("[HEADERS] prev_hash not in DB, re-requesting headers");
+                            log::debug!("[HEADERS] prev_hash not in DB, re-requesting headers");
                             drop(header_map);
                             drop(chain);
                             self.resend_getheaders(peer_id)?;
@@ -1038,7 +1038,7 @@ impl SyncManager {
                     }
                 }
             }
-            println!(
+            log::debug!(
                 "SyncManager: headers done: first_missing={} start={} total_height={} fork_start={:?}",
                 first_missing, start, current_best_height, fork_start_height
             );
@@ -1066,7 +1066,7 @@ impl SyncManager {
                 fork_start_height.is_some()
             };
 
-            println!(
+            log::debug!(
                 "SyncManager: headers done decision: local_height={} best_height={} start={} peer_work={:?} local_work={:?} fork_start={:?} download={}",
                 local_height,
                 current_best_height,
@@ -1098,7 +1098,7 @@ impl SyncManager {
 
     // Handle getheaders request — serve our canonical chain headers to the peer.
     pub fn handle_getheaders(&self, peer_id: u64, msg: &GetHeadersMessage) -> Result<(), String> {
-        println!(
+        log::debug!(
             "handle_getheaders called from peer {}, sending headers...",
             peer_id
         );
@@ -1124,7 +1124,7 @@ impl SyncManager {
                 }
             }
         }
-        println!(
+        log::debug!(
             "handle_getheaders: matched at height {:?}, sending from {}",
             matched_at, start_height
         );

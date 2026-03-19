@@ -407,20 +407,8 @@ impl ChainState {
             (0, block.header.work())
         } else {
             // Check memory first, then DB
-            let prev_hash_hex = hex::encode(block.header.prev_block_hash);
-            println!(
-                "add_block: looking for parent {} in memory: {}",
-                prev_hash_hex,
-                self.blocks.contains_key(&block.header.prev_block_hash)
-            );
             if !self.blocks.contains_key(&block.header.prev_block_hash) {
-                let db_result = self.block_store.get_block(&block.header.prev_block_hash);
-                println!(
-                    "add_block: DB lookup for parent {}: {:?}",
-                    prev_hash_hex,
-                    db_result.as_ref().map(|r| r.is_some())
-                );
-                if let Ok(Some(prev_block)) = db_result {
+                if let Ok(Some(prev_block)) = self.block_store.get_block(&block.header.prev_block_hash) {
                     let prev_hash = prev_block.header.hash();
                     let meta = self
                         .block_store
