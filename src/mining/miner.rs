@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const MAX_FUTURE_OFFSET: u64 = 7200;
 
@@ -17,6 +17,24 @@ pub struct Miner {
     pub params: ChainParams,
     pub mining_address: Vec<u8>,
     pub event_sender: Option<Sender<MiningEvent>>,
+    stats: Arc<MinerStats>,
+}
+
+#[derive(Debug)]
+struct MinerStats {
+    total_hashes: AtomicU64,
+    total_micros: AtomicU64,
+    active: AtomicBool,
+    active_hashes: AtomicU64,
+    active_start_micros: AtomicU64,
+}
+
+fn now_micros() -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros();
+    now.min(u64::MAX as u128) as u64
 }
 
 #[derive(Debug, Clone)]
@@ -274,12 +292,38 @@ impl Miner {
             params,
             mining_address,
             event_sender: None,
+            stats: Arc::new(MinerStats {
+                total_hashes: AtomicU64::new(0),
+                total_micros: AtomicU64::new(0),
+                active: AtomicBool::new(false),
+                active_hashes: AtomicU64::new(0),
+                active_start_micros: AtomicU64::new(0),
+            }),
         }
     }
 
     pub fn with_event_sender(mut self, sender: Sender<MiningEvent>) -> Self {
         self.event_sender = Some(sender);
         self
+    }
+
+    pub fn hashrate_hps(&self) -> f64 {
+        if self.stats.active.load(Ordering::Relaxed) {
+            let start = self.stats.active_start_micros.load(Ordering::Relaxed);
+            let elapsed_micros = now_micros().saturating_sub(start) as f64;
+            if elapsed_micros <= 0.0 {
+                return 0.0;
+            }
+            let hashes = self.stats.active_hashes.load(Ordering::Relaxed) as f64;
+            return hashes / (elapsed_micros / 1_000_000.0);
+        }
+
+        let hashes = self.stats.total_hashes.load(Ordering::Relaxed) as f64;
+        let micros = self.stats.total_micros.load(Ordering::Relaxed) as f64;
+        if micros <= 0.0 {
+            return 0.0;
+        }
+        hashes / (micros / 1_000_000.0)
     }
 
     pub fn create_coinbase_internal(
@@ -355,14 +399,23 @@ impl Miner {
             nonce: 0,
         };
 
-        let num_workers = num_cpus::get();
+        self.stats.active.store(true, Ordering::Relaxed);
+        self.stats.active_hashes.store(0, Ordering::Relaxed);
+        self.stats
+            .active_start_micros
+            .store(now_micros(), Ordering::Relaxed);
+
+        let num_workers = std::env::var("FERROUS_MINER_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or_else(num_cpus::get);
         let found = Arc::new(AtomicBool::new(false));
         let solution_nonce = Arc::new(AtomicU64::new(0));
         let solution_timestamp = Arc::new(AtomicU64::new(timestamp));
         let solution_worker = Arc::new(AtomicU64::new(0));
 
         let nonce_range = u64::MAX / num_workers as u64;
-        let total_hashes = Arc::new(AtomicU64::new(0));
         let mining_start = std::time::Instant::now();
 
         (0..num_workers).into_par_iter().for_each(|worker_id| {
@@ -374,16 +427,6 @@ impl Miner {
             loop {
                 if found.load(Ordering::Relaxed) {
                     break;
-                }
-
-                if iterations.is_multiple_of(1_000_000) {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs();
-                    if now > local_header.timestamp {
-                        local_header.timestamp = now;
-                    }
                 }
 
                 local_header.nonce = current_nonce;
@@ -398,7 +441,14 @@ impl Miner {
 
                 current_nonce = current_nonce.wrapping_add(1);
                 iterations += 1;
-                total_hashes.fetch_add(1, Ordering::Relaxed);
+                self.stats.active_hashes.fetch_add(1, Ordering::Relaxed);
+
+                if iterations.is_multiple_of(50_000) {
+                    std::thread::yield_now();
+                }
+                if iterations.is_multiple_of(200_000) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
 
                 if current_nonce == start_nonce.wrapping_add(nonce_range) {
                     current_nonce = start_nonce;
@@ -407,7 +457,18 @@ impl Miner {
         });
 
         let elapsed_secs = mining_start.elapsed().as_secs_f64();
-        let hashes_tried = total_hashes.load(Ordering::Relaxed);
+        let hashes_tried = self.stats.active_hashes.load(Ordering::Relaxed);
+        let elapsed_micros = (elapsed_secs * 1_000_000.0).round();
+        if elapsed_micros.is_finite() && elapsed_micros > 0.0 {
+            self.stats
+                .total_hashes
+                .fetch_add(hashes_tried, Ordering::Relaxed);
+            self.stats.total_micros.fetch_add(
+                elapsed_micros.min(u64::MAX as f64) as u64,
+                Ordering::Relaxed,
+            );
+        }
+        self.stats.active.store(false, Ordering::Relaxed);
 
         let final_header = BlockHeader {
             version: header.version,

@@ -549,12 +549,14 @@ impl RpcServer {
         let bits = tip.as_ref().map(|t| t.block.header.n_bits).unwrap_or(0);
 
         let difficulty = difficulty_from_compact(bits).unwrap_or(0.0);
-        let networkhashps = difficulty * 4294967296.0 / 150.0;
+        let networkhashps = difficulty * 4294967296.0 / self.miner.params.target_block_time as f64;
+        let hashrate = self.miner.hashrate_hps();
 
         let response = GetMiningInfoResponse {
             blocks,
             difficulty,
             networkhashps,
+            hashrate,
             chain: "ferrous".to_string(),
         };
 

@@ -447,13 +447,14 @@ impl PeerManager {
             let peer_addr = conn.peer_addr();
             let ip = peer_addr.ip();
 
+            log::debug!("inbound: connection attempt from {}", peer_addr);
+
             // DoS check
             let mut dos = dos_protection_clone.lock().unwrap();
             let is_trusted = ip.to_string() == "45.77.153.141" || ip.to_string() == "45.77.64.221";
 
             if !is_trusted && !dos.can_accept_inbound(ip) {
-                println!("Rejected inbound connection from {} (DoS protection)", ip);
-                // Record failed attempt for rate limiting
+                log::warn!("inbound: rejected {} (DoS protection)", ip);
                 dos.record_failed_attempt(ip);
                 return;
             }
@@ -462,9 +463,22 @@ impl PeerManager {
             // Diversity check
             let is_regtest = magic == [0xfa, 0xbf, 0xb5, 0xda];
             let security = security_clone.lock().unwrap();
-            let total_peers = peers_clone.lock().unwrap().len();
+            let total_peers = {
+                let peers = peers_clone.lock().unwrap();
+                log::debug!(
+                    "inbound: peer list at arrival from {}: {} peers — {}",
+                    ip,
+                    peers.len(),
+                    peers
+                        .values()
+                        .map(|p| format!("{}({})", p.addr.ip(), if p.inbound { "in" } else { "out" }))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                peers.len()
+            };
             if !is_regtest && !is_trusted && !security.can_accept_for_diversity(ip, total_peers) {
-                println!("Rejected connection from {} (diversity)", ip);
+                log::warn!("inbound: rejected {} (diversity, total_peers={})", ip, total_peers);
                 return;
             }
             drop(security);
@@ -478,16 +492,20 @@ impl PeerManager {
                     .values()
                     .any(|p| p.addr.ip() == ip);
                 if already_connected {
-                    println!(
-                        "Rejected duplicate inbound connection from {} (already connected)",
+                    log::warn!(
+                        "inbound: rejected {} (duplicate — already connected)",
                         ip
                     );
                     return;
                 }
             }
 
-            if peers_clone.lock().unwrap().len() >= max_peers {
-                println!("Max peers reached. Rejecting connection from {}", peer_addr);
+            let peer_count = peers_clone.lock().unwrap().len();
+            if peer_count >= max_peers {
+                log::warn!(
+                    "inbound: rejected {} (max_peers={} reached, current={})",
+                    peer_addr, max_peers, peer_count
+                );
                 return;
             }
 
@@ -660,7 +678,8 @@ impl PeerManager {
                         if let Err(e) = sync.handle_getheaders(id, getheaders) {
                             log::warn!(
                                 "SyncManager: handle_getheaders error from peer {}: {}",
-                                id, e
+                                id,
+                                e
                             );
                         }
                     }
@@ -1002,21 +1021,32 @@ impl PeerManager {
 
                     // Handle disconnection if marked
                     if should_disconnect {
-                        let mut peers = peers_clone.lock().unwrap();
-                        if let Some(peer) = peers.remove(&id) {
-                            let ip = peer.addr.ip();
-                            let inbound = peer.inbound;
-                            // Record disconnection
-                            let mut dos = dos_protection_clone.lock().unwrap();
-                            dos.record_disconnection(id, ip, inbound);
+                        let remaining_peers = {
+                            let mut peers = peers_clone.lock().unwrap();
+                            if let Some(peer) = peers.remove(&id) {
+                                let ip = peer.addr.ip();
+                                let inbound = peer.inbound;
+                                // Record disconnection
+                                let mut dos = dos_protection_clone.lock().unwrap();
+                                dos.record_disconnection(id, ip, inbound);
 
-                            let mut batcher = batcher_clone.lock().unwrap();
-                            batcher.clear_peer(id);
-                            let mut cache = broadcast_cache_clone.lock().unwrap();
-                            cache.clear_peer(id);
+                                let mut batcher = batcher_clone.lock().unwrap();
+                                batcher.clear_peer(id);
+                                let mut cache = broadcast_cache_clone.lock().unwrap();
+                                cache.clear_peer(id);
 
-                            let mut security = security_clone.lock().unwrap();
-                            security.remove_peer(id);
+                                let mut security = security_clone.lock().unwrap();
+                                security.remove_peer(id);
+                            }
+                            peers.len()
+                        };
+
+                        // If we just lost our last peer, trigger immediate recovery.
+                        if remaining_peers == 0 {
+                            let recovery_guard = recovery_clone.lock().unwrap();
+                            if let Some(recovery) = &*recovery_guard {
+                                let _ = recovery.recover();
+                            }
                         }
                     }
                 }

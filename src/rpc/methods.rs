@@ -75,5 +75,6 @@ pub struct GetMiningInfoResponse {
     pub blocks: u32,
     pub difficulty: f64,
     pub networkhashps: f64,
+    pub hashrate: f64,
     pub chain: String,
 }

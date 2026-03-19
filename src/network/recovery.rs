@@ -17,6 +17,7 @@ struct RecoveryState {
     last_peer_count: usize,
     partition_detected: bool,
     recovery_attempts: u32,
+    last_recover_call: Instant,
 }
 
 impl RecoveryManager {
@@ -34,6 +35,9 @@ impl RecoveryManager {
                 last_peer_count: 0,
                 partition_detected: false,
                 recovery_attempts: 0,
+                last_recover_call: Instant::now()
+                    .checked_sub(Duration::from_secs(60))
+                    .unwrap_or_else(Instant::now),
             })),
         }
     }
@@ -44,7 +48,7 @@ impl RecoveryManager {
 
         thread::spawn(move || {
             loop {
-                thread::sleep(Duration::from_secs(60));
+                thread::sleep(Duration::from_secs(30));
 
                 // Check for partition
                 if manager.check_partition() {
@@ -80,8 +84,8 @@ impl RecoveryManager {
         };
 
         // Signs of partition:
-        // 1. Zero active peers for >5 minutes
-        if peer_count == 0 && state.last_block_time.elapsed() > Duration::from_secs(300) {
+        // 1. Zero active peers for >30 seconds
+        if peer_count == 0 && state.last_block_time.elapsed() > Duration::from_secs(30) {
             return true;
         }
 
@@ -98,12 +102,19 @@ impl RecoveryManager {
         false
     }
 
-    // Attempt network recovery
+    // Attempt network recovery — rate-limited to once per 30s to prevent thrash.
     pub fn recover(&self) -> Result<(), String> {
         let mut state = self
             .state
             .lock()
             .map_err(|e| format!("Poisoned mutex: {}", e))?;
+
+        if state.last_recover_call.elapsed() < Duration::from_secs(30) {
+            log::debug!("recover() skipped — rate-limited (last call {:.1}s ago)",
+                state.last_recover_call.elapsed().as_secs_f64());
+            return Ok(());
+        }
+        state.last_recover_call = Instant::now();
 
         if !state.partition_detected {
             // First detection
