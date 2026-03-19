@@ -391,10 +391,11 @@ impl RpcServer {
 
     fn getnetworkinfo(&self) -> Result<Value, String> {
         let stats = self.network_stats.get_snapshot();
+        let connections = self.peer_manager.get_peer_count();
 
         Ok(json!({
             "version": 70001,
-            "connections": stats.current_connections,
+            "connections": connections,
             "connections_in": stats.total_connections_accepted,
             "connections_out": stats.total_connections_initiated,
             "bytes_sent": stats.bytes_sent,
