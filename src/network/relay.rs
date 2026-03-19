@@ -243,6 +243,22 @@ impl BlockRelay {
         // Normal relay path: not a tracked sync block.
         let mut chain = self.chain.write().unwrap();
 
+        if chain.has_block(&block_hash) {
+            let height = chain.get_height_for_hash(&block_hash).or_else(|| {
+                chain
+                    .block_store
+                    .get_block_meta(&block_hash)
+                    .ok()
+                    .flatten()
+                    .map(|m| m.height)
+            });
+            drop(chain);
+            if let Some(h) = height {
+                self.peer_manager.update_peer_height(peer_id, h as u32);
+            }
+            return Ok(());
+        }
+
         match chain.add_block(Block {
             header: block.header,
             transactions: block.transactions.clone(),

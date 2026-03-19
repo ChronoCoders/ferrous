@@ -268,20 +268,19 @@ impl ChainState {
         };
 
         // Helper: get prev_block_hash from cache (peek) or DB.
-        let prev_hash_of =
-            |blocks: &LruCache<Hash256, BlockData>,
-             block_store: &BlockStore,
-             hash: &Hash256|
-             -> Option<Hash256> {
-                if let Some(d) = blocks.peek(hash) {
-                    return Some(d.block.header.prev_block_hash);
-                }
-                block_store
-                    .get_header(hash)
-                    .ok()
-                    .flatten()
-                    .map(|h| h.prev_block_hash)
-            };
+        let prev_hash_of = |blocks: &LruCache<Hash256, BlockData>,
+                            block_store: &BlockStore,
+                            hash: &Hash256|
+         -> Option<Hash256> {
+            if let Some(d) = blocks.peek(hash) {
+                return Some(d.block.header.prev_block_hash);
+            }
+            block_store
+                .get_header(hash)
+                .ok()
+                .flatten()
+                .map(|h| h.prev_block_hash)
+        };
 
         let old_height = block_height(&self.blocks, &self.block_store, &old_curr);
         let new_height = block_height(&self.blocks, &self.block_store, &new_curr);
@@ -393,10 +392,7 @@ impl ChainState {
                     .get_block_meta(hash)
                     .map_err(ChainError::DbError)?
                     .ok_or_else(|| {
-                        ChainError::DbError(format!(
-                            "Missing block meta for {}",
-                            hex::encode(hash)
-                        ))
+                        ChainError::DbError(format!("Missing block meta for {}", hex::encode(hash)))
                     })?;
                 (b, meta.height)
             };
@@ -430,6 +426,15 @@ impl ChainState {
     pub fn add_block(&mut self, block: Block) -> Result<(), ChainError> {
         let block_hash = block.hash();
 
+        if self
+            .block_store
+            .has_block(&block_hash)
+            .map_err(ChainError::DbError)?
+            || self.blocks.peek(&block_hash).is_some()
+        {
+            return Ok(());
+        }
+
         validate_block(&block.header, &block.transactions).map_err(ChainError::InvalidBlock)?;
 
         let (height, cumulative_work) = if block.header.prev_block_hash == [0u8; 32] {
@@ -437,7 +442,9 @@ impl ChainState {
         } else {
             // Check cache first, then DB
             if self.blocks.peek(&block.header.prev_block_hash).is_none() {
-                if let Ok(Some(prev_block)) = self.block_store.get_block(&block.header.prev_block_hash) {
+                if let Ok(Some(prev_block)) =
+                    self.block_store.get_block(&block.header.prev_block_hash)
+                {
                     let prev_hash = prev_block.header.hash();
                     let meta = self
                         .block_store
@@ -516,6 +523,7 @@ impl ChainState {
                     .map(|d| d.cumulative_work)
                     .unwrap_or(U256::from(0u64));
                 cumulative_work > current_work
+                    || (cumulative_work == current_work && block_hash < current_tip)
             }
         };
 

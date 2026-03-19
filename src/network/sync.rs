@@ -270,7 +270,8 @@ impl SyncManager {
                 Err(e) => {
                     log::warn!(
                         "SyncManager: add_block at height {} failed: {:?}, aborting ordered apply",
-                        current_height, e
+                        current_height,
+                        e
                     );
                     break;
                 }
@@ -526,7 +527,10 @@ impl SyncManager {
             .unwrap_or(0);
         log::debug!(
             "SyncManager: Local height: {}, Best Header: {}, Peer {} height: {}",
-            our_height, start_height, peer_id, peer_height
+            our_height,
+            start_height,
+            peer_id,
+            peer_height
         );
 
         {
@@ -1135,7 +1139,8 @@ impl SyncManager {
         }
         log::debug!(
             "handle_getheaders: matched at height {:?}, sending from {}",
-            matched_at, start_height
+            matched_at,
+            start_height
         );
 
         // Serve canonical headers by looking up each height via CF_BLOCK_INDEX first,
