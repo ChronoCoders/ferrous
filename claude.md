@@ -1,5 +1,5 @@
 # Ferrous Network — Claude Briefing Document
-Last updated: 2026-03-18
+Last updated: 2026-03-19
 
 ## Previously Blocking Bugs — NOW FIXED
 
@@ -277,12 +277,17 @@ examples/node.rs   — main node binary
 66. RocksDB WAL — `sync: false` applied globally (WAL enabled, fsync disabled)
 67. RPC threading fix — mining loop now uses read lock for PoW, write lock only for `add_block`. Lock held for ~ms instead of ~150s. Both nodes remain ONLINE consistently in monitor.
 
-### Session 2026-03-18 (Claude Code)
+### Session 2026-03-18 to 2026-03-19 (Claude Code)
 
 78. Per-block println! removal across `relay.rs`, `manager.rs` (dispatch + block-worker), `sync.rs` — 19+ calls converted to `log::debug!/warn!/info!`. Eliminates journald buffer saturation while holding chain write lock. Commits `48c6688`, `2c000b5`.
 79. LRU cache replacing full-chain HashMap (`15e61d0`) — `blocks: HashMap<Hash256, BlockData>` replaced with `LruCache<Hash256, BlockData>` capped at 2048. Recovery walks last 2048 blocks reading `BlockMeta` from RocksDB (O(min(chain_height, 2048)) startup). Reorg chain-walking and UTXO apply/revert fall back to `block_store` on cache miss. `peek()` used throughout to avoid `&mut` borrow conflicts.
 80. Distinct `max_target` per network + disable testnet `allow_min_difficulty_blocks` (`b3ecab9`) — mainnet: 32 leading zero bits (Bitcoin difficulty-1), testnet: 16 leading zero bits (65536× easier), regtest: unchanged trivial. `allow_min_difficulty_blocks: false` for testnet — this flag is designed for epoch-based retargeting and causes difficulty runaway in per-block adjustment systems.
 81. Measured hash rate in mining dashboard — `MiningEvent` gains `hashes_tried: u64` + `elapsed_secs: f64`. Miner tracks total hashes via shared `AtomicU64` across all rayon workers. `BlockInfo` computes `hash_rate = hashes_tried / elapsed_secs`. `MiningStats.hash_rate` field is now live (was dead code, always 0.0). Dashboard `render_mining_stats` displays auto-scaled H/s / kH/s / MH/s.
+82. Orphan handler calls `request_headers_force` (`b3c44c6`) — `relay.rs` `Err(ChainError::OrphanBlock)` arm was silent. Added sync trigger for fork resolution.
+83. env_logger initialized (`214c17e`) — `env_logger::Builder::from_env(...).init()` added to `examples/node.rs` main(). All `log::*` calls were silently dropped before this fix.
+84. handle_getheaders locator DB fallback (`68b6f43`) — locator hash matching in `handle_getheaders` now falls back to `block_store.get_block_meta()` for blocks outside the 2048-entry LRU window.
+85. difficulty: timestamp < prev no longer hard error (`52bf6f2`) — `calculate_next_target` replaced `current_timestamp < prev.timestamp → Err` with `saturating_sub`. Bitcoin consensus only requires timestamp > MTP, not > prev.
+86. Testnet reset 2026-03-19 — chains had blocks with `n_bits=0x207fffff` (genesis difficulty) in the middle of the chain, mined by old code without `validate_difficulty` in `add_block`. Both nodes wiped and restarted fresh. Nodes now converging correctly via reorgs with no difficulty errors.
 
 ### Session 2026-03-16 to 2026-03-18 (Claude Code)
 
@@ -299,25 +304,28 @@ examples/node.rs   — main node binary
 
 ---
 
-## Current Status (2026-03-18)
+## Current Status (2026-03-19)
 
 Always run the chain verification commands above to confirm state before trusting the values below.
 
 Last known state (may be stale):
-- seed1: ~254,350+ blocks, mining, active
-- seed4: ~254,350+ blocks, `--mine` status: confirm before assuming
-- Both nodes on same chain (snapshot-synced 2026-03-19 after convergence test)
-- Git HEAD: `b3ecab9` (consensus: set distinct max_target per network, disable testnet min-diff blocks) — pending deploy of dashboard/mining hash_rate fix
+- seed1: ~400+ blocks (fresh testnet, reset 2026-03-19), mining, active
+- seed4: ~400+ blocks (fresh testnet, reset 2026-03-19), mining, active
+- Both nodes converging on same chain via reorgs — no difficulty errors
+- Git HEAD: `d9bb960` (debug: log difficulty mismatch — remove before Phase 2)
+  - Actually cleaned up: reverted debug log, pending commit
+- All 6 convergence fixes deployed and working:
+  1. `b3c44c6` relay.rs orphan handler calls `request_headers_force`
+  2. `214c17e` env_logger initialized in node.rs main()
+  3. `68b6f43` handle_getheaders locator falls back to block_meta DB
+  4. `52bf6f2` difficulty: saturating_sub replaces hard error for timestamp < prev
+  5. `0bb3890` should_download: equal-work fork triggers download
+  6. Testnet reset 2026-03-19: wiped corrupt chain data (blocks had invalid n_bits from old code without difficulty validation)
 - sccache enabled on both nodes
-- Block dispatch worker deployed (TCP backpressure root fix)
-- LRU cache fix deployed (`15e61d0`) — write-lock starvation eliminated
-- All per-block println! removed (`48c6688`, `2c000b5`)
-- Difficulty floor fixed (`b3ecab9`) — runaway eliminated
-- Equal-height fork convergence fix deployed (`0bb3890`) — logic verified correct
-- Monitor TUI: all known display bugs fixed
-- RocksDB LOG.old files cleaned on both nodes (289 files removed)
+- Both nodes mining (--mine on both)
+- Reorgs happening correctly (1-12 block reorgs resolved automatically)
 
-NEXT: deploy hash_rate dashboard fix, then run 3-cycle convergence verification test before Phase 2.
+NEXT: 3-cycle convergence verification test, then Phase 2 (WAL perf, RandomX).
 
 ---
 
