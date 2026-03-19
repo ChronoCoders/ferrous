@@ -60,6 +60,7 @@ struct NodeStats {
 struct RecentBlock {
     height: u32,
     hash: String,
+    block_time: u64,
     time_ago_secs: u64,
 }
 
@@ -334,12 +335,13 @@ fn render_summary_row(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &Node
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     };
 
-    let last_block_seed1 = seed1
-        .last_block_age_secs
-        .or_else(|| seed1.recent_blocks.first().map(|b| b.time_ago_secs));
-    let last_block_seed4 = seed4
-        .last_block_age_secs
-        .or_else(|| seed4.recent_blocks.first().map(|b| b.time_ago_secs));
+    let now = now_unix_secs();
+    let last_block_seed1 = seed1.recent_blocks.first()
+        .map(|b| now.saturating_sub(b.block_time))
+        .or(seed1.last_block_age_secs);
+    let last_block_seed4 = seed4.recent_blocks.first()
+        .map(|b| now.saturating_sub(b.block_time))
+        .or(seed4.last_block_age_secs);
 
     let last_block_line = format!(
         "Last block age (s): seed1={}  seed4={}",
@@ -653,6 +655,7 @@ fn poll_node(
                             .map(|b| RecentBlock {
                                 height: b.height,
                                 hash: b.hash.clone(),
+                                block_time: b.block_time,
                                 time_ago_secs: b.time_ago_secs.saturating_add(delta),
                             })
                             .collect();
@@ -668,6 +671,7 @@ fn poll_node(
             .map(|b| RecentBlock {
                 height: b.height,
                 hash: b.hash.clone(),
+                block_time: b.block_time,
                 time_ago_secs: b.time_ago_secs.saturating_add(delta),
             })
             .collect();
@@ -774,6 +778,7 @@ fn fetch_recent_blocks(
         out.push(RecentBlock {
             height: block_height as u32,
             hash: block_hash,
+            block_time: time,
             time_ago_secs: time_ago,
         });
     }
@@ -842,6 +847,7 @@ fn last_good_snapshot(prev: &NodeStats, delta_secs: u64) -> NodeStats {
         .map(|b| RecentBlock {
             height: b.height,
             hash: b.hash.clone(),
+            block_time: b.block_time,
             time_ago_secs: b.time_ago_secs.saturating_add(delta_secs),
         })
         .collect();
