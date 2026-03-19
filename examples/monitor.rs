@@ -1,3 +1,4 @@
+use chrono;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -919,16 +920,9 @@ fn now_unix_secs() -> u64 {
         .as_secs()
 }
 
-fn format_hhmmss(t: SystemTime) -> String {
-    let secs = t
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::from_secs(0))
-        .as_secs();
-    let day_secs = secs % 86_400;
-    let h = day_secs / 3600;
-    let m = (day_secs % 3600) / 60;
-    let s = day_secs % 60;
-    format!("{:02}:{:02}:{:02}", h, m, s)
+fn format_hhmmss(_t: SystemTime) -> String {
+    let now = chrono::Local::now();
+    now.format("%H:%M:%S").to_string()
 }
 
 fn local_socket_addr(port: u16) -> SocketAddr {

@@ -30,6 +30,7 @@ ripemd = "0.1"
 log = "0.4"
 env_logger = "0.10"
 tempfile = "3.10"
+chrono = "0.4"
 
 [dev-dependencies]
 criterion = "0.5"
