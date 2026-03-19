@@ -88,7 +88,7 @@ impl Dashboard {
             .constraints([
                 Constraint::Length(3), // Header
                 Constraint::Length(8), // CPU
-                Constraint::Length(6), // Mining stats
+                Constraint::Length(7), // Mining stats
                 Constraint::Min(10),   // Recent blocks
                 Constraint::Length(1), // Footer
             ])
@@ -171,11 +171,22 @@ impl Dashboard {
             .map(|b| format!("Core {} (nonce: {})", b.core, b.nonce))
             .unwrap_or_else(|| "N/A".to_string());
 
+        let hash_rate_str = if stats.hash_rate >= 1_000_000.0 {
+            format!("{:.2} MH/s", stats.hash_rate / 1_000_000.0)
+        } else if stats.hash_rate >= 1_000.0 {
+            format!("{:.2} kH/s", stats.hash_rate / 1_000.0)
+        } else if stats.hash_rate > 0.0 {
+            format!("{:.0} H/s", stats.hash_rate)
+        } else {
+            "N/A".to_string()
+        };
+
         let lines = vec![
             Line::from(format!(
                 "Blocks Mined:  {} (since start)",
                 stats.blocks_mined
             )),
+            Line::from(format!("Hash Rate:     {}", hash_rate_str)),
             Line::from(format!("Last Block:    {}", time_since_last)),
             Line::from(format!("Winning Core:  {}", last_block_info)),
             Line::from(format!(

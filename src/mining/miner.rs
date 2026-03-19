@@ -25,6 +25,8 @@ pub struct MiningEvent {
     pub nonce: u64,
     pub worker_id: u64,
     pub hash: String,
+    pub hashes_tried: u64,
+    pub elapsed_secs: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -360,6 +362,8 @@ impl Miner {
         let solution_worker = Arc::new(AtomicU64::new(0));
 
         let nonce_range = u64::MAX / num_workers as u64;
+        let total_hashes = Arc::new(AtomicU64::new(0));
+        let mining_start = std::time::Instant::now();
 
         (0..num_workers).into_par_iter().for_each(|worker_id| {
             let mut local_header = header;
@@ -394,12 +398,16 @@ impl Miner {
 
                 current_nonce = current_nonce.wrapping_add(1);
                 iterations += 1;
+                total_hashes.fetch_add(1, Ordering::Relaxed);
 
                 if current_nonce == start_nonce.wrapping_add(nonce_range) {
                     current_nonce = start_nonce;
                 }
             }
         });
+
+        let elapsed_secs = mining_start.elapsed().as_secs_f64();
+        let hashes_tried = total_hashes.load(Ordering::Relaxed);
 
         let final_header = BlockHeader {
             version: header.version,
@@ -416,6 +424,8 @@ impl Miner {
                 nonce: solution_nonce.load(Ordering::Relaxed),
                 worker_id: solution_worker.load(Ordering::Relaxed),
                 hash: hex::encode(final_header.hash()),
+                hashes_tried,
+                elapsed_secs,
             };
             let _ = sender.send(event);
         }

@@ -532,6 +532,7 @@ dependencies = [
  "env_logger",
  "hex",
  "log",
+ "lru",
  "num-bigint",
  "num_cpus",
  "rand",
