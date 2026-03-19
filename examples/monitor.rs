@@ -637,7 +637,7 @@ fn poll_node(
 
     if need_refresh {
         // Try to fetch recent blocks — failure here does NOT make node OFFLINE
-        match fetch_recent_blocks(local_port, stats.blocks, 5) {
+        match fetch_recent_blocks(local_port, stats.blocks, 10) {
             Ok(recent) => {
                 stats.recent_blocks = recent;
                 stats.blocks_error = None;
