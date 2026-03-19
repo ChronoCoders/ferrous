@@ -128,7 +128,7 @@ impl BlockRelay {
         // Handle Blocks
         let mut blocks_to_send = Vec::new();
         let mut txs_to_send = Vec::new();
-        println!(
+        log::debug!(
             "Relay: handle_getdata called from peer {}, {} items",
             peer_id,
             getdata.inventory.len()
@@ -157,14 +157,14 @@ impl BlockRelay {
                                     })
                             });
                         if let Some(block_msg) = block_opt {
-                            println!(
+                            log::debug!(
                                 "Relay: serving block {} to peer {}",
                                 hex::encode(inv_vec.hash),
                                 peer_id
                             );
                             blocks_to_send.push(block_msg);
                         } else {
-                            println!(
+                            log::debug!(
                                 "Relay: block {} not found for peer {}",
                                 hex::encode(inv_vec.hash),
                                 peer_id
@@ -197,7 +197,7 @@ impl BlockRelay {
     // Handle received Block message
     pub fn handle_block(&self, peer_id: u64, block: &BlockMessage) -> Result<(), String> {
         let block_hash = block.header.hash();
-        println!(
+        log::debug!(
             "Relay: received block {} from peer {}",
             hex::encode(block_hash),
             peer_id
@@ -223,7 +223,7 @@ impl BlockRelay {
             // applied_pairs is empty when the block was only buffered.
             // Each entry is (block, height) for blocks actually committed.
             for (applied, height) in &applied_pairs {
-                println!(
+                log::info!(
                     "Relay: sync applied block {} at height {}",
                     hex::encode(applied.header.hash()),
                     height
@@ -248,7 +248,7 @@ impl BlockRelay {
             transactions: block.transactions.clone(),
         }) {
             Ok(()) => {
-                println!(
+                log::info!(
                     "Relay: block {} added to chain successfully",
                     hex::encode(block_hash)
                 );
@@ -284,7 +284,7 @@ impl BlockRelay {
                 Ok(())
             }
             Err(ChainError::OrphanBlock) => {
-                println!(
+                log::debug!(
                     "Relay: block {} is orphan (parent={})",
                     hex::encode(block_hash),
                     hex::encode(block.header.prev_block_hash)
@@ -293,7 +293,7 @@ impl BlockRelay {
                 Ok(())
             }
             Err(e) => {
-                println!(
+                log::warn!(
                     "Relay: block {} validation failed: {:?}",
                     hex::encode(block_hash),
                     e

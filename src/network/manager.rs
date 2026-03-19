@@ -614,13 +614,13 @@ impl PeerManager {
                     }
                     MessagePayload::GetData(getdata) => {
                         if let Err(e) = relay.handle_getdata(id, getdata) {
-                            println!("dispatch: handle_getdata error from peer {}: {}", id, e);
+                            log::warn!("dispatch: handle_getdata error from peer {}: {}", id, e);
                         }
                     }
                     MessagePayload::Block(block) => {
-                        println!("dispatch: received block message from peer {}", id);
+                        log::debug!("dispatch: received block message from peer {}", id);
                         if let Err(e) = relay.handle_block(id, block) {
-                            println!("dispatch: handle_block error from peer {}: {}", id, e);
+                            log::warn!("dispatch: handle_block error from peer {}: {}", id, e);
                         }
                         // Record block received
                         let stats_guard = stats.lock().unwrap();
