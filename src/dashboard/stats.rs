@@ -9,6 +9,7 @@ pub struct BlockInfo {
     pub nonce: u64,
     pub core: u64,
     pub timestamp: Instant,
+    pub hash_rate: f64,
 }
 
 pub struct MiningStats {
@@ -25,12 +26,18 @@ pub struct MiningStats {
 
 impl BlockInfo {
     pub fn from_event(event: MiningEvent) -> Self {
+        let hash_rate = if event.elapsed_secs > 0.0 {
+            event.hashes_tried as f64 / event.elapsed_secs
+        } else {
+            0.0
+        };
         Self {
             height: event.height,
             hash: event.hash,
             nonce: event.nonce,
             core: event.worker_id,
             timestamp: Instant::now(),
+            hash_rate,
         }
     }
 }
@@ -55,6 +62,7 @@ impl MiningStats {
         self.last_block_time = Some(block.timestamp);
         self.current_height = block.height;
         self.current_hash = block.hash.clone();
+        self.hash_rate = block.hash_rate;
         self.recent_blocks.insert(0, block);
         if self.recent_blocks.len() > 5 {
             self.recent_blocks.truncate(5);
