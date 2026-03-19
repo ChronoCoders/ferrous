@@ -213,6 +213,16 @@ pub fn validate_difficulty(
         .map_err(|_| DifficultyError::InvalidTimestamp)?;
 
     if expected != actual {
+        let prev_nbits = prev.n_bits;
+        let cur_nbits = current_header.n_bits;
+        let exp_nbits = u256_to_compact(&expected);
+        log::warn!(
+            "difficulty mismatch: prev_nbits=0x{:08x} cur_nbits=0x{:08x} \
+             expected_nbits=0x{:08x} prev_ts={} cur_ts={} delta={}",
+            prev_nbits, cur_nbits, exp_nbits,
+            prev.timestamp, current_header.timestamp,
+            current_header.timestamp.saturating_sub(prev.timestamp)
+        );
         return Err(DifficultyError::InvalidTimestamp);
     }
 
