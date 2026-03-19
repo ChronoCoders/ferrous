@@ -653,12 +653,12 @@ impl PeerManager {
                 match payload {
                     MessagePayload::Headers(headers) => {
                         if let Err(e) = sync.handle_headers(id, headers) {
-                            println!("SyncManager: handle_headers error from peer {}: {}", id, e);
+                            log::warn!("SyncManager: handle_headers error from peer {}: {}", id, e);
                         }
                     }
                     MessagePayload::GetHeaders(getheaders) => {
                         if let Err(e) = sync.handle_getheaders(id, getheaders) {
-                            println!(
+                            log::warn!(
                                 "SyncManager: handle_getheaders error from peer {}: {}",
                                 id, e
                             );
@@ -743,7 +743,7 @@ impl PeerManager {
                             let payload = match msg.parse_payload() {
                                 Ok(p) => p,
                                 Err(e) => {
-                                    println!(
+                                    log::warn!(
                                         "block-worker: failed to parse block message from peer {}: {:?}",
                                         peer_id, e
                                     );
@@ -752,7 +752,7 @@ impl PeerManager {
                             };
 
                             if let Err(e) = payload.validate() {
-                                println!(
+                                log::warn!(
                                     "block-worker: invalid block payload from peer {}: {:?}",
                                     peer_id, e
                                 );
@@ -766,7 +766,7 @@ impl PeerManager {
                             let relay_guard = relay.lock().unwrap();
                             if let Some(relay) = &*relay_guard {
                                 if let Err(e) = relay.handle_block(peer_id, &block) {
-                                    println!(
+                                    log::warn!(
                                         "block-worker: handle_block error from peer {}: {}",
                                         peer_id, e
                                     );
@@ -855,13 +855,13 @@ impl PeerManager {
 
                                         let command = msg.command_string();
                                         if command == "block" {
-                                            println!(
+                                            log::debug!(
                                                 "dispatch: queueing block message from peer {}, payload_len={}",
                                                 id,
                                                 msg.payload.len()
                                             );
                                             if let Err(e) = block_tx.send((id, msg)) {
-                                                println!(
+                                                log::warn!(
                                                     "dispatch: failed to enqueue block message from peer {}: {}",
                                                     id, e
                                                 );
