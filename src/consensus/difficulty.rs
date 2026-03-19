@@ -94,14 +94,10 @@ pub fn calculate_next_target(
         }
     }
 
-    // A block whose timestamp precedes its parent's timestamp is invalid.
-    // Proceeding with saturating_sub would silently clamp to 0 and produce a
-    // too-easy difficulty — reject explicitly instead.
-    if current_timestamp < prev_header.timestamp {
-        return Err(DifficultyError::InvalidTimestamp);
-    }
-
-    let mut actual_timespan = current_timestamp - prev_header.timestamp;
+    // Timestamps may legitimately decrease (block only needs to be > MTP, not > prev).
+    // Clamp via saturating_sub: a 0 timespan falls below min_timespan and gets clamped
+    // to target/4, producing a 1% difficulty increase — correct Bitcoin-like behaviour.
+    let mut actual_timespan = current_timestamp.saturating_sub(prev_header.timestamp);
 
     let target = params.target_block_time;
     let min_timespan = target / 4;
