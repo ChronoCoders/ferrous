@@ -1113,7 +1113,16 @@ impl SyncManager {
         let mut start_height = 0;
         let mut matched_at: Option<u64> = None;
         for hash in &msg.block_locator {
-            let height_opt = chain.get_height_for_hash(hash);
+            // Check LRU cache first; fall back to block_meta in DB for blocks
+            // outside the cache window (deep forks, exponential locator steps).
+            let height_opt = chain.get_height_for_hash(hash).or_else(|| {
+                chain
+                    .block_store
+                    .get_block_meta(hash)
+                    .ok()
+                    .flatten()
+                    .map(|m| m.height)
+            });
             if let Some(height) = height_opt {
                 if let Ok(Some(canonical)) = chain.block_store.get_hash_by_height(height) {
                     if canonical == *hash {
