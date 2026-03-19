@@ -36,7 +36,7 @@ impl Network {
                 target_block_time: 150,
                 max_target: crate::consensus::difficulty::TESTNET_MAX_TARGET,
                 difficulty_adjustment: true,
-                allow_min_difficulty_blocks: true,
+                allow_min_difficulty_blocks: false,
             },
             Network::Regtest => ChainParams {
                 target_block_time: 1,

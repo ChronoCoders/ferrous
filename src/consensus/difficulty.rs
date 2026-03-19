@@ -3,13 +3,25 @@ use crate::consensus::params::ChainParams;
 use num_bigint::BigUint;
 
 pub const MAINNET_TARGET_BLOCK_TIME: u64 = 150;
+/// Mainnet: equivalent to Bitcoin difficulty-1 (n_bits 0x1d00ffff).
+/// Big-endian: 0x000000FFFF000...000 — requires 32 leading zero bits.
 pub const MAINNET_MAX_TARGET: U256 = U256([
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
-    0xFF, 0x7F,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF,
+    0, 0, 0, 0,
 ]);
 
-pub const TESTNET_MAX_TARGET: U256 = MAINNET_MAX_TARGET;
-pub const REGTEST_MAX_TARGET: U256 = MAINNET_MAX_TARGET;
+/// Testnet: equivalent to n_bits 0x1f00ffff.
+/// Big-endian: 0x0000FFFF000...000 — requires 16 leading zero bits (65536× easier than mainnet).
+pub const TESTNET_MAX_TARGET: U256 = U256([
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
+    0xFF, 0, 0,
+]);
+
+/// Regtest: near-trivial (n_bits 0x207fffff) — instant block generation for tests.
+pub const REGTEST_MAX_TARGET: U256 = U256([
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0xFF, 0xFF, 0x7F,
+]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DifficultyError {
