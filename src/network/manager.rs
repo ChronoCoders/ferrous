@@ -447,8 +447,6 @@ impl PeerManager {
             let peer_addr = conn.peer_addr();
             let ip = peer_addr.ip();
 
-            log::debug!("inbound: connection attempt from {}", peer_addr);
-
             // DoS check
             let mut dos = dos_protection_clone.lock().unwrap();
             let is_trusted = ip.to_string() == "45.77.153.141" || ip.to_string() == "45.77.64.221";
@@ -465,20 +463,6 @@ impl PeerManager {
             let security = security_clone.lock().unwrap();
             let total_peers = {
                 let peers = peers_clone.lock().unwrap();
-                log::debug!(
-                    "inbound: peer list at arrival from {}: {} peers — {}",
-                    ip,
-                    peers.len(),
-                    peers
-                        .values()
-                        .map(|p| format!(
-                            "{}({})",
-                            p.addr.ip(),
-                            if p.inbound { "in" } else { "out" }
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
                 peers.len()
             };
             if !is_regtest && !is_trusted && !security.can_accept_for_diversity(ip, total_peers) {
@@ -517,11 +501,6 @@ impl PeerManager {
             }
 
             println!("New inbound connection from {}", peer_addr);
-            log::debug!(
-                "inbound[{}]: connection accepted, spawning handshake thread",
-                ip
-            );
-            let spawn_time = std::time::Instant::now();
 
             let mut next_id = next_peer_id_clone.lock().unwrap();
             let id = *next_id;
@@ -537,36 +516,20 @@ impl PeerManager {
             let sync_manager_inner = Arc::clone(&sync_manager_clone);
 
             thread::spawn(move || {
-                log::debug!(
-                    "inbound[{}]: handshake thread started ({:.1}ms after accept)",
-                    ip,
-                    spawn_time.elapsed().as_secs_f64() * 1000.0
-                );
-
                 let version = 70015;
                 let services = 0;
                 let height = {
-                    let t = std::time::Instant::now();
                     let guard = sync_manager_inner.lock().unwrap();
-                    let h = if let Some(sync) = &*guard {
+                    if let Some(sync) = &*guard {
                         sync.get_local_height()
                     } else {
                         0
-                    };
-                    log::debug!(
-                        "inbound[{}]: sync_manager lock acquired in {:.1}ms, height={}",
-                        ip,
-                        t.elapsed().as_secs_f64() * 1000.0,
-                        h
-                    );
-                    h
+                    }
                 };
                 let nonce = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_nanos() as u64)
                     .unwrap_or(0);
-
-                log::debug!("inbound[{}]: calling perform_inbound_handshake", ip);
                 match perform_inbound_handshake(&mut peer, version, services, height, nonce) {
                     Ok(_) => {
                         println!("Inbound handshake success from {}", ip);
