@@ -782,9 +782,6 @@ impl PeerManager {
                 }
 
                 'peer_loop: for id in peer_ids {
-                    // We need to manage peer disconnection outside of holding the peer reference
-                    let mut should_disconnect = false;
-
                     // Lock peers to access peer
                     let mut peers = peers_clone.lock().unwrap();
                     if let Some(peer) = peers.get_mut(&id) {
@@ -796,10 +793,31 @@ impl PeerManager {
                                     println!("Invalid message from {}: {:?}", id, e);
                                     peer.add_ban_score(10);
                                     if peer.should_ban() {
-                                        should_disconnect = true;
+                                        // NLL: peer's last use is peer.should_ban() above.
+                                        let dci =
+                                            peers.remove(&id).map(|p| (p.addr.ip(), p.inbound));
+                                        let rem = peers.len();
+                                        drop(peers);
+                                        batcher_clone.lock().unwrap().clear_peer(id);
+                                        broadcast_cache_clone.lock().unwrap().clear_peer(id);
+                                        if let Some((ip, inbound)) = dci {
+                                            dos_protection_clone
+                                                .lock()
+                                                .unwrap()
+                                                .record_disconnection(id, ip, inbound);
+                                            security_clone.lock().unwrap().remove_peer(id);
+                                        }
+                                        if rem == 0 {
+                                            let recovery_bg = Arc::clone(&recovery_clone);
+                                            thread::spawn(move || {
+                                                let rg = recovery_bg.lock().unwrap();
+                                                if let Some(r) = &*rg {
+                                                    let _ = r.recover();
+                                                }
+                                            });
+                                        }
+                                        continue 'peer_loop;
                                     }
-                                    // Drop invalid message
-                                    // continue; // REMOVED to avoid skipping cleanup
                                 } else {
                                     // Only process if valid
                                     let msg_size = msg.encoded_size();
@@ -821,15 +839,36 @@ impl PeerManager {
                                         peer.add_ban_score(10);
                                         if peer.should_ban() {
                                             println!("Banning peer {} for rate limit abuse", id);
-                                            // Record ban
                                             {
                                                 let stats_guard = stats_clone.lock().unwrap();
                                                 if let Some(stats) = &*stats_guard {
                                                     stats.record_banned_peer();
                                                 }
                                             }
-                                            should_disconnect = true;
-                                            // continue; // REMOVED
+                                            // NLL: peer's last use is peer.should_ban() above.
+                                            let dci =
+                                                peers.remove(&id).map(|p| (p.addr.ip(), p.inbound));
+                                            let rem = peers.len();
+                                            drop(peers);
+                                            batcher_clone.lock().unwrap().clear_peer(id);
+                                            broadcast_cache_clone.lock().unwrap().clear_peer(id);
+                                            if let Some((ip, inbound)) = dci {
+                                                dos_protection_clone
+                                                    .lock()
+                                                    .unwrap()
+                                                    .record_disconnection(id, ip, inbound);
+                                                security_clone.lock().unwrap().remove_peer(id);
+                                            }
+                                            if rem == 0 {
+                                                let recovery_bg = Arc::clone(&recovery_clone);
+                                                thread::spawn(move || {
+                                                    let rg = recovery_bg.lock().unwrap();
+                                                    if let Some(r) = &*rg {
+                                                        let _ = r.recover();
+                                                    }
+                                                });
+                                            }
+                                            continue 'peer_loop;
                                         } else {
                                             // Record rate limit event
                                             {
@@ -841,8 +880,8 @@ impl PeerManager {
                                         }
                                     }
 
-                                    // Process payload only if not disconnected
-                                    if !should_disconnect {
+                                    // Process valid payload
+                                    {
                                         drop(peers); // Drop lock before handling
 
                                         let command = msg.command_string();
@@ -979,54 +1018,47 @@ impl PeerManager {
                                 // No message, continue
                             }
                             Err(e) => {
+                                // NLL: `peer` was last used in `match peer.receive()` above;
+                                // its borrow on `peers` has ended. Remove the peer while we
+                                // still hold `peers`, then drop `peers` before acquiring any
+                                // other lock. This avoids the ABBA same-thread deadlock caused
+                                // by the old deferred disconnect path (which held `peers` from
+                                // the outer lock() and then tried to call peers_clone.lock()
+                                // again in the disconnect block).
                                 println!("Error receiving from peer {}: {:?}", id, e);
-                                should_disconnect = true;
-                                // Record failed/closed connection
-                                let stats_guard = stats_clone.lock().unwrap();
-                                if let Some(stats) = &*stats_guard {
-                                    stats.record_connection_closed();
+                                let dconn_info =
+                                    peers.remove(&id).map(|p| (p.addr.ip(), p.inbound));
+                                let remaining = peers.len();
+                                drop(peers);
+                                {
+                                    let stats_guard = stats_clone.lock().unwrap();
+                                    if let Some(stats) = &*stats_guard {
+                                        stats.record_connection_closed();
+                                    }
                                 }
+                                batcher_clone.lock().unwrap().clear_peer(id);
+                                broadcast_cache_clone.lock().unwrap().clear_peer(id);
+                                if let Some((ip, inbound)) = dconn_info {
+                                    dos_protection_clone
+                                        .lock()
+                                        .unwrap()
+                                        .record_disconnection(id, ip, inbound);
+                                    security_clone.lock().unwrap().remove_peer(id);
+                                }
+                                if remaining == 0 {
+                                    let recovery_bg = Arc::clone(&recovery_clone);
+                                    thread::spawn(move || {
+                                        let recovery_guard = recovery_bg.lock().unwrap();
+                                        if let Some(recovery) = &*recovery_guard {
+                                            let _ = recovery.recover();
+                                        }
+                                    });
+                                }
+                                continue 'peer_loop;
                             }
                         }
                     } else {
                         // Peer not found (removed concurrently?)
-                    }
-
-                    // Handle disconnection if marked
-                    if should_disconnect {
-                        // Remove from peers map and capture metadata, then release the lock
-                        // before acquiring any other locks. This prevents ABBA deadlocks:
-                        //   - inbound callback: security → peers
-                        //   - broadcast_inventory: cache → batcher → peers
-                        // All of those must not be acquired while peers is held.
-                        let (remaining_peers, removed_ip, removed_inbound) = {
-                            let mut peers = peers_clone.lock().unwrap();
-                            let info = peers.remove(&id).map(|p| (p.addr.ip(), p.inbound));
-                            (peers.len(), info.map(|(ip, _)| ip), info.map(|(_, ib)| ib))
-                        };
-                        // peers lock is now released — safe to acquire batcher/cache/security/dos.
-                        batcher_clone.lock().unwrap().clear_peer(id);
-                        broadcast_cache_clone.lock().unwrap().clear_peer(id);
-                        if let (Some(ip), Some(inbound)) = (removed_ip, removed_inbound) {
-                            let mut dos = dos_protection_clone.lock().unwrap();
-                            dos.record_disconnection(id, ip, inbound);
-
-                            let mut security = security_clone.lock().unwrap();
-                            security.remove_peer(id);
-                        }
-
-                        // If we just lost our last peer, trigger immediate recovery
-                        // in a background thread so the message-handler loop is not
-                        // blocked by TcpStream::connect_timeout calls inside recover().
-                        if remaining_peers == 0 {
-                            let recovery_bg = Arc::clone(&recovery_clone);
-                            thread::spawn(move || {
-                                let recovery_guard = recovery_bg.lock().unwrap();
-                                if let Some(recovery) = &*recovery_guard {
-                                    let _ = recovery.recover();
-                                }
-                            });
-                        }
                     }
                 }
 
