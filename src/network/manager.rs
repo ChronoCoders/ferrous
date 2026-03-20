@@ -1035,25 +1035,29 @@ impl PeerManager {
 
                     // Handle disconnection if marked
                     if should_disconnect {
-                        let remaining_peers = {
+                        // Remove from peers map and capture metadata, then release the lock
+                        // before acquiring security/dos/batcher/cache locks. This prevents an
+                        // ABBA deadlock with the inbound-listener callback, which acquires
+                        // security.lock() first and then peers.lock().
+                        let (remaining_peers, removed_ip, removed_inbound) = {
                             let mut peers = peers_clone.lock().unwrap();
-                            if let Some(peer) = peers.remove(&id) {
-                                let ip = peer.addr.ip();
-                                let inbound = peer.inbound;
-                                // Record disconnection
-                                let mut dos = dos_protection_clone.lock().unwrap();
-                                dos.record_disconnection(id, ip, inbound);
-
-                                let mut batcher = batcher_clone.lock().unwrap();
-                                batcher.clear_peer(id);
-                                let mut cache = broadcast_cache_clone.lock().unwrap();
-                                cache.clear_peer(id);
-
-                                let mut security = security_clone.lock().unwrap();
-                                security.remove_peer(id);
-                            }
-                            peers.len()
+                            let info = peers
+                                .remove(&id)
+                                .map(|p| (p.addr.ip(), p.inbound));
+                            let mut batcher = batcher_clone.lock().unwrap();
+                            batcher.clear_peer(id);
+                            let mut cache = broadcast_cache_clone.lock().unwrap();
+                            cache.clear_peer(id);
+                            (peers.len(), info.map(|(ip, _)| ip), info.map(|(_, ib)| ib))
                         };
+                        // peers lock is now released — safe to acquire security/dos.
+                        if let (Some(ip), Some(inbound)) = (removed_ip, removed_inbound) {
+                            let mut dos = dos_protection_clone.lock().unwrap();
+                            dos.record_disconnection(id, ip, inbound);
+
+                            let mut security = security_clone.lock().unwrap();
+                            security.remove_peer(id);
+                        }
 
                         // If we just lost our last peer, trigger immediate recovery
                         // in a background thread so the message-handler loop is not
