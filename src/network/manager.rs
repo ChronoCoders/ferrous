@@ -517,9 +517,13 @@ impl PeerManager {
             }
 
             println!("New inbound connection from {}", peer_addr);
+            log::debug!("inbound[{}]: connection accepted, spawning handshake thread", ip);
+            let spawn_time = std::time::Instant::now();
+
             let mut next_id = next_peer_id_clone.lock().unwrap();
             let id = *next_id;
             *next_id += 1;
+            drop(next_id);
 
             let mut peer = Peer::new_inbound(id, conn);
 
@@ -530,33 +534,36 @@ impl PeerManager {
             let sync_manager_inner = Arc::clone(&sync_manager_clone);
 
             thread::spawn(move || {
-                // peer.state = PeerState::Active; // Auto-active for now as per existing logic
-                // peers_inner.lock().unwrap().insert(id, peer);
+                log::debug!(
+                    "inbound[{}]: handshake thread started ({:.1}ms after accept)",
+                    ip,
+                    spawn_time.elapsed().as_secs_f64() * 1000.0
+                );
 
-                // NEW LOGIC:
-                // We need to perform handshake.
-                // But we don't have version info.
-                // Let's use constants or defaults for now to pass tests.
                 let version = 70015;
                 let services = 0;
                 let height = {
-                    let sync_guard = sync_manager_inner.lock().unwrap();
-                    if let Some(sync) = &*sync_guard {
+                    let t = std::time::Instant::now();
+                    let guard = sync_manager_inner.lock().unwrap();
+                    let h = if let Some(sync) = &*guard {
                         sync.get_local_height()
                     } else {
                         0
-                    }
+                    };
+                    log::debug!(
+                        "inbound[{}]: sync_manager lock acquired in {:.1}ms, height={}",
+                        ip,
+                        t.elapsed().as_secs_f64() * 1000.0,
+                        h
+                    );
+                    h
                 };
                 let nonce = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_nanos() as u64)
                     .unwrap_or(0);
 
-                // We need to insert peer first so we can use `perform_handshake` which takes `&mut Peer`.
-                // But `perform_handshake` assumes we own the peer reference.
-                // It does NOT take lock.
-
-                // So:
+                log::debug!("inbound[{}]: calling perform_inbound_handshake", ip);
                 match perform_inbound_handshake(&mut peer, version, services, height, nonce) {
                     Ok(_) => {
                         println!("Inbound handshake success from {}", ip);
