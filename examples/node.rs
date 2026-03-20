@@ -247,13 +247,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let miner = Arc::new(Miner::new(params, mining_address));
 
+        let recovery_manager_rpc = recovery_manager.clone();
         let config = RpcServerConfig {
             chain: chain.clone(),
             miner: miner.clone(),
             wallet,
             peer_manager: peer_manager.clone(),
             network_stats,
-            recovery_manager,
+            recovery_manager: recovery_manager_rpc,
             relay: relay.clone(),
             mempool: mempool.clone(),
         };
@@ -265,6 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let chain_mine = chain.clone();
             let miner_mine = miner.clone();
             let relay_mine = relay.clone();
+            let recovery_mine = recovery_manager.clone();
             std::thread::spawn(move || loop {
                 use ferrous_node::consensus::block::Block;
                 use ferrous_node::mining::miner::BlockTemplate;
@@ -314,6 +316,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Write lock is now released.
 
                 if let Some(hash) = hash {
+                    // Notify recovery manager so last_block_age reflects locally
+                    // mined blocks, not just P2P-received ones.
+                    recovery_mine.on_new_block();
                     let _ = relay_mine.announce_block(hash);
                 }
             });
