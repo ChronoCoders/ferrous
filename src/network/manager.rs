@@ -471,14 +471,22 @@ impl PeerManager {
                     peers.len(),
                     peers
                         .values()
-                        .map(|p| format!("{}({})", p.addr.ip(), if p.inbound { "in" } else { "out" }))
+                        .map(|p| format!(
+                            "{}({})",
+                            p.addr.ip(),
+                            if p.inbound { "in" } else { "out" }
+                        ))
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
                 peers.len()
             };
             if !is_regtest && !is_trusted && !security.can_accept_for_diversity(ip, total_peers) {
-                log::warn!("inbound: rejected {} (diversity, total_peers={})", ip, total_peers);
+                log::warn!(
+                    "inbound: rejected {} (diversity, total_peers={})",
+                    ip,
+                    total_peers
+                );
                 return;
             }
             drop(security);
@@ -492,10 +500,7 @@ impl PeerManager {
                     .values()
                     .any(|p| p.addr.ip() == ip);
                 if already_connected {
-                    log::warn!(
-                        "inbound: rejected {} (duplicate — already connected)",
-                        ip
-                    );
+                    log::warn!("inbound: rejected {} (duplicate — already connected)", ip);
                     return;
                 }
             }
@@ -504,7 +509,9 @@ impl PeerManager {
             if peer_count >= max_peers {
                 log::warn!(
                     "inbound: rejected {} (max_peers={} reached, current={})",
-                    peer_addr, max_peers, peer_count
+                    peer_addr,
+                    max_peers,
+                    peer_count
                 );
                 return;
             }
@@ -1041,12 +1048,17 @@ impl PeerManager {
                             peers.len()
                         };
 
-                        // If we just lost our last peer, trigger immediate recovery.
+                        // If we just lost our last peer, trigger immediate recovery
+                        // in a background thread so the message-handler loop is not
+                        // blocked by TcpStream::connect_timeout calls inside recover().
                         if remaining_peers == 0 {
-                            let recovery_guard = recovery_clone.lock().unwrap();
-                            if let Some(recovery) = &*recovery_guard {
-                                let _ = recovery.recover();
-                            }
+                            let recovery_bg = Arc::clone(&recovery_clone);
+                            thread::spawn(move || {
+                                let recovery_guard = recovery_bg.lock().unwrap();
+                                if let Some(recovery) = &*recovery_guard {
+                                    let _ = recovery.recover();
+                                }
+                            });
                         }
                     }
                 }
