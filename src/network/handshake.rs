@@ -91,12 +91,18 @@ pub fn perform_inbound_handshake(
     our_height: u32,
     our_nonce: u64,
 ) -> Result<(), String> {
+    let addr = peer.addr;
     let start = Instant::now();
+
+    log::debug!("inbound[{}]: waiting for VERSION", addr.ip());
 
     // 1. Wait for Version from peer
     let version_msg = loop {
         if start.elapsed() > HANDSHAKE_TIMEOUT {
-            return Err("Handshake timeout waiting for version".to_string());
+            return Err(format!(
+                "Handshake timeout waiting for version (elapsed: {:.1}s)",
+                start.elapsed().as_secs_f64()
+            ));
         }
 
         match peer.receive() {
@@ -109,6 +115,11 @@ pub fn perform_inbound_handshake(
                         return Err("Connected to self".to_string());
                     }
 
+                    log::debug!(
+                        "inbound[{}]: received VERSION ({:.1}ms after start)",
+                        addr.ip(),
+                        start.elapsed().as_secs_f64() * 1000.0
+                    );
                     break version_msg;
                 } else {
                     return Err(format!("Expected version, got {}", msg.command_string()));
@@ -123,9 +134,19 @@ pub fn perform_inbound_handshake(
 
     // 2. Send our Version first (so peer receives Version before Verack)
     peer.initiate_handshake(our_version, our_services, our_height, our_nonce)?;
+    log::debug!(
+        "inbound[{}]: sent VERSION ({:.1}ms after start)",
+        addr.ip(),
+        start.elapsed().as_secs_f64() * 1000.0
+    );
 
     // 3. Now handle peer's Version (sends Verack)
     peer.handle_version(&version_msg)?;
+    log::debug!(
+        "inbound[{}]: sent VERACK ({:.1}ms after start)",
+        addr.ip(),
+        start.elapsed().as_secs_f64() * 1000.0
+    );
 
     // 4. Wait for Verack
     loop {
@@ -137,6 +158,11 @@ pub fn perform_inbound_handshake(
             Ok(Some(msg)) => {
                 if msg.command_string() == "verack" {
                     peer.handle_verack()?;
+                    log::debug!(
+                        "inbound[{}]: received VERACK, handshake complete ({:.1}ms total)",
+                        addr.ip(),
+                        start.elapsed().as_secs_f64() * 1000.0
+                    );
                     break;
                 } else if msg.command_string() == "ping" {
                     continue;
