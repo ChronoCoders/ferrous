@@ -266,37 +266,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let miner_mine = miner.clone();
             let relay_mine = relay.clone();
             std::thread::spawn(move || loop {
-                // Phase 1: build template and run PoW with only a read lock so
-                // RPC and P2P threads can read chain state concurrently.
-                let mine_result = {
+                use ferrous_node::consensus::block::Block;
+                use ferrous_node::mining::miner::BlockTemplate;
+
+                // Phase 1: build template with read lock — fast (<1ms), no PoW.
+                // Read lock is released before PoW starts so RPC, sync, and
+                // the block-dispatch-worker can access the chain concurrently.
+                let template_result = {
                     let chain_guard = chain_mine.read().unwrap();
-                    miner_mine.mine_block(&chain_guard, Vec::new())
+                    miner_mine.build_template(&chain_guard, Vec::new())
+                };
+                // Read lock is now released.
+                let template: BlockTemplate = match template_result {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("Mining error (build_template): {:?}", e);
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        continue;
+                    }
                 };
 
-                // Phase 2: commit the solved block — write lock held only for
-                // the brief add_block call, not for the entire PoW search.
-                let hash = match mine_result {
-                    Ok((header, txs)) => {
-                        use ferrous_node::consensus::block::Block;
-                        let mut chain_guard = chain_mine.write().unwrap();
-                        match chain_guard.add_block(Block {
-                            header,
-                            transactions: txs,
-                        }) {
-                            Ok(_) => Some(header.hash()),
-                            Err(e) => {
-                                eprintln!("Mining error (add_block): {:?}", e);
-                                std::thread::sleep(std::time::Duration::from_secs(1));
-                                None
-                            }
-                        }
-                    }
+                // Phase 2: run PoW — no chain lock held.
+                let (header, txs) = match miner_mine.solve_template(template) {
+                    Ok(solved) => solved,
                     Err(e) => {
-                        eprintln!("Mining error: {:?}", e);
+                        eprintln!("Mining error (solve_template): {:?}", e);
                         std::thread::sleep(std::time::Duration::from_secs(1));
-                        None
+                        continue;
                     }
                 };
+
+                // Phase 3: commit with write lock — brief (~add_block duration).
+                let hash = {
+                    let mut chain_guard = chain_mine.write().unwrap();
+                    match chain_guard.add_block(Block {
+                        header,
+                        transactions: txs,
+                    }) {
+                        Ok(_) => Some(header.hash()),
+                        Err(e) => {
+                            eprintln!("Mining error (add_block): {:?}", e);
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                            None
+                        }
+                    }
+                };
+                // Write lock is now released.
 
                 if let Some(hash) = hash {
                     let _ = relay_mine.announce_block(hash);

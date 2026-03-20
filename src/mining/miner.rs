@@ -12,6 +12,16 @@ use std::time::Duration;
 
 const MAX_FUTURE_OFFSET: u64 = 7200;
 
+/// Pre-solved block template — everything needed to run PoW, with no chain
+/// reference held. Build with `Miner::build_template`, solve with
+/// `Miner::solve_template`.
+#[derive(Clone)]
+pub struct BlockTemplate {
+    pub header: BlockHeader,
+    pub transactions: Vec<Transaction>,
+    pub height: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Miner {
     pub params: ChainParams,
@@ -413,6 +423,179 @@ impl Miner {
         let found = Arc::new(AtomicBool::new(false));
         let solution_nonce = Arc::new(AtomicU64::new(0));
         let solution_timestamp = Arc::new(AtomicU64::new(timestamp));
+        let solution_worker = Arc::new(AtomicU64::new(0));
+
+        let nonce_range = u64::MAX / num_workers as u64;
+        let mining_start = std::time::Instant::now();
+
+        (0..num_workers).into_par_iter().for_each(|worker_id| {
+            let mut local_header = header;
+            let start_nonce = worker_id as u64 * nonce_range;
+            let mut current_nonce = start_nonce;
+            let mut iterations = 0u64;
+
+            loop {
+                if found.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                local_header.nonce = current_nonce;
+
+                if local_header.check_proof_of_work().unwrap_or(false) {
+                    found.store(true, Ordering::Relaxed);
+                    solution_nonce.store(current_nonce, Ordering::Relaxed);
+                    solution_timestamp.store(local_header.timestamp, Ordering::Relaxed);
+                    solution_worker.store(worker_id as u64, Ordering::Relaxed);
+                    break;
+                }
+
+                current_nonce = current_nonce.wrapping_add(1);
+                iterations += 1;
+                self.stats.active_hashes.fetch_add(1, Ordering::Relaxed);
+
+                if iterations.is_multiple_of(50_000) {
+                    std::thread::yield_now();
+                }
+                if iterations.is_multiple_of(200_000) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+
+                if current_nonce == start_nonce.wrapping_add(nonce_range) {
+                    current_nonce = start_nonce;
+                }
+            }
+        });
+
+        let elapsed_secs = mining_start.elapsed().as_secs_f64();
+        let hashes_tried = self.stats.active_hashes.load(Ordering::Relaxed);
+        let elapsed_micros = (elapsed_secs * 1_000_000.0).round();
+        if elapsed_micros.is_finite() && elapsed_micros > 0.0 {
+            self.stats
+                .total_hashes
+                .fetch_add(hashes_tried, Ordering::Relaxed);
+            self.stats.total_micros.fetch_add(
+                elapsed_micros.min(u64::MAX as f64) as u64,
+                Ordering::Relaxed,
+            );
+        }
+        self.stats.active.store(false, Ordering::Relaxed);
+
+        let final_header = BlockHeader {
+            version: header.version,
+            prev_block_hash: header.prev_block_hash,
+            merkle_root: header.merkle_root,
+            timestamp: solution_timestamp.load(Ordering::Relaxed),
+            n_bits: header.n_bits,
+            nonce: solution_nonce.load(Ordering::Relaxed),
+        };
+
+        if let Some(sender) = &self.event_sender {
+            let event = MiningEvent {
+                height,
+                nonce: solution_nonce.load(Ordering::Relaxed),
+                worker_id: solution_worker.load(Ordering::Relaxed),
+                hash: hex::encode(final_header.hash()),
+                hashes_tried,
+                elapsed_secs,
+            };
+            let _ = sender.send(event);
+        }
+
+        if !final_header
+            .check_proof_of_work()
+            .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?
+        {
+            return Err(MiningError::ChainError(
+                "PoW verification failed".to_string(),
+            ));
+        }
+
+        Ok((final_header, all_txs))
+    }
+
+    /// Build a block template from the current chain tip. Reads chain state and
+    /// returns immediately — does NOT run PoW. Callers should release any chain
+    /// lock before calling `solve_template`.
+    pub fn build_template(
+        &self,
+        chain: &ChainState,
+        transactions: Vec<Transaction>,
+    ) -> Result<BlockTemplate, MiningError> {
+        self.build_template_with_script(chain, transactions, self.mining_address.clone())
+    }
+
+    fn build_template_with_script(
+        &self,
+        chain: &ChainState,
+        transactions: Vec<Transaction>,
+        script_pubkey: Vec<u8>,
+    ) -> Result<BlockTemplate, MiningError> {
+        let tip = chain
+            .get_tip()
+            .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?
+            .ok_or(MiningError::ChainError("Chain tip not found".to_string()))?;
+        let height = (tip.height + 1) as u32;
+
+        let subsidy = crate::consensus::validation::calculate_subsidy(height);
+        let total_fees = 0u64;
+
+        let coinbase =
+            self.create_coinbase_internal(height, subsidy, total_fees, script_pubkey);
+
+        let mut all_txs = vec![coinbase];
+        all_txs.extend(transactions);
+
+        let txids: Vec<_> = all_txs.iter().map(|tx| tx.txid()).collect();
+        let merkle_root = compute_merkle_root(&txids);
+
+        let timestamp = next_block_timestamp(chain)?;
+
+        let target = calculate_next_target(&tip.block.header, timestamp, &self.params)
+            .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?;
+
+        let n_bits = u256_to_compact(&target);
+        let prev_block_hash = tip.block.header.hash();
+
+        let header = BlockHeader {
+            version: 1,
+            prev_block_hash,
+            merkle_root,
+            timestamp,
+            n_bits,
+            nonce: 0,
+        };
+
+        Ok(BlockTemplate {
+            header,
+            transactions: all_txs,
+            height,
+        })
+    }
+
+    /// Run PoW on a pre-built template. Does not access chain state — safe to
+    /// call without holding any chain lock.
+    pub fn solve_template(
+        &self,
+        template: BlockTemplate,
+    ) -> Result<(BlockHeader, Vec<Transaction>), MiningError> {
+        let header = template.header;
+        let height = template.height;
+        let all_txs = template.transactions;
+
+        self.stats.active.store(true, Ordering::Relaxed);
+        self.stats.active_hashes.store(0, Ordering::Relaxed);
+        self.stats
+            .active_start_micros
+            .store(now_micros(), Ordering::Relaxed);
+
+        let num_workers = std::env::var("FERROUS_MINER_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or_else(num_cpus::get);
+        let found = Arc::new(AtomicBool::new(false));
+        let solution_nonce = Arc::new(AtomicU64::new(0));
+        let solution_timestamp = Arc::new(AtomicU64::new(header.timestamp));
         let solution_worker = Arc::new(AtomicU64::new(0));
 
         let nonce_range = u64::MAX / num_workers as u64;
