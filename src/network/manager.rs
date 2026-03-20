@@ -131,23 +131,19 @@ impl PeerManager {
     }
 
     pub fn disconnect_peer(&self, peer_id: u64) -> Result<(), String> {
-        let mut peers = self.peers.lock().unwrap();
-        if let Some(peer) = peers.remove(&peer_id) {
-            let ip = peer.addr.ip();
-            let inbound = peer.inbound;
-
-            // Record disconnection
-            let mut dos = self.dos_protection.lock().unwrap();
-            dos.record_disconnection(peer_id, ip, inbound);
-
-            let mut batcher = self.batcher.lock().unwrap();
-            batcher.clear_peer(peer_id);
-            let mut cache = self.broadcast_cache.lock().unwrap();
-            cache.clear_peer(peer_id);
-
-            let mut security = self.security.lock().unwrap();
-            security.remove_peer(peer_id);
-
+        let info = {
+            let mut peers = self.peers.lock().unwrap();
+            peers.remove(&peer_id).map(|p| (p.addr.ip(), p.inbound))
+        };
+        // peers lock released.
+        if let Some((ip, inbound)) = info {
+            self.dos_protection
+                .lock()
+                .unwrap()
+                .record_disconnection(peer_id, ip, inbound);
+            self.batcher.lock().unwrap().clear_peer(peer_id);
+            self.broadcast_cache.lock().unwrap().clear_peer(peer_id);
+            self.security.lock().unwrap().remove_peer(peer_id);
             Ok(())
         } else {
             Err("Peer not found".to_string())
@@ -170,26 +166,23 @@ impl PeerManager {
     }
 
     pub fn punish_peer(&self, peer_id: u64, score: u32) {
-        let mut peers = self.peers.lock().unwrap();
-        if let Some(peer) = peers.get_mut(&peer_id) {
-            peer.add_ban_score(score);
-            if peer.should_ban() {
-                println!("Peer {} banned (score: {})", peer_id, peer.get_ban_score());
-                if let Some(peer) = peers.remove(&peer_id) {
-                    let ip = peer.addr.ip();
-                    let inbound = peer.inbound;
-                    let mut dos = self.dos_protection.lock().unwrap();
-                    dos.record_disconnection(peer_id, ip, inbound);
-
-                    let mut batcher = self.batcher.lock().unwrap();
-                    batcher.clear_peer(peer_id);
-                    let mut cache = self.broadcast_cache.lock().unwrap();
-                    cache.clear_peer(peer_id);
-
-                    let mut security = self.security.lock().unwrap();
-                    security.remove_peer(peer_id);
+        let should_remove = {
+            let mut peers = self.peers.lock().unwrap();
+            if let Some(peer) = peers.get_mut(&peer_id) {
+                peer.add_ban_score(score);
+                if peer.should_ban() {
+                    println!("Peer {} banned (score: {})", peer_id, peer.get_ban_score());
+                    true
+                } else {
+                    false
                 }
+            } else {
+                false
             }
+        };
+        // peers lock released before removing/cleaning up.
+        if should_remove {
+            let _ = self.disconnect_peer(peer_id);
         }
     }
 
@@ -1043,30 +1036,31 @@ impl PeerManager {
     }
 
     pub fn broadcast(&self, message: &NetworkMessage) -> Result<(), String> {
-        let mut peers = self.peers.lock().unwrap();
-        let mut dead_peers: Vec<u64> = Vec::new();
-
-        for (id, peer) in peers.iter_mut() {
-            if peer.state == PeerState::Active && peer.send(message).is_err() {
-                dead_peers.push(*id);
+        // Collect dead peers while holding peers lock, then release before
+        // acquiring batcher/cache/security — same lock-ordering rule as the
+        // disconnect path in start_message_handler.
+        let dead_peers: Vec<(u64, std::net::IpAddr, bool)> = {
+            let mut peers = self.peers.lock().unwrap();
+            let mut dead_ids: Vec<u64> = Vec::new();
+            for (id, peer) in peers.iter_mut() {
+                if peer.state == PeerState::Active && peer.send(message).is_err() {
+                    dead_ids.push(*id);
+                }
             }
-        }
-
-        for id in dead_peers {
-            if let Some(peer) = peers.remove(&id) {
-                let ip = peer.addr.ip();
-                let inbound = peer.inbound;
-                let mut dos = self.dos_protection.lock().unwrap();
-                dos.record_disconnection(id, ip, inbound);
-
-                let mut batcher = self.batcher.lock().unwrap();
-                batcher.clear_peer(id);
-                let mut cache = self.broadcast_cache.lock().unwrap();
-                cache.clear_peer(id);
-
-                let mut security = self.security.lock().unwrap();
-                security.remove_peer(id);
-            }
+            dead_ids
+                .into_iter()
+                .filter_map(|id| peers.remove(&id).map(|p| (id, p.addr.ip(), p.inbound)))
+                .collect()
+        };
+        // peers lock released — safe to acquire batcher/cache/security.
+        for (id, ip, inbound) in dead_peers {
+            self.dos_protection
+                .lock()
+                .unwrap()
+                .record_disconnection(id, ip, inbound);
+            self.batcher.lock().unwrap().clear_peer(id);
+            self.broadcast_cache.lock().unwrap().clear_peer(id);
+            self.security.lock().unwrap().remove_peer(id);
         }
 
         Ok(())
