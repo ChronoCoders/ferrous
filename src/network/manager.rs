@@ -517,7 +517,10 @@ impl PeerManager {
             }
 
             println!("New inbound connection from {}", peer_addr);
-            log::debug!("inbound[{}]: connection accepted, spawning handshake thread", ip);
+            log::debug!(
+                "inbound[{}]: connection accepted, spawning handshake thread",
+                ip
+            );
             let spawn_time = std::time::Instant::now();
 
             let mut next_id = next_peer_id_clone.lock().unwrap();
@@ -1036,21 +1039,18 @@ impl PeerManager {
                     // Handle disconnection if marked
                     if should_disconnect {
                         // Remove from peers map and capture metadata, then release the lock
-                        // before acquiring security/dos/batcher/cache locks. This prevents an
-                        // ABBA deadlock with the inbound-listener callback, which acquires
-                        // security.lock() first and then peers.lock().
+                        // before acquiring any other locks. This prevents ABBA deadlocks:
+                        //   - inbound callback: security → peers
+                        //   - broadcast_inventory: cache → batcher → peers
+                        // All of those must not be acquired while peers is held.
                         let (remaining_peers, removed_ip, removed_inbound) = {
                             let mut peers = peers_clone.lock().unwrap();
-                            let info = peers
-                                .remove(&id)
-                                .map(|p| (p.addr.ip(), p.inbound));
-                            let mut batcher = batcher_clone.lock().unwrap();
-                            batcher.clear_peer(id);
-                            let mut cache = broadcast_cache_clone.lock().unwrap();
-                            cache.clear_peer(id);
+                            let info = peers.remove(&id).map(|p| (p.addr.ip(), p.inbound));
                             (peers.len(), info.map(|(ip, _)| ip), info.map(|(_, ib)| ib))
                         };
-                        // peers lock is now released — safe to acquire security/dos.
+                        // peers lock is now released — safe to acquire batcher/cache/security/dos.
+                        batcher_clone.lock().unwrap().clear_peer(id);
+                        broadcast_cache_clone.lock().unwrap().clear_peer(id);
                         if let (Some(ip), Some(inbound)) = (removed_ip, removed_inbound) {
                             let mut dos = dos_protection_clone.lock().unwrap();
                             dos.record_disconnection(id, ip, inbound);
