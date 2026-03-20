@@ -539,8 +539,7 @@ impl Miner {
         let subsidy = crate::consensus::validation::calculate_subsidy(height);
         let total_fees = 0u64;
 
-        let coinbase =
-            self.create_coinbase_internal(height, subsidy, total_fees, script_pubkey);
+        let coinbase = self.create_coinbase_internal(height, subsidy, total_fees, script_pubkey);
 
         let mut all_txs = vec![coinbase];
         all_txs.extend(transactions);
