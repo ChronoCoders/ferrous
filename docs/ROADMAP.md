@@ -5,7 +5,7 @@
 - Full P2P stack: handshake, headers-first IBD, block relay, peer discovery
 - RocksDB persistent storage
 - JSON-RPC API (20+ methods) and TUI Dashboard + Monitor
-- Parallel IBD: headers-first state machine deployed (Phase 2/3 in progress)
+- Parallel IBD: headers-first state machine deployed 
 
 ## Phase 2: Parallel IBD Completion + Testnet Reset
 - BlockDownloadQueue with work-stealing multi-peer download
