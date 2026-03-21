@@ -200,6 +200,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         addr_manager,
         network.clone(),
     ));
+    peer_manager.set_recovery(recovery_manager.clone());
+    recovery_manager.start();
 
     if args.dashboard {
         // Dashboard mode
