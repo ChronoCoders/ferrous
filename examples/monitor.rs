@@ -365,14 +365,19 @@ fn shorten_addr(addr: &str, keep: usize) -> String {
 
 fn render_blocks_table(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &NodeStats) {
     // Use the node at higher height (or seed1 by default) for block data.
-    let node = if seed4.blocks > seed1.blocks { seed4 } else { seed1 };
+    let node = if seed4.blocks > seed1.blocks {
+        seed4
+    } else {
+        seed1
+    };
 
-    let header = Line::from(vec![
-        Span::styled(
-            format!("{:<8} {:<20} {:>5} {:>8} {:>8}  {}", "Height", "Hash", "Txs", "Size", "Time", "Miner"),
-            Style::default().add_modifier(Modifier::BOLD),
+    let header = Line::from(vec![Span::styled(
+        format!(
+            "{:<8} {:<20} {:>5} {:>8} {:>8}  {}",
+            "Height", "Hash", "Txs", "Size", "Time", "Miner"
         ),
-    ]);
+        Style::default().add_modifier(Modifier::BOLD),
+    )]);
 
     let mut lines = vec![header];
 
@@ -391,20 +396,28 @@ fn render_blocks_table(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &Nod
         }
     }
 
-    let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title("Latest Blocks"));
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Latest Blocks"),
+    );
     f.render_widget(paragraph, area);
 }
 
 fn render_txs_table(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &NodeStats) {
-    let node = if seed4.blocks > seed1.blocks { seed4 } else { seed1 };
+    let node = if seed4.blocks > seed1.blocks {
+        seed4
+    } else {
+        seed1
+    };
 
-    let header = Line::from(vec![
-        Span::styled(
-            format!("{:<20} {:<16} {:>14}  {}", "TxID", "From", "Amount (FRR)", "Status"),
-            Style::default().add_modifier(Modifier::BOLD),
+    let header = Line::from(vec![Span::styled(
+        format!(
+            "{:<20} {:<16} {:>14}  {}",
+            "TxID", "From", "Amount (FRR)", "Status"
         ),
-    ]);
+        Style::default().add_modifier(Modifier::BOLD),
+    )]);
 
     let mut lines = vec![header];
 
@@ -425,8 +438,11 @@ fn render_txs_table(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &NodeSt
         }
     }
 
-    let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title("Latest Transactions"));
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Latest Transactions"),
+    );
     f.render_widget(paragraph, area);
 }
 
@@ -899,13 +915,24 @@ fn fetch_recent_blocks(
             .cloned()
             .ok_or_else(|| "Missing result".to_string())?;
 
-        let block_hash = block.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let block_height = block.get("height").and_then(|v| v.as_u64()).unwrap_or(height as u64);
+        let block_hash = block
+            .get("hash")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let block_height = block
+            .get("height")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(height as u64);
         let time = block.get("time").and_then(|v| v.as_u64()).unwrap_or(0);
         let time_ago = now.saturating_sub(time);
         let n_tx = block.get("n_tx").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let size_bytes = block.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-        let miner = block.get("miner").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+        let miner = block
+            .get("miner")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
 
         recent_blocks.push(RecentBlock {
             height: block_height as u32,
@@ -921,8 +948,15 @@ fn fetch_recent_blocks(
         if recent_txs.len() < 20 {
             if let Some(txs) = block.get("transactions").and_then(|v| v.as_array()) {
                 for tx in txs {
-                    let txid = tx.get("txid").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let is_coinbase = tx.get("is_coinbase").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let txid = tx
+                        .get("txid")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let is_coinbase = tx
+                        .get("is_coinbase")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     let from = if is_coinbase {
                         "COINBASE".to_string()
                     } else {
@@ -945,7 +979,11 @@ fn fetch_recent_blocks(
                         })
                         .unwrap_or(0.0);
                     if !txid.is_empty() {
-                        recent_txs.push(RecentTx { txid, from, amount_frr });
+                        recent_txs.push(RecentTx {
+                            txid,
+                            from,
+                            amount_frr,
+                        });
                     }
                     if recent_txs.len() >= 20 {
                         break;
