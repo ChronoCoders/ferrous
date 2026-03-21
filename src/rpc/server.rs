@@ -811,7 +811,11 @@ impl RpcServer {
         let network_prefix = self.network_prefix;
         let size = block.header.encoded_size()
             + varint::encode(block.transactions.len() as u64).len()
-            + block.transactions.iter().map(|tx| tx.encoded_size()).sum::<usize>();
+            + block
+                .transactions
+                .iter()
+                .map(|tx| tx.encoded_size())
+                .sum::<usize>();
         let n_tx = block.transactions.len();
 
         // Derive miner address from coinbase tx output 0 script_pubkey.
