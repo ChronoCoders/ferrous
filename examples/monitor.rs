@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Paragraph},
     Frame, Terminal,
 };
 use serde_json::{json, Value};
@@ -48,6 +48,7 @@ struct NodeStats {
     last_block_age_secs: Option<u64>,
     rpc_rtt_ms: Option<u64>,
     recent_blocks: Vec<RecentBlock>,
+    recent_txs: Vec<RecentTx>,
     reachable: bool,
     last_updated: Instant,
     mining_error: Option<String>,
@@ -62,6 +63,16 @@ struct RecentBlock {
     hash: String,
     block_time: u64,
     time_ago_secs: u64,
+    n_tx: u32,
+    size_bytes: u64,
+    miner: String,
+}
+
+#[derive(Clone)]
+struct RecentTx {
+    txid: String,
+    from: String,
+    amount_frr: f64,
 }
 
 struct NodeUpdate {
@@ -187,15 +198,19 @@ fn render(f: &mut Frame, seed1: &NodeStats, seed4: &NodeStats, last_updated_at: 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(10),
-            Constraint::Length(8),
+            Constraint::Length(10),
+            Constraint::Min(6),
+            Constraint::Min(6),
+            Constraint::Length(7),
             Constraint::Length(1),
         ])
         .split(f.size());
 
     render_nodes_row(f, chunks[0], seed1, seed4);
-    render_summary_row(f, chunks[1], seed1, seed4);
-    render_footer(f, chunks[2], last_updated_at);
+    render_blocks_table(f, chunks[1], seed1, seed4);
+    render_txs_table(f, chunks[2], seed1, seed4);
+    render_summary_row(f, chunks[3], seed1, seed4);
+    render_footer(f, chunks[4], last_updated_at);
 }
 
 fn render_nodes_row(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &NodeStats) {
@@ -216,7 +231,7 @@ fn render_node_panel(f: &mut Frame, area: Rect, node: &NodeStats) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(12), Constraint::Min(3)])
+        .constraints([Constraint::Min(6)])
         .split(inner);
 
     let status = if node.reachable { "ONLINE" } else { "OFFLINE" };
@@ -310,32 +325,109 @@ fn render_node_panel(f: &mut Frame, area: Rect, node: &NodeStats) {
 
     let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, chunks[0]);
+}
 
-    let items: Vec<ListItem> = if node.recent_blocks.is_empty() {
-        vec![ListItem::new("Fetching...")]
+fn format_age(secs: u64) -> String {
+    if secs < 60 {
+        format!("{}s ago", secs)
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
     } else {
-        node.recent_blocks
-            .iter()
-            .map(|b| {
-                let hash_short = if b.hash.len() > 16 {
-                    &b.hash[..16]
-                } else {
-                    &b.hash
-                };
-                ListItem::new(format!(
-                    "#{:<6} {}...  {:>6}s ago",
-                    b.height, hash_short, b.time_ago_secs
-                ))
-            })
-            .collect()
-    };
+        format!("{}h ago", secs / 3600)
+    }
+}
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Recent Blocks"),
-    );
-    f.render_widget(list, chunks[1]);
+fn format_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
+fn shorten_hash(hash: &str, len: usize) -> String {
+    if hash.len() > len * 2 {
+        format!("{}...{}", &hash[..len], &hash[hash.len() - len..])
+    } else {
+        hash.to_string()
+    }
+}
+
+fn shorten_addr(addr: &str, keep: usize) -> String {
+    if addr.len() > keep * 2 + 3 {
+        format!("{}...{}", &addr[..keep], &addr[addr.len() - keep..])
+    } else {
+        addr.to_string()
+    }
+}
+
+fn render_blocks_table(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &NodeStats) {
+    // Use the node at higher height (or seed1 by default) for block data.
+    let node = if seed4.blocks > seed1.blocks { seed4 } else { seed1 };
+
+    let header = Line::from(vec![
+        Span::styled(
+            format!("{:<8} {:<20} {:>5} {:>8} {:>8}  {}", "Height", "Hash", "Txs", "Size", "Time", "Miner"),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    let mut lines = vec![header];
+
+    if node.recent_blocks.is_empty() {
+        lines.push(Line::from("  Fetching..."));
+    } else {
+        for b in node.recent_blocks.iter().take(5) {
+            let hash_short = shorten_hash(&b.hash, 8);
+            let age = format_age(b.time_ago_secs);
+            let size = format_size(b.size_bytes);
+            let miner = shorten_addr(&b.miner, 6);
+            lines.push(Line::from(format!(
+                "#{:<7} {:<20} {:>5} {:>8} {:>8}  {}",
+                b.height, hash_short, b.n_tx, size, age, miner
+            )));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title("Latest Blocks"));
+    f.render_widget(paragraph, area);
+}
+
+fn render_txs_table(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &NodeStats) {
+    let node = if seed4.blocks > seed1.blocks { seed4 } else { seed1 };
+
+    let header = Line::from(vec![
+        Span::styled(
+            format!("{:<20} {:<16} {:>14}  {}", "TxID", "From", "Amount (FRR)", "Status"),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    let mut lines = vec![header];
+
+    if node.recent_txs.is_empty() {
+        lines.push(Line::from("  Fetching..."));
+    } else {
+        for tx in node.recent_txs.iter().take(6) {
+            let txid_short = shorten_hash(&tx.txid, 8);
+            let from = if tx.from == "COINBASE" {
+                "COINBASE        ".to_string()
+            } else {
+                format!("{:<16}", tx.from)
+            };
+            lines.push(Line::from(format!(
+                "{:<20} {:<16} {:>14.8}  CONFIRMED",
+                txid_short, from, tx.amount_frr
+            )));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title("Latest Transactions"));
+    f.render_widget(paragraph, area);
 }
 
 fn render_summary_row(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &NodeStats) {
@@ -676,8 +768,9 @@ fn poll_node(
     if need_refresh {
         // Try to fetch recent blocks — failure here does NOT make node OFFLINE
         match fetch_recent_blocks(local_port, stats.blocks, 10) {
-            Ok(recent) => {
+            Ok((recent, txs)) => {
                 stats.recent_blocks = recent;
+                stats.recent_txs = txs;
                 stats.blocks_error = None;
             }
             Err(e) => {
@@ -692,8 +785,12 @@ fn poll_node(
                                 hash: b.hash.clone(),
                                 block_time: b.block_time,
                                 time_ago_secs: b.time_ago_secs.saturating_add(delta),
+                                n_tx: b.n_tx,
+                                size_bytes: b.size_bytes,
+                                miner: b.miner.clone(),
                             })
                             .collect();
+                        stats.recent_txs = prev.recent_txs.clone();
                     }
                 }
                 stats.blocks_error = Some(format!("Blocks: {}", e));
@@ -708,8 +805,12 @@ fn poll_node(
                 hash: b.hash.clone(),
                 block_time: b.block_time,
                 time_ago_secs: b.time_ago_secs.saturating_add(delta),
+                n_tx: b.n_tx,
+                size_bytes: b.size_bytes,
+                miner: b.miner.clone(),
             })
             .collect();
+        stats.recent_txs = prev.recent_txs.clone();
         stats.blocks_error = None;
     }
 
@@ -720,12 +821,13 @@ fn fetch_recent_blocks(
     local_port: u16,
     tip_height: u32,
     count: usize,
-) -> Result<Vec<RecentBlock>, String> {
+) -> Result<(Vec<RecentBlock>, Vec<RecentTx>), String> {
     let now = now_unix_secs();
     let heights: Vec<u32> = (0..count)
         .map(|i| tip_height.saturating_sub(i as u32))
         .collect();
 
+    // Batch getblockhash requests.
     let mut reqs = Vec::with_capacity(heights.len());
     for (i, height) in heights.iter().copied().enumerate() {
         reqs.push(json!({
@@ -735,7 +837,6 @@ fn fetch_recent_blocks(
             "id": (i as u64) + 1
         }));
     }
-
     let responses = rpc_batch(local_port, Value::Array(reqs))?;
     let mut by_id: HashMap<u64, Value> = HashMap::with_capacity(responses.len());
     for r in responses {
@@ -743,7 +844,6 @@ fn fetch_recent_blocks(
             by_id.insert(id, r);
         }
     }
-
     let mut hashes: Vec<String> = Vec::with_capacity(heights.len());
     for i in 0..heights.len() {
         let id = (i as u64) + 1;
@@ -764,16 +864,16 @@ fn fetch_recent_blocks(
         hashes.push(hash);
     }
 
+    // Batch verbose getblock requests.
     let mut block_reqs = Vec::with_capacity(hashes.len());
     for (i, hash) in hashes.iter().enumerate() {
         block_reqs.push(json!({
             "jsonrpc": "2.0",
             "method": "getblock",
-            "params": [hash],
+            "params": [hash, true],
             "id": 1000u64 + (i as u64)
         }));
     }
-
     let block_responses = rpc_batch(local_port, Value::Array(block_reqs))?;
     let mut blocks_by_id: HashMap<u64, Value> = HashMap::with_capacity(block_responses.len());
     for r in block_responses {
@@ -782,7 +882,9 @@ fn fetch_recent_blocks(
         }
     }
 
-    let mut out: Vec<RecentBlock> = Vec::with_capacity(blocks_by_id.len());
+    let mut recent_blocks: Vec<RecentBlock> = Vec::with_capacity(hashes.len());
+    let mut recent_txs: Vec<RecentTx> = Vec::new();
+
     for (i, height) in heights.iter().copied().enumerate() {
         let id = 1000u64 + (i as u64);
         let resp = match blocks_by_id.get(&id) {
@@ -792,33 +894,68 @@ fn fetch_recent_blocks(
         if resp.get("error").is_some() {
             return Err(resp.to_string());
         }
-
         let block = resp
             .get("result")
             .cloned()
             .ok_or_else(|| "Missing result".to_string())?;
 
-        let block_hash = block
-            .get("hash")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let block_height = block
-            .get("height")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(height as u64);
+        let block_hash = block.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let block_height = block.get("height").and_then(|v| v.as_u64()).unwrap_or(height as u64);
         let time = block.get("time").and_then(|v| v.as_u64()).unwrap_or(0);
         let time_ago = now.saturating_sub(time);
+        let n_tx = block.get("n_tx").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let size_bytes = block.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let miner = block.get("miner").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
 
-        out.push(RecentBlock {
+        recent_blocks.push(RecentBlock {
             height: block_height as u32,
             hash: block_hash,
             block_time: time,
             time_ago_secs: time_ago,
+            n_tx,
+            size_bytes,
+            miner,
         });
+
+        // Collect transactions from the first few blocks only (avoid flooding the tx table).
+        if recent_txs.len() < 20 {
+            if let Some(txs) = block.get("transactions").and_then(|v| v.as_array()) {
+                for tx in txs {
+                    let txid = tx.get("txid").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let is_coinbase = tx.get("is_coinbase").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let from = if is_coinbase {
+                        "COINBASE".to_string()
+                    } else {
+                        tx.get("vin")
+                            .and_then(|v| v.as_array())
+                            .and_then(|arr| arr.first())
+                            .and_then(|inp| inp.get("txid"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| format!("{}...{}", &s[..6], &s[s.len().saturating_sub(4)..]))
+                            .unwrap_or_else(|| "unknown".to_string())
+                    };
+                    let amount_frr: f64 = tx
+                        .get("vout")
+                        .and_then(|v| v.as_array())
+                        .map(|outputs| {
+                            outputs
+                                .iter()
+                                .filter_map(|o| o.get("value_frr").and_then(|v| v.as_f64()))
+                                .sum()
+                        })
+                        .unwrap_or(0.0);
+                    if !txid.is_empty() {
+                        recent_txs.push(RecentTx { txid, from, amount_frr });
+                    }
+                    if recent_txs.len() >= 20 {
+                        break;
+                    }
+                }
+            }
+        }
     }
 
-    Ok(out)
+    Ok((recent_blocks, recent_txs))
 }
 
 fn default_node_stats(name: &str, ip: &str, rpc_port: u16) -> NodeStats {
@@ -844,6 +981,7 @@ fn default_node_stats(name: &str, ip: &str, rpc_port: u16) -> NodeStats {
         last_block_age_secs: None,
         rpc_rtt_ms: None,
         recent_blocks: Vec::new(),
+        recent_txs: Vec::new(),
         reachable: false,
         last_updated: Instant::now(),
         mining_error: None,
@@ -884,8 +1022,12 @@ fn last_good_snapshot(prev: &NodeStats, delta_secs: u64) -> NodeStats {
             hash: b.hash.clone(),
             block_time: b.block_time,
             time_ago_secs: b.time_ago_secs.saturating_add(delta_secs),
+            n_tx: b.n_tx,
+            size_bytes: b.size_bytes,
+            miner: b.miner.clone(),
         })
         .collect();
+    s.recent_txs = prev.recent_txs.clone();
     s
 }
 
