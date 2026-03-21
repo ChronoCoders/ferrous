@@ -190,6 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let network_stats = Arc::new(NetworkStats::new());
+    peer_manager.set_stats(network_stats.clone());
     // Create AddressManager for RecoveryManager
     let addr_manager = Arc::new(Mutex::new(
         ferrous_node::network::addrman::AddressManager::new(1000),
