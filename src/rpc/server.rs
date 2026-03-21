@@ -6,8 +6,10 @@ use crate::network::mempool::NetworkMempool;
 use crate::network::recovery::RecoveryManager;
 use crate::network::relay::BlockRelay;
 use crate::network::stats::NetworkStats;
-use crate::primitives::serialize::Decode;
+use crate::primitives::serialize::{Decode, Encode};
+use crate::primitives::varint;
 use crate::rpc::methods::*;
+use crate::wallet::address::script_pubkey_to_address;
 use crate::wallet::builder::TransactionBuilder;
 use crate::wallet::manager::Wallet;
 use serde_json::{json, Value};
@@ -25,6 +27,7 @@ pub struct RpcServerConfig {
     pub recovery_manager: Arc<RecoveryManager>,
     pub relay: Arc<BlockRelay>,
     pub mempool: Arc<NetworkMempool>,
+    pub network_prefix: u8,
 }
 
 pub struct RpcServer {
@@ -36,6 +39,7 @@ pub struct RpcServer {
     recovery_manager: Arc<RecoveryManager>,
     relay: Arc<BlockRelay>,
     mempool: Arc<NetworkMempool>,
+    network_prefix: u8,
     server: Server,
     /// 1-second response cache for getblockchaininfo (timestamp, cached value).
     blockchain_info_cache: Mutex<Option<(Instant, Value)>>,
@@ -56,6 +60,7 @@ impl RpcServer {
             recovery_manager: config.recovery_manager,
             relay: config.relay,
             mempool: config.mempool,
+            network_prefix: config.network_prefix,
             server,
             blockchain_info_cache: Mutex::new(None),
             mininginfo_cache: Mutex::new(None),
@@ -764,18 +769,17 @@ impl RpcServer {
     }
 
     fn getblock(&self, params: &Value) -> Result<Value, String> {
-        let blockhash_hex = params
-            .as_array()
-            .and_then(|arr| arr.first())
+        let arr = params.as_array().ok_or("Invalid params: expected array")?;
+        let blockhash_hex = arr
+            .first()
             .and_then(|v| v.as_str())
             .ok_or("Invalid params: expected [blockhash]")?;
+        let verbose = arr.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
 
         let blockhash_bytes = hex::decode(blockhash_hex).map_err(|_| "Invalid hex".to_string())?;
-
         if blockhash_bytes.len() != 32 {
             return Err("Invalid hash length".to_string());
         }
-
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&blockhash_bytes);
 
@@ -802,11 +806,77 @@ impl RpcServer {
             })
             .unwrap_or(0) as u32;
 
+        drop(chain);
+
+        let network_prefix = self.network_prefix;
+        let size = block.header.encoded_size()
+            + varint::encode(block.transactions.len() as u64).len()
+            + block.transactions.iter().map(|tx| tx.encoded_size()).sum::<usize>();
+        let n_tx = block.transactions.len();
+
+        // Derive miner address from coinbase tx output 0 script_pubkey.
+        let miner = block
+            .transactions
+            .first()
+            .and_then(|tx| tx.outputs.first())
+            .and_then(|out| script_pubkey_to_address(&out.script_pubkey, network_prefix));
+
         let txids: Vec<String> = block
             .transactions
             .iter()
             .map(|tx| hex::encode(tx.txid()))
             .collect();
+
+        let transactions = if verbose {
+            Some(
+                block
+                    .transactions
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, tx)| {
+                        let is_coinbase = idx == 0;
+                        let vin = tx
+                            .inputs
+                            .iter()
+                            .map(|inp| {
+                                if is_coinbase {
+                                    VerboseTxInput {
+                                        txid: None,
+                                        vout: None,
+                                        coinbase: true,
+                                    }
+                                } else {
+                                    VerboseTxInput {
+                                        txid: Some(hex::encode(inp.prev_txid)),
+                                        vout: Some(inp.prev_index),
+                                        coinbase: false,
+                                    }
+                                }
+                            })
+                            .collect();
+                        let vout = tx
+                            .outputs
+                            .iter()
+                            .map(|out| VerboseTxOutput {
+                                value_frr: out.value as f64 / 100_000_000.0,
+                                address: script_pubkey_to_address(
+                                    &out.script_pubkey,
+                                    network_prefix,
+                                ),
+                            })
+                            .collect();
+                        VerboseTx {
+                            txid: hex::encode(tx.txid()),
+                            is_coinbase,
+                            vin,
+                            vout,
+                        }
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        };
 
         let response = GetBlockResponse {
             hash: hex::encode(block.header.hash()),
@@ -816,7 +886,11 @@ impl RpcServer {
             time: block.header.timestamp,
             nonce: block.header.nonce,
             bits: format!("{:08x}", block.header.n_bits),
+            size,
+            n_tx,
+            miner,
             tx: txids,
+            transactions,
         };
 
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
