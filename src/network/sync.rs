@@ -24,6 +24,10 @@ const BLOCK_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Maximum number of orphan blocks held in memory.
 const ORPHAN_POOL_MAX: usize = 2048;
 
+/// Maximum number of out-of-order blocks buffered while waiting for sequential apply.
+/// When the buffer is full, block dispatch is paused until it drains (backpressure).
+const BLOCK_BUFFER_MAX: usize = 1024;
+
 type PeerId = u64;
 type LocatorEntry = ([u8; 32], u64);
 type Locator = Vec<LocatorEntry>;
@@ -524,7 +528,18 @@ impl SyncManager {
     // -----------------------------------------------------------------------
 
     /// Distribute pending download queue to the given peer list and send getdata.
+    /// If the apply buffer is at capacity, dispatch is skipped (backpressure) so
+    /// in-flight blocks do not pile up ahead of the sequential apply loop.
     fn drain_to_peers_and_send(&self, peers: &[PeerId]) {
+        let buf_len = self.block_buffer.lock().unwrap().len();
+        if buf_len >= BLOCK_BUFFER_MAX {
+            log::debug!(
+                "SyncManager: block buffer full ({}/{}), pausing dispatch",
+                buf_len,
+                BLOCK_BUFFER_MAX
+            );
+            return;
+        }
         let batches = self.download_queue.lock().unwrap().drain_to_peers(peers);
         let magic = self.peer_manager.magic();
         for (peer_id, hashes) in batches {
