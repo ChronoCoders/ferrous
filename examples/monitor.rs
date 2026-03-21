@@ -255,7 +255,7 @@ fn render_node_panel(f: &mut Frame, area: Rect, node: &NodeStats) {
     };
 
     let hash_rate_line = if node.hash_rate.is_finite() {
-        format!("{:.2} H/s", node.hash_rate)
+        format!("{:.2} KH/s", node.hash_rate / 1000.0)
     } else {
         "N/A".to_string()
     };
