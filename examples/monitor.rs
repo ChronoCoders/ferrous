@@ -16,6 +16,7 @@ use std::{
     collections::HashMap,
     io::{self, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpStream},
+    process::{Child, Command},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc,
@@ -68,7 +69,31 @@ struct NodeUpdate {
     stats: NodeStats,
 }
 
+fn spawn_ssh_tunnel(remote_ip: &str, local_port: u16) -> Option<Child> {
+    Command::new("ssh")
+        .args([
+            "-N",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-L",
+            &format!("{}:127.0.0.1:8332", local_port),
+            &format!("root@{}", remote_ip),
+        ])
+        .spawn()
+        .ok()
+}
+
 fn main() -> io::Result<()> {
+    // Auto-spawn SSH tunnels so no manual setup is needed.
+    let mut tunnel_1 = spawn_ssh_tunnel("45.77.153.141", 18331);
+    let mut tunnel_4 = spawn_ssh_tunnel("45.77.64.221", 18332);
+    // Give tunnels a moment to establish before polling begins.
+    thread::sleep(Duration::from_secs(2));
+
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<NodeUpdate>();
 
@@ -110,6 +135,13 @@ fn main() -> io::Result<()> {
     stop.store(true, Ordering::Relaxed);
     let _ = poller_1.join();
     let _ = poller_4.join();
+
+    if let Some(ref mut t) = tunnel_1 {
+        let _ = t.kill();
+    }
+    if let Some(ref mut t) = tunnel_4 {
+        let _ = t.kill();
+    }
 
     disable_raw_mode()?;
     execute!(
