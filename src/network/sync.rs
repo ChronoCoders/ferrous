@@ -8,36 +8,195 @@ use crate::network::protocol::{
     GetDataMessage, GetHeadersMessage, HeadersMessage, InvMessage, InvVector, INV_BLOCK,
 };
 use crate::primitives::serialize::Encode;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-/// Number of blocks to keep in-flight simultaneously during block download.
-const DOWNLOAD_WINDOW: u32 = 64;
+/// Number of blocks each peer may have in-flight simultaneously.
+const DOWNLOAD_WINDOW: usize = 64;
+
+/// Global cap on total in-flight block requests across all peers.
+const MAX_INFLIGHT: usize = 512;
+
+/// Re-request a block if no response arrives within this window.
+const BLOCK_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum number of orphan blocks held in memory.
+const ORPHAN_POOL_MAX: usize = 2048;
 
 type PeerId = u64;
 type LocatorEntry = ([u8; 32], u64);
 type Locator = Vec<LocatorEntry>;
 
-pub struct SyncManager {
-    chain: Arc<RwLock<ChainState>>,
-    peer_manager: Arc<PeerManager>,
-    sync_state: Arc<Mutex<SyncState>>,
-    header_height_map: Arc<Mutex<HashMap<[u8; 32], u32>>>,
-    last_locator: Arc<Mutex<Locator>>,
-    /// Peer's header chain from the current sync session: height → hash.
-    /// Built incrementally from every incoming headers batch.  Never read from
-    /// local DB — contains only what the remote peer sent us.
-    peer_header_map: Arc<Mutex<HashMap<u32, [u8; 32]>>>,
-    /// Reverse of peer_header_map for O(1) block lookup: hash → height.
-    peer_hash_to_height: Arc<Mutex<HashMap<[u8; 32], u32>>>,
-    /// Blocks received out-of-order, waiting for their predecessor to be applied.
-    block_buffer: Arc<Mutex<HashMap<u32, Block>>>,
-    /// Hashes currently requested via getdata but not yet received.
-    inflight: Arc<Mutex<HashSet<[u8; 32]>>>,
-    /// Timestamp of the last recheck_stalled_window execution (for rate limiting).
-    last_recheck: Mutex<Instant>,
+// ---------------------------------------------------------------------------
+// BlockDownloadQueue — work-stealing parallel block fetcher
+// ---------------------------------------------------------------------------
+
+/// Tracks which block hashes still need to be downloaded, which are currently
+/// in-flight (requested but not yet received), and how many in-flight requests
+/// each peer currently carries.
+///
+/// Invariants:
+/// - A hash appears in at most one of `pending` or `in_flight`.
+/// - `peer_load[p]` equals the number of entries in `in_flight` whose peer is `p`.
+/// - `in_flight.len() <= MAX_INFLIGHT` after every `drain_to_peers` call.
+struct BlockDownloadQueue {
+    /// Hashes not yet dispatched, ordered FIFO (oldest first = lowest height first).
+    pending: VecDeque<[u8; 32]>,
+    /// Hashes dispatched to a peer but not yet received: hash → (peer_id, sent_at).
+    in_flight: HashMap<[u8; 32], (PeerId, Instant)>,
+    /// Number of in-flight requests currently assigned to each peer.
+    peer_load: HashMap<PeerId, usize>,
 }
+
+impl BlockDownloadQueue {
+    fn new() -> Self {
+        Self {
+            pending: VecDeque::new(),
+            in_flight: HashMap::new(),
+            peer_load: HashMap::new(),
+        }
+    }
+
+    /// Add hashes to the pending queue.  Hashes already in-flight are skipped
+    /// (they will be re-queued automatically if they time out).
+    fn enqueue_batch(&mut self, hashes: Vec<[u8; 32]>) {
+        for hash in hashes {
+            if !self.in_flight.contains_key(&hash) {
+                self.pending.push_back(hash);
+            }
+        }
+    }
+
+    /// Push a single hash to the *front* of the pending queue (priority re-request).
+    fn requeue_front(&mut self, hash: [u8; 32]) {
+        // Remove from in_flight accounting first if it was there.
+        if let Some((pid, _)) = self.in_flight.remove(&hash) {
+            *self.peer_load.entry(pid).or_insert(0) = self
+                .peer_load
+                .get(&pid)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(1);
+        }
+        self.pending.push_front(hash);
+    }
+
+    /// Distribute pending hashes across `peers`, respecting per-peer window and
+    /// global cap.  Returns a list of `(peer_id, hashes_to_request)` pairs.
+    ///
+    /// Peers are filled lightest-first so work spreads evenly.
+    fn drain_to_peers(&mut self, peers: &[PeerId]) -> Vec<(PeerId, Vec<[u8; 32]>)> {
+        if self.pending.is_empty() || peers.is_empty() {
+            return vec![];
+        }
+
+        // Sort peers by ascending load so we fill the least-loaded first.
+        let mut sorted: Vec<PeerId> = peers.to_vec();
+        sorted.sort_by_key(|pid| self.peer_load.get(pid).copied().unwrap_or(0));
+
+        let mut result: Vec<(PeerId, Vec<[u8; 32]>)> = Vec::new();
+
+        'outer: for peer_id in sorted {
+            let load = self.peer_load.get(&peer_id).copied().unwrap_or(0);
+            let capacity = DOWNLOAD_WINDOW.saturating_sub(load);
+            if capacity == 0 {
+                continue;
+            }
+            let mut batch: Vec<[u8; 32]> = Vec::new();
+            for _ in 0..capacity {
+                if self.in_flight.len() >= MAX_INFLIGHT {
+                    break 'outer;
+                }
+                match self.pending.pop_front() {
+                    Some(hash) => {
+                        self.in_flight.insert(hash, (peer_id, Instant::now()));
+                        *self.peer_load.entry(peer_id).or_insert(0) += 1;
+                        batch.push(hash);
+                    }
+                    None => break,
+                }
+            }
+            if !batch.is_empty() {
+                result.push((peer_id, batch));
+            }
+        }
+
+        result
+    }
+
+    /// Mark a block as received.  Removes from in_flight and decrements peer_load.
+    fn mark_received(&mut self, hash: &[u8; 32]) {
+        if let Some((pid, _)) = self.in_flight.remove(hash) {
+            *self.peer_load.entry(pid).or_insert(0) = self
+                .peer_load
+                .get(&pid)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(1);
+        }
+    }
+
+    /// Called when a peer disconnects.  Moves all of its in-flight hashes back to
+    /// the front of the pending queue so another peer can take over.
+    fn on_peer_disconnected(&mut self, peer_id: PeerId) {
+        let mut returned: Vec<[u8; 32]> = self
+            .in_flight
+            .iter()
+            .filter(|(_, (pid, _))| *pid == peer_id)
+            .map(|(hash, _)| *hash)
+            .collect();
+
+        for hash in &returned {
+            self.in_flight.remove(hash);
+        }
+        self.peer_load.remove(&peer_id);
+
+        // Return them to the front in reverse order so the lowest-height hash
+        // ends up at the very front (original ordering was FIFO push_back).
+        returned.sort_unstable();
+        for hash in returned.into_iter().rev() {
+            self.pending.push_front(hash);
+        }
+    }
+
+    /// Move any in-flight hashes that have exceeded BLOCK_REQUEST_TIMEOUT back
+    /// to the front of the pending queue for re-dispatch.
+    fn recheck_timeouts(&mut self) {
+        let mut timed_out: Vec<([u8; 32], PeerId)> = self
+            .in_flight
+            .iter()
+            .filter(|(_, (_, sent_at))| sent_at.elapsed() > BLOCK_REQUEST_TIMEOUT)
+            .map(|(hash, (pid, _))| (*hash, *pid))
+            .collect();
+
+        for (hash, pid) in &timed_out {
+            self.in_flight.remove(hash);
+            *self.peer_load.entry(*pid).or_insert(0) = self
+                .peer_load
+                .get(pid)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(1);
+        }
+
+        timed_out.sort_unstable_by_key(|(h, _)| *h);
+        for (hash, _) in timed_out.into_iter().rev() {
+            self.pending.push_front(hash);
+        }
+    }
+
+    /// Reset all state (used when starting a fresh sync session).
+    fn clear(&mut self) {
+        self.pending.clear();
+        self.in_flight.clear();
+        self.peer_load.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SyncState
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncState {
@@ -49,13 +208,38 @@ pub enum SyncState {
         fork_start_height: Option<u32>,
     },
     DownloadingBlocks {
-        peer_id: PeerId,
+        /// All peers currently participating in the download.
+        active_peers: Vec<PeerId>,
         /// Next block height we must apply before advancing.
         next_apply_height: u32,
         /// Highest block height in the peer's chain (sync target).
         total_height: u32,
     },
     Synced,
+}
+
+// ---------------------------------------------------------------------------
+// SyncManager
+// ---------------------------------------------------------------------------
+
+pub struct SyncManager {
+    chain: Arc<RwLock<ChainState>>,
+    peer_manager: Arc<PeerManager>,
+    sync_state: Arc<Mutex<SyncState>>,
+    header_height_map: Arc<Mutex<HashMap<[u8; 32], u32>>>,
+    last_locator: Arc<Mutex<Locator>>,
+    /// Peer's header chain from the current sync session: height → hash.
+    peer_header_map: Arc<Mutex<HashMap<u32, [u8; 32]>>>,
+    /// Reverse of peer_header_map for O(1) block lookup: hash → height.
+    peer_hash_to_height: Arc<Mutex<HashMap<[u8; 32], u32>>>,
+    /// Blocks received out-of-order, waiting for their predecessor to be applied.
+    block_buffer: Arc<Mutex<HashMap<u32, Block>>>,
+    /// Work-stealing parallel download queue.
+    download_queue: Arc<Mutex<BlockDownloadQueue>>,
+    /// Orphan blocks whose parent is not yet known.
+    orphan_pool: Arc<Mutex<HashMap<[u8; 32], Block>>>,
+    /// Timestamp of the last recheck_stalled_window execution (for rate limiting).
+    last_recheck: Mutex<Instant>,
 }
 
 impl SyncManager {
@@ -69,7 +253,8 @@ impl SyncManager {
             peer_header_map: Arc::new(Mutex::new(HashMap::new())),
             peer_hash_to_height: Arc::new(Mutex::new(HashMap::new())),
             block_buffer: Arc::new(Mutex::new(HashMap::new())),
-            inflight: Arc::new(Mutex::new(HashSet::new())),
+            download_queue: Arc::new(Mutex::new(BlockDownloadQueue::new())),
+            orphan_pool: Arc::new(Mutex::new(HashMap::new())),
             last_recheck: Mutex::new(Instant::now()),
         }
     }
@@ -90,12 +275,15 @@ impl SyncManager {
         )
     }
 
+    // -----------------------------------------------------------------------
+    // Block receive path
+    // -----------------------------------------------------------------------
+
     /// Called by the relay for every received block.
     ///
     /// Returns `None`  → not a tracked sync block; relay should handle via normal add_block.
     /// Returns `Some(applied)` → sync handled this block (applied or buffered).
-    ///   Each entry is `(block, height)` for a block that was successfully added to the chain;
-    ///   the relay should perform post-apply cleanup (mempool, peer-height) for each.
+    ///   Each entry is `(block, height)` for a block successfully added to the chain.
     ///   An empty vec means the block was buffered and no apply happened yet.
     pub fn receive_block_for_sync(&self, block: Block) -> Option<Vec<(Block, u32)>> {
         let block_hash = block.header.hash();
@@ -108,19 +296,21 @@ impl SyncManager {
             .get(&block_hash)
             .copied()?;
 
-        // Remove from in-flight set (unconditional — keeps window accounting correct for
-        // stale/duplicate arrivals too).
-        self.inflight.lock().unwrap().remove(&block_hash);
+        // Remove from in-flight (unconditional — keeps accounting correct for stale/duplicate).
+        self.download_queue
+            .lock()
+            .unwrap()
+            .mark_received(&block_hash);
 
-        // Read the current download cursor (must not hold state lock while calling add_block).
-        let (next_apply_height, peer_id, total_height) = {
+        // Read the current download cursor.
+        let (next_apply_height, active_peers, total_height) = {
             let state = self.sync_state.lock().unwrap();
-            match *state {
+            match &*state {
                 SyncState::DownloadingBlocks {
-                    peer_id,
+                    active_peers,
                     next_apply_height,
                     total_height,
-                } => (next_apply_height, peer_id, total_height),
+                } => (*next_apply_height, active_peers.clone(), *total_height),
                 _ => {
                     // Arrived before we transitioned to DownloadingBlocks — buffer it.
                     self.block_buffer.lock().unwrap().insert(height, block);
@@ -130,7 +320,7 @@ impl SyncManager {
         };
 
         if height < next_apply_height {
-            // Stale/duplicate — already applied; inflight already cleaned above.
+            // Stale/duplicate — already applied.
             return Some(vec![]);
         }
 
@@ -141,26 +331,24 @@ impl SyncManager {
                 buf.insert(height, block);
                 buf.len()
             };
-            // If the buffer keeps growing the block at next_apply_height may have been
-            // dropped by the network.  Force it back into the request window.
-            if buf_len >= DOWNLOAD_WINDOW as usize {
-                let stalled_hash = self
+            // Buffer is growing; the block at next_apply_height may have been lost.
+            // Re-queue it immediately so it gets re-requested on the next drain.
+            if buf_len >= DOWNLOAD_WINDOW {
+                if let Some(h) = self
                     .peer_header_map
                     .lock()
                     .unwrap()
                     .get(&next_apply_height)
-                    .copied();
-                if let Some(h) = stalled_hash {
-                    self.inflight.lock().unwrap().remove(&h);
+                    .copied()
+                {
+                    self.download_queue.lock().unwrap().requeue_front(h);
                 }
             }
-            self.ensure_in_flight_window(peer_id, next_apply_height, total_height);
+            self.drain_to_peers_and_send(&active_peers);
             return Some(vec![]);
         }
 
         // height == next_apply_height.
-        // Hash-at-height guard: the block we received must be exactly the one the peer
-        // advertised at this height (peer_header_map[height] == block_hash).
         let expected_hash = self.peer_header_map.lock().unwrap().get(&height).copied();
         if expected_hash != Some(block_hash) {
             log::warn!(
@@ -171,15 +359,14 @@ impl SyncManager {
                     .unwrap_or_else(|| "none".into()),
                 hex::encode(block_hash)
             );
-            // Re-add expected hash to window so it gets re-requested.
             if let Some(h) = expected_hash {
-                self.inflight.lock().unwrap().remove(&h);
+                self.download_queue.lock().unwrap().requeue_front(h);
             }
-            self.ensure_in_flight_window(peer_id, next_apply_height, total_height);
+            self.drain_to_peers_and_send(&active_peers);
             return Some(vec![]);
         }
 
-        // Prev-hash guard (height > 0): block.prev_hash must equal peer_header_map[height-1].
+        // Prev-hash guard (height > 0).
         if height > 0 {
             let expected_prev = self
                 .peer_header_map
@@ -193,13 +380,11 @@ impl SyncManager {
                         "SyncManager: prev_hash mismatch at height {} — discarding and re-requesting",
                         height
                     );
-                    // Remove the expected hash from inflight so ensure_in_flight_window
-                    // will re-request it.  next_apply_height is NOT advanced.
                     let expected_hash = self.peer_header_map.lock().unwrap().get(&height).copied();
                     if let Some(h) = expected_hash {
-                        self.inflight.lock().unwrap().remove(&h);
+                        self.download_queue.lock().unwrap().requeue_front(h);
                     }
-                    self.ensure_in_flight_window(peer_id, next_apply_height, total_height);
+                    self.drain_to_peers_and_send(&active_peers);
                     return Some(vec![]);
                 }
             }
@@ -215,12 +400,24 @@ impl SyncManager {
                 let mut chain = self.chain.write().unwrap();
                 chain.add_block(current_block.clone())
             };
-            // chain write lock is released here — safe to send network messages below.
 
             match result {
                 Ok(()) => {
+                    let applied_hash = current_block.header.hash();
                     applied.push((current_block, current_height));
                     current_height += 1;
+
+                    // Try any orphans whose parent is now in the chain.
+                    let orphans = self.drain_orphans_for_parent(applied_hash);
+                    for orphan in orphans {
+                        let result = { self.chain.write().unwrap().add_block(orphan.clone()) };
+                        if result.is_ok() {
+                            log::debug!(
+                                "SyncManager: applied orphan {} from pool",
+                                hex::encode(orphan.header.hash())
+                            );
+                        }
+                    }
 
                     if current_height > total_height {
                         let mut state = self.sync_state.lock().unwrap();
@@ -232,20 +429,17 @@ impl SyncManager {
                     {
                         let mut state = self.sync_state.lock().unwrap();
                         *state = SyncState::DownloadingBlocks {
-                            peer_id,
+                            active_peers: active_peers.clone(),
                             next_apply_height: current_height,
                             total_height,
                         };
                     }
 
-                    // Slide the download window forward.
-                    self.ensure_in_flight_window(peer_id, current_height, total_height);
+                    self.drain_to_peers_and_send(&active_peers);
 
-                    // Drain buffer: if the next block is already buffered, apply it now.
                     let next_block = self.block_buffer.lock().unwrap().remove(&current_height);
                     match next_block {
                         Some(b) => {
-                            // Hash guard for buffer-drained blocks.
                             let exp = self
                                 .peer_header_map
                                 .lock()
@@ -260,8 +454,6 @@ impl SyncManager {
                                 );
                                 break;
                             }
-                            // Buffered blocks were never in inflight (only requested hashes
-                            // go into inflight; buffering happens on receipt).
                             current_block = b;
                         }
                         None => break,
@@ -281,9 +473,12 @@ impl SyncManager {
         Some(applied)
     }
 
-    /// Re-request the block at `next_apply_height` if the download appears stalled.
-    /// Rate-limited to at most once every 10 seconds to prevent getdata spam under
-    /// packet loss.  Safe to call from a timer loop or a peer-reconnect handler.
+    // -----------------------------------------------------------------------
+    // Stall detection
+    // -----------------------------------------------------------------------
+
+    /// Check for timed-out in-flight requests and re-dispatch them.
+    /// Rate-limited to at most once every 10 seconds.
     pub fn recheck_stalled_window(&self) {
         const MIN_RECHECK_INTERVAL: Duration = Duration::from_secs(10);
         {
@@ -294,33 +489,22 @@ impl SyncManager {
             *last = Instant::now();
         }
 
-        let (peer_id, next_apply_height, total_height) = {
+        let active_peers = {
             let state = self.sync_state.lock().unwrap();
-            match *state {
-                SyncState::DownloadingBlocks {
-                    peer_id,
-                    next_apply_height,
-                    total_height,
-                } => (peer_id, next_apply_height, total_height),
+            match &*state {
+                SyncState::DownloadingBlocks { active_peers, .. } => active_peers.clone(),
                 _ => return,
             }
         };
-        // Clear the stalled height from inflight so ensure_in_flight_window will re-request it.
-        let stalled_hash = self
-            .peer_header_map
-            .lock()
-            .unwrap()
-            .get(&next_apply_height)
-            .copied();
-        if let Some(h) = stalled_hash {
-            self.inflight.lock().unwrap().remove(&h);
-        }
-        self.ensure_in_flight_window(peer_id, next_apply_height, total_height);
+
+        // Move timed-out in-flight entries back to the pending queue.
+        self.download_queue.lock().unwrap().recheck_timeouts();
+
+        // Re-dispatch any pending work.
+        self.drain_to_peers_and_send(&active_peers);
     }
 
     /// Spawn a background thread that calls `recheck_stalled_window` every 30 seconds.
-    /// Uses a weak reference so the thread exits automatically when the manager is dropped.
-    /// Call once, immediately after constructing the `SyncManager`.
     pub fn start_stall_checker(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         std::thread::Builder::new()
@@ -329,61 +513,106 @@ impl SyncManager {
                 std::thread::sleep(Duration::from_secs(30));
                 match weak.upgrade() {
                     Some(mgr) => mgr.recheck_stalled_window(),
-                    None => break, // SyncManager has been dropped; exit thread.
+                    None => break,
                 }
             })
             .expect("failed to spawn sync-stall-checker thread");
     }
 
-    /// Fill the download window [next_apply_height .. next_apply_height+W) by
-    /// sending getdata for any peer-chain blocks not already in-flight.
-    fn ensure_in_flight_window(&self, peer_id: u64, next_apply_height: u32, total_height: u32) {
-        let mut inflight = self.inflight.lock().unwrap();
-        let peer_map = self.peer_header_map.lock().unwrap();
+    // -----------------------------------------------------------------------
+    // Multi-peer dispatch
+    // -----------------------------------------------------------------------
 
-        let window_end = std::cmp::min(next_apply_height + DOWNLOAD_WINDOW, total_height + 1);
-        let mut pending: Vec<[u8; 32]> = Vec::new();
-
-        for h in next_apply_height..window_end {
-            if let Some(&hash) = peer_map.get(&h) {
-                if !inflight.contains(&hash) {
-                    inflight.insert(hash);
-                    pending.push(hash);
-                }
-            }
-        }
-
-        drop(inflight);
-        drop(peer_map);
-
-        if pending.is_empty() {
-            return;
-        }
-
+    /// Distribute pending download queue to the given peer list and send getdata.
+    fn drain_to_peers_and_send(&self, peers: &[PeerId]) {
+        let batches = self.download_queue.lock().unwrap().drain_to_peers(peers);
         let magic = self.peer_manager.magic();
-        let getdata = GetDataMessage {
-            inventory: pending
-                .iter()
-                .map(|hash| InvVector {
-                    inv_type: INV_BLOCK,
-                    hash: *hash,
-                })
-                .collect(),
-        };
-        let msg = NetworkMessage::new(magic, "getdata", getdata.encode());
-        let _ = self.peer_manager.send_to_peer(peer_id, &msg);
-        log::debug!(
-            "SyncManager: window [{}..{}] → {} blocks requested from peer {}",
-            next_apply_height,
-            window_end - 1,
-            pending.len(),
-            peer_id
-        );
+        for (peer_id, hashes) in batches {
+            if hashes.is_empty() {
+                continue;
+            }
+            let getdata = GetDataMessage {
+                inventory: hashes
+                    .iter()
+                    .map(|h| InvVector {
+                        inv_type: INV_BLOCK,
+                        hash: *h,
+                    })
+                    .collect(),
+            };
+            let msg = NetworkMessage::new(magic, "getdata", getdata.encode());
+            let _ = self.peer_manager.send_to_peer(peer_id, &msg);
+            log::debug!(
+                "SyncManager: dispatched {} blocks to peer {}",
+                hashes.len(),
+                peer_id
+            );
+        }
     }
 
-    /// Walk peer_header_map (sorted by height) and return the first height where
-    /// we don't already have the block in our DB.  Returns `total_height + 1` if
-    /// we have every block (nothing to download).
+    /// Called by the manager when a peer disconnects during block download.
+    /// Returns in-flight hashes for that peer to the pending queue and
+    /// redistributes to remaining peers.
+    pub fn on_peer_disconnected(&self, peer_id: PeerId) {
+        self.download_queue
+            .lock()
+            .unwrap()
+            .on_peer_disconnected(peer_id);
+
+        let active_peers = {
+            let mut state = self.sync_state.lock().unwrap();
+            if let SyncState::DownloadingBlocks { active_peers, .. } = &mut *state {
+                active_peers.retain(|&p| p != peer_id);
+                if active_peers.is_empty() {
+                    log::warn!(
+                        "SyncManager: all download peers disconnected, waiting for reconnect"
+                    );
+                }
+                active_peers.clone()
+            } else {
+                return;
+            }
+        };
+
+        if !active_peers.is_empty() {
+            self.drain_to_peers_and_send(&active_peers);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Orphan pool
+    // -----------------------------------------------------------------------
+
+    /// Store an orphan block (parent unknown). Evicts an arbitrary entry when full.
+    pub fn store_orphan(&self, hash: [u8; 32], block: Block) {
+        let mut pool = self.orphan_pool.lock().unwrap();
+        if pool.len() >= ORPHAN_POOL_MAX {
+            if let Some(key) = pool.keys().next().copied() {
+                pool.remove(&key);
+            }
+        }
+        pool.insert(hash, block);
+    }
+
+    /// Remove and return all orphans whose prev_block_hash matches `parent_hash`.
+    fn drain_orphans_for_parent(&self, parent_hash: [u8; 32]) -> Vec<Block> {
+        let mut pool = self.orphan_pool.lock().unwrap();
+        let mut result = Vec::new();
+        pool.retain(|_, block| {
+            if block.header.prev_block_hash == parent_hash {
+                result.push(block.clone());
+                false
+            } else {
+                true
+            }
+        });
+        result
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal helpers
+    // -----------------------------------------------------------------------
+
     fn find_first_missing(&self, total_height: u32) -> u32 {
         let peer_map = self.peer_header_map.lock().unwrap();
         let chain = self.chain.read().unwrap();
@@ -394,21 +623,21 @@ impl SyncManager {
         for h in sorted {
             if let Some(&hash) = peer_map.get(&h) {
                 match chain.block_store.get_block(&hash) {
-                    Ok(Some(_)) => {} // already have it
+                    Ok(Some(_)) => {}
                     _ => return h,
                 }
             }
         }
 
-        total_height + 1 // have everything
+        total_height + 1
     }
 
-    /// Clear all per-session sync state before starting a new sync.
     fn reset_sync_state(&self) {
         self.peer_header_map.lock().unwrap().clear();
         self.peer_hash_to_height.lock().unwrap().clear();
         self.block_buffer.lock().unwrap().clear();
-        self.inflight.lock().unwrap().clear();
+        self.download_queue.lock().unwrap().clear();
+        self.orphan_pool.lock().unwrap().clear();
     }
 
     fn compute_cumulative_work_for_tip(&self, tip_hash: [u8; 32]) -> Result<U256, String> {
@@ -449,7 +678,11 @@ impl SyncManager {
         }
     }
 
-    // Legacy notification — kept for API compatibility; no longer drives block downloads.
+    // -----------------------------------------------------------------------
+    // Public API
+    // -----------------------------------------------------------------------
+
+    // Legacy notification — kept for API compatibility.
     pub fn block_received(&self, _hash: [u8; 32]) {}
 
     #[allow(dead_code)]
@@ -470,20 +703,38 @@ impl SyncManager {
         best_peer
     }
 
-    // Start sync process with a peer
     pub fn start_sync(&self, peer_id: u64) -> Result<(), String> {
         log::debug!("SyncManager: Starting sync check with peer {}", peer_id);
 
-        // Always skip if already downloading headers.
         {
-            let state = self.sync_state.lock().unwrap();
-            if matches!(*state, SyncState::DownloadingHeaders { .. }) {
-                log::debug!("SyncManager: Already downloading headers, skipping duplicate sync.");
-                return Ok(());
+            let mut state = self.sync_state.lock().unwrap();
+            match &mut *state {
+                SyncState::DownloadingHeaders { .. } => {
+                    log::debug!(
+                        "SyncManager: Already downloading headers, skipping duplicate sync."
+                    );
+                    return Ok(());
+                }
+                SyncState::DownloadingBlocks { active_peers, .. } => {
+                    // A new peer connected while we're already downloading blocks.
+                    // Add them to the active set and immediately drain pending to them.
+                    if !active_peers.contains(&peer_id) {
+                        active_peers.push(peer_id);
+                        log::info!(
+                            "SyncManager: peer {} joined active download ({} peers now)",
+                            peer_id,
+                            active_peers.len()
+                        );
+                    }
+                    drop(state);
+                    self.drain_to_peers_and_send(&[peer_id]);
+                    return Ok(());
+                }
+                _ => {}
             }
         }
 
-        // Clear state from any prior sync session.
+        // Not currently syncing — start fresh.
         self.reset_sync_state();
 
         let chain = self.chain.read().unwrap();
@@ -553,7 +804,6 @@ impl SyncManager {
         let msg = NetworkMessage::new(magic, "getheaders", getheaders.encode());
         self.peer_manager.send_to_peer(peer_id, &msg)?;
 
-        // Announce our local tip so the peer can discover our chain and request our headers.
         let chain = self.chain.read().unwrap();
         let local_tip_hash = chain
             .get_tip()
@@ -578,7 +828,10 @@ impl SyncManager {
         self.start_sync(peer_id)
     }
 
-    // Handle received headers
+    // -----------------------------------------------------------------------
+    // Header processing
+    // -----------------------------------------------------------------------
+
     pub fn handle_headers(&self, peer_id: u64, headers_msg: &HeadersMessage) -> Result<(), String> {
         log::debug!(
             "SyncManager: Received {} headers from peer {}",
@@ -703,15 +956,18 @@ impl SyncManager {
                     );
 
                     if should_download && start <= best_height {
+                        let hashes = self.collect_pending_hashes(start, best_height);
+                        self.download_queue.lock().unwrap().enqueue_batch(hashes);
+
                         let mut state = self.sync_state.lock().unwrap();
                         *state = SyncState::DownloadingBlocks {
-                            peer_id: sync_peer_id,
+                            active_peers: vec![sync_peer_id],
                             next_apply_height: start,
                             total_height: best_height,
                         };
                         drop(state);
 
-                        self.ensure_in_flight_window(sync_peer_id, start, best_height);
+                        self.drain_to_peers_and_send(&[sync_peer_id]);
                         return Ok(());
                     }
                 }
@@ -791,7 +1047,6 @@ impl SyncManager {
                                     .map(|(_, h)| *h)
                             });
                             let h_map = h_loc.or_else(|| {
-                                // Check peer_header_map (heights we've already received).
                                 self.peer_header_map
                                     .lock()
                                     .unwrap()
@@ -898,9 +1153,7 @@ impl SyncManager {
 
             header_map.insert(new_hash, new_height);
 
-            // Fork detection: first height where peer's hash differs from our canonical block.
-            // Use block_store.get_block_by_height (CF_BLOCK_INDEX, written only by add_block)
-            // NOT get_header_at_height (CF_HEADERS, overwritten by store_headers_batch).
+            // Fork detection
             if fork_start_height.is_none() {
                 let canonical_height = chain.get_height() as u32;
                 if new_height <= canonical_height {
@@ -942,7 +1195,6 @@ impl SyncManager {
         drop(chain);
 
         // Populate peer_header_map and peer_hash_to_height from this batch.
-        // This is the authoritative source for fork-chain heights — never use local DB indexes.
         {
             let mut peer_map = self.peer_header_map.lock().unwrap();
             let mut hash_map = self.peer_hash_to_height.lock().unwrap();
@@ -952,19 +1204,10 @@ impl SyncManager {
                 hash_map.insert(hash, *height as u32);
             }
 
-            // Also record the anchor block — the parent of the first received header.
-            // The anchor is the common-ancestor block that the peer's fork chain builds on.
-            // If it exists only in CF_HEADERS (e.g., from a prior header-only sync) but
-            // NOT in CF_BLOCKS, find_first_missing will flag it as missing and download it
-            // from the peer before attempting to apply the fork chain.  Without this,
-            // add_block for the first fork block fails with OrphanBlock because the parent
-            // cannot be found in self.blocks or CF_BLOCKS.
             if let Some(&(_, first_height)) = headers_to_store.first() {
                 if first_height > 0 {
                     let anchor_height = first_height as u32 - 1;
                     let anchor_hash = headers_msg.headers[0].prev_block_hash;
-                    // or_insert is a no-op on subsequent batches where this height is
-                    // already populated from the previous batch's final entry.
                     peer_map.entry(anchor_height).or_insert(anchor_hash);
                     hash_map.entry(anchor_hash).or_insert(anchor_height);
                 }
@@ -983,7 +1226,6 @@ impl SyncManager {
         }
 
         if headers_msg.headers.len() >= 2000 {
-            // More headers to fetch — continue header sync.
             let getheaders = GetHeadersMessage {
                 version: 70015,
                 block_locator: vec![current_best_hash],
@@ -993,9 +1235,6 @@ impl SyncManager {
             let msg = NetworkMessage::new(magic, "getheaders", getheaders.encode());
             self.peer_manager.send_to_peer(peer_id, &msg)?;
         } else {
-            // Headers complete — determine the first block we actually need to download.
-            // Use hash-existence check against peer_header_map (peer's heights), never
-            // local height indexes (those reflect our canonical chain, not the fork).
             let first_missing = self.find_first_missing(current_best_height);
             let mut start = first_missing;
             while start > 0 {
@@ -1015,9 +1254,6 @@ impl SyncManager {
                         }
                     }
                 } else {
-                    // Use CF_BLOCK_INDEX (canonical chain) to get the parent hash.
-                    // CF_HEADERS can be stale from prior sync sessions and must not
-                    // be used here — a wrong hash would cause prev_hash mismatches.
                     let chain = self.chain.read().unwrap();
                     match chain.block_store.get_hash_by_height(parent_height as u64) {
                         Ok(Some(hash)) => {
@@ -1082,15 +1318,18 @@ impl SyncManager {
             );
 
             if should_download {
+                let hashes = self.collect_pending_hashes(start, current_best_height);
+                self.download_queue.lock().unwrap().enqueue_batch(hashes);
+
                 let mut state = self.sync_state.lock().unwrap();
                 *state = SyncState::DownloadingBlocks {
-                    peer_id,
+                    active_peers: vec![peer_id],
                     next_apply_height: start,
                     total_height: current_best_height,
                 };
                 drop(state);
 
-                self.ensure_in_flight_window(peer_id, start, current_best_height);
+                self.drain_to_peers_and_send(&[peer_id]);
             } else {
                 let mut state = self.sync_state.lock().unwrap();
                 *state = SyncState::Synced;
@@ -1100,7 +1339,18 @@ impl SyncManager {
         Ok(())
     }
 
-    // Handle getheaders request — serve our canonical chain headers to the peer.
+    /// Collect hashes from peer_header_map for heights `start..=end`, in order.
+    fn collect_pending_hashes(&self, start: u32, end: u32) -> Vec<[u8; 32]> {
+        let peer_map = self.peer_header_map.lock().unwrap();
+        (start..=end)
+            .filter_map(|h| peer_map.get(&h).copied())
+            .collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Serve headers to peers
+    // -----------------------------------------------------------------------
+
     pub fn handle_getheaders(&self, peer_id: u64, msg: &GetHeadersMessage) -> Result<(), String> {
         log::debug!(
             "handle_getheaders called from peer {}, sending headers...",
@@ -1108,17 +1358,9 @@ impl SyncManager {
         );
         let chain = self.chain.read().unwrap();
 
-        // Find common ancestor from locator.
-        // Use only self.blocks (the in-memory canonical chain index) for height lookup.
-        // get_block_meta would return a height for ANY stored block including side-chain
-        // blocks, so using it here would allow a contaminated CF_BLOCK_INDEX entry to
-        // pass the canonical check incorrectly.  self.blocks is authoritative: it is
-        // populated exclusively from the canonical tip walk in recover_from_storage.
         let mut start_height = 0;
         let mut matched_at: Option<u64> = None;
         for hash in &msg.block_locator {
-            // Check LRU cache first; fall back to block_meta in DB for blocks
-            // outside the cache window (deep forks, exponential locator steps).
             let height_opt = chain.get_height_for_hash(hash).or_else(|| {
                 chain
                     .block_store
@@ -1143,11 +1385,6 @@ impl SyncManager {
             start_height
         );
 
-        // Serve canonical headers by looking up each height via CF_BLOCK_INDEX first,
-        // then fetching the header by hash.  get_header_at_height / get_header_by_height
-        // prefers the CF_HEADERS height key (hh: prefix) which is overwritten by
-        // store_headers_batch during every peer sync, so using it here would serve
-        // stale headers from a prior sync session instead of the canonical chain.
         let mut headers = Vec::new();
         let mut height = start_height;
         while headers.len() < 2000 {

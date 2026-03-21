@@ -306,11 +306,17 @@ impl BlockRelay {
                     hex::encode(block.header.prev_block_hash)
                 );
                 drop(chain);
-                // Orphan means we're missing the parent chain — trigger a header
-                // sync to find the common ancestor and resolve the fork.
                 let sync_guard = self.peer_manager.sync_manager();
                 let sync = sync_guard.lock().unwrap();
                 if let Some(sync) = &*sync {
+                    // Store the orphan so it can be applied once its parent arrives.
+                    sync.store_orphan(
+                        block_hash,
+                        crate::consensus::block::Block {
+                            header: block.header,
+                            transactions: block.transactions.clone(),
+                        },
+                    );
                     if !sync.is_syncing() {
                         let _ = sync.request_headers_force(peer_id);
                     }
