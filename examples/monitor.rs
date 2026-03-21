@@ -19,7 +19,7 @@ use std::{
     process::{Child, Command},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        mpsc, Arc, Mutex,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -90,6 +90,10 @@ fn spawn_ssh_tunnel(remote_ip: &str, local_port: u16) -> Option<Child> {
             "ExitOnForwardFailure=yes",
             "-o",
             "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
             "-L",
             &format!("{}:127.0.0.1:8332", local_port),
             &format!("root@{}", remote_ip),
@@ -100,13 +104,38 @@ fn spawn_ssh_tunnel(remote_ip: &str, local_port: u16) -> Option<Child> {
 
 fn main() -> io::Result<()> {
     // Auto-spawn SSH tunnels so no manual setup is needed.
-    let mut tunnel_1 = spawn_ssh_tunnel("45.77.153.141", 18331);
-    let mut tunnel_4 = spawn_ssh_tunnel("45.77.64.221", 18332);
+    let tunnel_1: Arc<Mutex<Option<Child>>> =
+        Arc::new(Mutex::new(spawn_ssh_tunnel("45.77.153.141", 18331)));
+    let tunnel_4: Arc<Mutex<Option<Child>>> =
+        Arc::new(Mutex::new(spawn_ssh_tunnel("45.77.64.221", 18332)));
     // Give tunnels a moment to establish before polling begins.
     thread::sleep(Duration::from_secs(2));
 
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<NodeUpdate>();
+
+    // Tunnel watcher: respawn dead SSH tunnels every 10 seconds.
+    let watcher_stop = stop.clone();
+    let watcher_t1 = tunnel_1.clone();
+    let watcher_t4 = tunnel_4.clone();
+    thread::spawn(move || {
+        while !watcher_stop.load(Ordering::Relaxed) {
+            thread::sleep(Duration::from_secs(10));
+            for (tunnel, ip, port) in [
+                (&watcher_t1, "45.77.153.141", 18331u16),
+                (&watcher_t4, "45.77.64.221", 18332u16),
+            ] {
+                let mut guard = tunnel.lock().unwrap();
+                let dead = match *guard {
+                    None => true,
+                    Some(ref mut child) => child.try_wait().ok().flatten().is_some(),
+                };
+                if dead {
+                    *guard = spawn_ssh_tunnel(ip, port);
+                }
+            }
+        }
+    });
 
     let poller_1 = spawn_poller(
         tx.clone(),
@@ -147,10 +176,10 @@ fn main() -> io::Result<()> {
     let _ = poller_1.join();
     let _ = poller_4.join();
 
-    if let Some(ref mut t) = tunnel_1 {
+    if let Some(ref mut t) = *tunnel_1.lock().unwrap() {
         let _ = t.kill();
     }
-    if let Some(ref mut t) = tunnel_4 {
+    if let Some(ref mut t) = *tunnel_4.lock().unwrap() {
         let _ = t.kill();
     }
 
@@ -1108,7 +1137,7 @@ fn rpc_batch(local_port: u16, requests: Value) -> Result<Vec<Value>, String> {
 fn http_post_json(local_port: u16, body: &str) -> Result<Value, String> {
     let mut stream =
         TcpStream::connect_timeout(&local_socket_addr(local_port), Duration::from_secs(5))
-            .map_err(|e| format!("{:?}", e))?;
+            .map_err(|e| format!("{}", e))?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(20)));
 
@@ -1121,13 +1150,13 @@ fn http_post_json(local_port: u16, body: &str) -> Result<Value, String> {
 
     stream
         .write_all(request.as_bytes())
-        .map_err(|e| format!("{:?}", e))?;
-    stream.flush().map_err(|e| format!("{:?}", e))?;
+        .map_err(|e| format!("{}", e))?;
+    stream.flush().map_err(|e| format!("{}", e))?;
 
     let mut resp_bytes = Vec::new();
     stream
         .read_to_end(&mut resp_bytes)
-        .map_err(|e| format!("{:?}", e))?;
+        .map_err(|e| format!("{}", e))?;
 
     let resp_str = String::from_utf8_lossy(&resp_bytes);
     let mut parts = resp_str.splitn(2, "\r\n\r\n");
