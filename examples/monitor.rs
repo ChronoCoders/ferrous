@@ -570,8 +570,8 @@ fn poll_node(
                 .and_then(|d| d.as_f64())
                 .unwrap_or(f64::NAN);
             stats.hash_rate = v
-                .get("networkhashps")
-                .or_else(|| v.get("hashrate"))
+                .get("hashrate")
+                .or_else(|| v.get("networkhashps"))
                 .or_else(|| v.get("hash_rate"))
                 .and_then(|h| h.as_f64())
                 .unwrap_or(f64::NAN);

@@ -110,8 +110,10 @@ impl RecoveryManager {
             .map_err(|e| format!("Poisoned mutex: {}", e))?;
 
         if state.last_recover_call.elapsed() < Duration::from_secs(30) {
-            log::debug!("recover() skipped — rate-limited (last call {:.1}s ago)",
-                state.last_recover_call.elapsed().as_secs_f64());
+            log::debug!(
+                "recover() skipped — rate-limited (last call {:.1}s ago)",
+                state.last_recover_call.elapsed().as_secs_f64()
+            );
             return Ok(());
         }
         state.last_recover_call = Instant::now();
