@@ -32,7 +32,35 @@ pub struct GetBlockResponse {
     pub time: u64,
     pub nonce: u64,
     pub bits: String,
+    pub size: usize,
+    pub n_tx: usize,
+    pub miner: Option<String>,
     pub tx: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transactions: Option<Vec<VerboseTx>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerboseTxInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub txid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vout: Option<u32>,
+    pub coinbase: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerboseTxOutput {
+    pub value_frr: f64,
+    pub address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerboseTx {
+    pub txid: String,
+    pub is_coinbase: bool,
+    pub vin: Vec<VerboseTxInput>,
+    pub vout: Vec<VerboseTxOutput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

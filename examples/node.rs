@@ -235,6 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 recovery_manager: recovery_manager_clone,
                 relay: relay_clone,
                 mempool: mempool_clone,
+                network_prefix,
             };
             let server = RpcServer::new(config, &rpc_addr).unwrap();
             server.run().ok();
@@ -257,6 +258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             recovery_manager: recovery_manager_rpc,
             relay: relay.clone(),
             mempool: mempool.clone(),
+            network_prefix,
         };
 
         let server = RpcServer::new(config, &args.rpc_addr).map_err(std::io::Error::other)?;
