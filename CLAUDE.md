@@ -1,5 +1,5 @@
 # Ferrous Network — Claude Briefing Document
-Last updated: 2026-03-20 (session 3)
+Last updated: 2026-03-21
 
 ## Previously Blocking Bugs — NOW FIXED
 
@@ -20,7 +20,7 @@ Last updated: 2026-03-20 (session 3)
 1. Deploy order: seed4 first → wait for peer count > 0 → seed1. Never simultaneously.
 2. Build on servers: `cargo build --release --example node` on server after git checkout. No fmt/clippy/test on servers.
 3. fmt/clippy on developer machine: must pass before any deploy.
-4. Dual mining is active: LRU cache fix (`15e61d0`), difficulty floor fix (`b3ecab9`), mining read-lock fix (`b765d12`), and recovery background-thread fix (`8e79312`) all deployed. Both nodes mining with `--mine`. The 3-cycle convergence verification test is the next required step before Phase 2.
+4. Dual mining is active: LRU cache fix (`15e61d0`), difficulty floor fix (`b3ecab9`), mining read-lock fix (`b765d12`), and recovery background-thread fix (`8e79312`) all deployed. Both nodes mining with `--mine`. Phase 2 (BlockDownloadQueue) and Phase 3 backpressure (BlockApplyBuffer) are implemented and deployed. Wallet end-to-end test passed 2026-03-21.
 5. WAL sync:false: crash-safe but not fsync-safe. Hard power loss can lose recent writes.
 6. RPC is loopback only: `127.0.0.1:8332`. No external access without SSH tunnel.
 7. Both nodes are symmetric: full node + seed + miner. No role separation.
@@ -315,6 +315,16 @@ examples/node.rs   — main node binary
 
 96. Same-thread Mutex deadlock in message handler (`24b9049`) — The message handler loop held `peers` from its outer `peers_clone.lock()` and then the deferred disconnect block called `peers_clone.lock()` again on the same thread. Rust's `Mutex` is not reentrant — this is an instant deadlock. Three paths triggered it: (1) `Err(e)` from `peer.receive()` — connection closed; (2) invalid message ban (`peer.should_ban()` in the `msg.validate()` Err arm); (3) rate limit ban (`peer.should_ban()` after `check_message_rate()`). All three set `should_disconnect = true` while holding `peers`, then fell through to the disconnect block which re-acquired `peers_clone`. Fixed by inlining the full disconnect cleanup in all three paths: NLL ends `peer`'s borrow at its last use (`peer.receive()` or `peer.should_ban()`), allowing `peers.remove(&id)` followed by `drop(peers)` followed by batcher/cache/security cleanup, all in the same arm via `continue 'peer_loop`. The deferred disconnect block and `should_disconnect` flag removed entirely.
 
+### Session 2026-03-21 (Claude Code)
+
+97. Phase 2 — BlockDownloadQueue multi-peer parallel IBD (`a15b669`) — Serial single-peer `DownloadingBlocks` replaced with a work-stealing queue: `pending: VecDeque`, `in_flight: HashMap<[u8;32], (PeerId, Instant)>`, `peer_load: HashMap<PeerId, usize>`. Per-peer window 64 blocks (`DOWNLOAD_WINDOW`), global cap 512 (`MAX_INFLIGHT`), 30-second timeout with re-queue (`BLOCK_REQUEST_TIMEOUT`). `drain_to_peers_and_send()` dispatches to the lightest-loaded peer first. `on_peer_disconnected()` returns in-flight hashes to the front of `pending` and removes the peer from `active_peers`. Orphan pool resized to 2048 (`ORPHAN_POOL_MAX`); orphans stored on `ChainError::OrphanBlock` in relay.rs and drained after each successful `add_block`.
+
+98. Phase 3 — BlockApplyBuffer backpressure (`de36bff`) — `BLOCK_BUFFER_MAX=1024` constant added to sync.rs. `drain_to_peers_and_send()` returns early when the pending apply buffer reaches the cap, preventing downloads from outrunning the sequential apply loop.
+
+99. Monitor hashrate display corrected to KH/s (`7e4f8e3`) — hashrate value was being displayed as `H/s` but the underlying value was already in kH/s-scale, making the readout 1000x too low. Divided by 1000.0 and labelled `KH/s`.
+
+100. monitor.sh committed to repo (`f4c67c6`) — the shell script was server-only and was destroyed on every testnet wipe. Added to the repository root so it is restored automatically on the next git checkout and survives future resets.
+
 ### Session 2026-03-16 to 2026-03-18 (Claude Code)
 
 68. Block dispatch worker (`f063b90`) — block messages enqueued into `mpsc::sync_channel(1024)`; dedicated `block-dispatch-worker` thread processes them. Poll loop never blocks on `add_block`. Root fix for 1-block-per-30s TCP backpressure issue.
@@ -330,15 +340,15 @@ examples/node.rs   — main node binary
 
 ---
 
-## Current Status (2026-03-20)
+## Current Status (2026-03-21)
 
 Always run the chain verification commands above to confirm state before trusting the values below.
 
 Last known state (may be stale):
-- seed1: ~1419 blocks, mining, active, on `24b9049`
-- seed4: ~1419 blocks, mining, active, on `24b9049`
-- Both nodes on same tip (`798fa13a...` at height 1419, confirmed 2026-03-20 ~00:18 UTC)
-- Git HEAD: `24b9049` (fix(manager): eliminate same-thread Mutex deadlock in disconnect path)
+- seed1: fresh chain post-wipe 2026-03-21, mining, active, on `f4c67c6`
+- seed4: fresh chain post-wipe 2026-03-21, mining, active, on `f4c67c6`
+- Both nodes restarted from genesis after 2026-03-21 wipe; block count not recorded (run `getblockchaininfo` to confirm current state)
+- Git HEAD: `f4c67c6` (chore: add monitor.sh to repo)
 - All fixes deployed and working:
   1. `b3c44c6` relay.rs orphan handler calls `request_headers_force`
   2. `214c17e` env_logger initialized in node.rs main()
@@ -353,12 +363,17 @@ Last known state (may be stale):
   11. `65e7677` ABBA deadlock fix (batcher/cache outside peers lock)
   12. `7931b66` ABBA deadlock fix (broadcast(), disconnect_peer(), punish_peer())
   13. `24b9049` same-thread Mutex deadlock in message handler disconnect path
+  14. `a15b669` Phase 2: BlockDownloadQueue multi-peer parallel IBD
+  15. `de36bff` Phase 3: BlockApplyBuffer backpressure cap
+  16. `7e4f8e3` monitor KH/s display fix
+  17. `f4c67c6` monitor.sh committed to repo
 - sccache enabled on both nodes
 - Both nodes mining (--mine on both)
-- Reorgs happening correctly; RPC responsive under load
-- 3-cycle convergence test: PASSED (2026-03-20, cycles at heights 1415→1416, 1416→1417, 1417→1419)
+- Testnet reset 2026-03-21: parallel wipe from genesis, both nodes reconnected and mining
+- Wallet end-to-end test: PASSED (seed1→seed4 100 FRR, seed4→seed1 50 FRR with correct fee deduction)
+- 3-cycle convergence test: PASSED (2026-03-20)
 
-NEXT: Phase 2 (BlockDownloadQueue, RandomX).
+NEXT: Testnet soak — accumulate ~10,000 blocks; verify IBD wipe recovery. Then Phase 3 wallet refactor (BIP39).
 
 ---
 
@@ -386,6 +401,43 @@ Corrections applied:
 - ECDSA shown as the current signature scheme
 - Max supply and halving interval added
 - RPC method count shown as 16 (now 21 with recent additions — update pending)
+
+---
+
+## Session Summary (2026-03-21) — Phase 2 BlockDownloadQueue + Wallet Test + Testnet Reset
+
+### Problem
+
+Two structural gaps remained after the convergence test passed: (1) IBD was still single-peer and serial — a new node could not keep up with a live chain; (2) the orphan pool was capped at 1000 entries, half the architect-approved 2048. Additionally, the monitor was displaying hashrate in H/s when the value was kH/s-scale, and monitor.sh was not in the repository and was lost on every wipe.
+
+### Fix (`a15b669`) — Phase 2: BlockDownloadQueue
+
+Replaced `SyncState::DownloadingBlocks { peer_id: PeerId }` with `active_peers: Vec<PeerId>`. Added `BlockDownloadQueue` with `pending: VecDeque<[u8;32]>`, `in_flight: HashMap<[u8;32], (PeerId, Instant)>`, and `peer_load: HashMap<PeerId, usize>`. Constants: `DOWNLOAD_WINDOW=64` per-peer, `MAX_INFLIGHT=512` global, `BLOCK_REQUEST_TIMEOUT=30s`. `drain_to_peers_and_send()` dispatches to the lightest-loaded peer. `on_peer_disconnected()` returns in-flight hashes to the front of `pending`. `recheck_timeouts()` re-queues blocks unresponded to after 30 seconds. `start_sync()` adds new peers to `active_peers` when already downloading. `manager.rs` calls `on_peer_disconnected(id)` in all three disconnect paths. `relay.rs` orphan handler stores the block in the pool (capacity 2048) instead of discarding it; `drain_orphans_for_parent()` called after each successful `add_block`.
+
+### Fix (`de36bff`) — Phase 3: BlockApplyBuffer backpressure
+
+`BLOCK_BUFFER_MAX=1024` added. `drain_to_peers_and_send()` returns early when the pending buffer is at capacity, preventing downloads from outrunning the sequential apply loop.
+
+### Also Fixed This Session
+
+- `7e4f8e3` — monitor hashrate display corrected from H/s to KH/s (value was kH/s-scale; label was wrong).
+- `f4c67c6` — monitor.sh committed to repository root so it survives testnet resets.
+
+### Testnet Reset (2026-03-21)
+
+Both nodes stopped and data directories wiped simultaneously (parallel SSH) to avoid either node re-syncing from the other. seed4 restarted first, then seed1. Both reconnected and began mining fresh chain from genesis.
+
+### Wallet End-to-End Test — PASSED
+
+- seed1 to seed4: 100 FRR sent, 100 FRR received (coinbase maturity tx, exact amount, no fee).
+- seed4 to seed1: 50 FRR sent, 49.99999 FRR received (fee deducted correctly).
+- Both transactions included in blocks immediately.
+- `listunspent` on both nodes showed correct UTXOs and confirmations.
+- Coin selection, fee calculation, and UTXO persistence confirmed working end-to-end.
+
+### Outcome
+
+Both nodes on `f4c67c6`, fresh chain from genesis post-wipe, mining with multi-peer parallel IBD active. Phase 2 and Phase 3 IBD infrastructure is deployed. Wallet is confirmed functional. Next milestone: testnet soak to ~10,000 blocks, followed by at least one full IBD wipe-and-resync to validate Phase 2 in practice.
 
 ---
 
@@ -715,6 +767,8 @@ Node count: remain at 2 seed nodes until Phase 2 and Phase 3 are stable.
 
 ### Priority 2 — Fix Before Testnet Reset (Not Blocking Phase 2)
 
+**[DONE] Wallet end-to-end test** — PASSED 2026-03-21. Send/receive in both directions verified with correct fee deduction and UTXO persistence.
+
 - Wallet encryption — current XOR obfuscation in wallet/keys.rs is reversible; represents real security risk
 - Mainnet address prefix — 0x6f (testnet) is hardcoded in wallet/address.rs
 - RocksDB LOG.old cleanup — set `keep_log_file_num = 3` (289 files accumulated; manually cleaned 2026-03-19, will recur)
@@ -732,9 +786,8 @@ Node count: remain at 2 seed nodes until Phase 2 and Phase 3 are stable.
 
 ### Phase 2 (After Reorg Fix Verified)
 
-- BlockDownloadQueue with work-stealing multi-peer download (architect spec approved above)
-- BlockApplyBuffer with sequential ordered apply
-- Orphan pool resize to 2048
+**[DONE] BlockDownloadQueue** — `a15b669`. Work-stealing multi-peer queue deployed. Per-peer window 64, global cap 512, 30s timeout. `on_peer_disconnected()` returns in-flight hashes. Orphan pool resized to 2048.
+**[DONE] BlockApplyBuffer backpressure** — `de36bff`. `BLOCK_BUFFER_MAX=1024`; `drain_to_peers_and_send()` pauses when buffer is full.
 
 ### Phase 3 — Wallet Refactor
 
@@ -877,3 +930,4 @@ Fastest reasonable proof: ~10,000 blocks over ~2 weeks with at least one success
 - Never assume "listener saturation by mining" without evidence — the asymmetric handshake failure looked like a load issue but was a deterministic lock ordering bug. Add diagnostic logs and trace exactly where the thread stalls before forming a hypothesis
 - A deferred disconnect pattern (`should_disconnect = true` + block at end of loop body) is unsafe when the loop body holds a mutex in some paths — the disconnect block may try to re-acquire the same mutex on the same thread. Inline the cleanup at the decision point using NLL to ensure the conflicting borrow is released first
 - A partial ABBA fix can still leave a same-thread deadlock — fixing multi-thread ABBA (broadcast/disconnect_peer) does not fix same-thread re-entrancy. Both must be analyzed independently when tracing a deadlock
+- Any script or file that lives only on a server will be destroyed on the next testnet wipe — operational tooling (monitor.sh, systemd overrides, etc.) must be committed to the repository or it must be recreated from scratch after every reset
