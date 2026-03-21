@@ -10,7 +10,7 @@
 
 DEST_ADDR="${1}"
 MIN_HEIGHT=101
-INTERVAL=300
+INTERVAL=20
 LOG="/root/ferrous/txgen_log.txt"
 
 if [ -z "$DEST_ADDR" ]; then
