@@ -968,16 +968,26 @@ fn fetch_recent_blocks(
                             .map(|s| format!("{}...{}", &s[..6], &s[s.len().saturating_sub(4)..]))
                             .unwrap_or_else(|| "unknown".to_string())
                     };
-                    let amount_frr: f64 = tx
-                        .get("vout")
-                        .and_then(|v| v.as_array())
-                        .map(|outputs| {
-                            outputs
-                                .iter()
-                                .filter_map(|o| o.get("value_frr").and_then(|v| v.as_f64()))
-                                .sum()
-                        })
-                        .unwrap_or(0.0);
+                    // For coinbase: sum all outputs (block reward).
+                    // For regular txs: show only vout[0] (the payment); vout[1] is change.
+                    let amount_frr: f64 = if is_coinbase {
+                        tx.get("vout")
+                            .and_then(|v| v.as_array())
+                            .map(|outputs| {
+                                outputs
+                                    .iter()
+                                    .filter_map(|o| o.get("value_frr").and_then(|v| v.as_f64()))
+                                    .sum()
+                            })
+                            .unwrap_or(0.0)
+                    } else {
+                        tx.get("vout")
+                            .and_then(|v| v.as_array())
+                            .and_then(|outputs| outputs.first())
+                            .and_then(|o| o.get("value_frr"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0)
+                    };
                     if !txid.is_empty() {
                         recent_txs.push(RecentTx {
                             txid,
