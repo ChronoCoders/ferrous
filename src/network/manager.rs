@@ -798,6 +798,12 @@ impl PeerManager {
                                             peers.remove(&id).map(|p| (p.addr.ip(), p.inbound));
                                         let rem = peers.len();
                                         drop(peers);
+                                        {
+                                            let sg = sync_clone.lock().unwrap();
+                                            if let Some(sync) = &*sg {
+                                                sync.on_peer_disconnected(id);
+                                            }
+                                        }
                                         batcher_clone.lock().unwrap().clear_peer(id);
                                         broadcast_cache_clone.lock().unwrap().clear_peer(id);
                                         if let Some((ip, inbound)) = dci {
@@ -850,6 +856,12 @@ impl PeerManager {
                                                 peers.remove(&id).map(|p| (p.addr.ip(), p.inbound));
                                             let rem = peers.len();
                                             drop(peers);
+                                            {
+                                                let sg = sync_clone.lock().unwrap();
+                                                if let Some(sync) = &*sg {
+                                                    sync.on_peer_disconnected(id);
+                                                }
+                                            }
                                             batcher_clone.lock().unwrap().clear_peer(id);
                                             broadcast_cache_clone.lock().unwrap().clear_peer(id);
                                             if let Some((ip, inbound)) = dci {
@@ -1034,6 +1046,12 @@ impl PeerManager {
                                     let stats_guard = stats_clone.lock().unwrap();
                                     if let Some(stats) = &*stats_guard {
                                         stats.record_connection_closed();
+                                    }
+                                }
+                                {
+                                    let sg = sync_clone.lock().unwrap();
+                                    if let Some(sync) = &*sg {
+                                        sync.on_peer_disconnected(id);
                                     }
                                 }
                                 batcher_clone.lock().unwrap().clear_peer(id);
