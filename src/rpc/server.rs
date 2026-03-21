@@ -783,7 +783,10 @@ impl RpcServer {
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&blockhash_bytes);
 
-        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
+        let chain = self
+            .chain
+            .try_read()
+            .map_err(|_| "Chain busy".to_string())?;
 
         let block = match chain.get_block(&hash) {
             Some(b) => b.clone(),
@@ -907,7 +910,10 @@ impl RpcServer {
             .and_then(|v| v.as_u64())
             .ok_or("Invalid params: expected [height]")?;
 
-        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
+        let chain = self
+            .chain
+            .try_read()
+            .map_err(|_| "Chain busy".to_string())?;
 
         let hash = chain
             .block_store
@@ -919,7 +925,10 @@ impl RpcServer {
     }
 
     fn getbestblockhash(&self) -> Result<Value, String> {
-        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
+        let chain = self
+            .chain
+            .try_read()
+            .map_err(|_| "Chain busy".to_string())?;
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
 
         match tip {
