@@ -67,16 +67,21 @@ impl RpcServer {
         })
     }
 
-    pub fn run(&self) -> Result<(), String> {
+    pub fn run(self: Arc<Self>) -> Result<(), String> {
+        let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         for mut request in self.server.incoming_requests() {
-            // All chain/wallet locks are acquired and released inside handle_request.
-            // respond() is called after handle_request returns, so no lock is held
-            // across the network send (Fix 3: lock-free send boundary).
-            let (response, stop) = self.handle_request(&mut request);
-            let _ = request.respond(response);
-            if stop {
+            if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
+            let server = Arc::clone(&self);
+            let stop_flag = Arc::clone(&stop_flag);
+            std::thread::spawn(move || {
+                let (response, stop) = server.handle_request(&mut request);
+                let _ = request.respond(response);
+                if stop {
+                    stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
         }
         Ok(())
     }

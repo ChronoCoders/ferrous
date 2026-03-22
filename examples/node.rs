@@ -243,7 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mempool: mempool_clone,
                 network_prefix,
             };
-            let server = RpcServer::new(config, &rpc_addr).unwrap();
+            let server = std::sync::Arc::new(RpcServer::new(config, &rpc_addr).unwrap());
             server.run().ok();
         });
 
@@ -267,7 +267,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             network_prefix,
         };
 
-        let server = RpcServer::new(config, &args.rpc_addr).map_err(std::io::Error::other)?;
+        let server = std::sync::Arc::new(
+            RpcServer::new(config, &args.rpc_addr).map_err(std::io::Error::other)?,
+        );
 
         if args.mine {
             println!("Starting continuous miner...");
