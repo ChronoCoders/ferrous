@@ -1151,9 +1151,10 @@ impl PeerManager {
             let peers = self.peers.lock().unwrap();
             peers.keys().copied().collect()
         };
-        // peers lock released — safe to acquire cache then batcher.
-        let mut cache = self.broadcast_cache.lock().unwrap();
+        // peers lock released — acquire batcher then cache, matching the
+        // disconnect/cleanup paths which also take batcher before cache.
         let mut batcher = self.batcher.lock().unwrap();
+        let mut cache = self.broadcast_cache.lock().unwrap();
         for peer_id in peer_ids {
             if !cache.already_sent(peer_id, &hash) {
                 batcher.add_inv(peer_id, item);
