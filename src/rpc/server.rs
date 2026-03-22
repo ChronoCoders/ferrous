@@ -14,7 +14,7 @@ use crate::wallet::builder::TransactionBuilder;
 use crate::wallet::manager::Wallet;
 use serde_json::{json, Value};
 use std::io::Read;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tiny_http::{Response, Server};
 
@@ -68,19 +68,38 @@ impl RpcServer {
     }
 
     pub fn run(self: Arc<Self>) -> Result<(), String> {
+        // Cap concurrent RPC threads so a flood of requests (txgen, monitor)
+        // cannot create unbounded OS threads. At 150s PoW per mineblocks call,
+        // 16 slots is far more than normal load ever needs.
+        const MAX_RPC_THREADS: usize = 16;
+        let semaphore = Arc::new((Mutex::new(0usize), Condvar::new()));
         let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         for mut request in self.server.incoming_requests() {
             if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
+            // Acquire a slot — block the accept loop until one is free.
+            {
+                let (lock, cvar) = &*semaphore;
+                let mut count = lock.lock().unwrap();
+                while *count >= MAX_RPC_THREADS {
+                    count = cvar.wait(count).unwrap();
+                }
+                *count += 1;
+            }
             let server = Arc::clone(&self);
             let stop_flag = Arc::clone(&stop_flag);
+            let semaphore = Arc::clone(&semaphore);
             std::thread::spawn(move || {
                 let (response, stop) = server.handle_request(&mut request);
                 let _ = request.respond(response);
                 if stop {
                     stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                // Release the slot.
+                let (lock, cvar) = &*semaphore;
+                *lock.lock().unwrap() -= 1;
+                cvar.notify_one();
             });
         }
         Ok(())
