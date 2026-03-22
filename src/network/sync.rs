@@ -271,6 +271,20 @@ impl SyncManager {
             .unwrap_or(0) as u32
     }
 
+    /// Non-blocking variant — returns 0 if the chain write lock is currently
+    /// held.  Used in the inbound handshake thread where blocking on
+    /// chain.read() would delay the handshake by up to the lock-hold duration
+    /// (e.g. a burst of add_block calls by the dispatch worker).  The height
+    /// in a VERSION message is advisory; 0 is a safe fallback.
+    pub fn try_get_local_height(&self) -> u32 {
+        self.chain
+            .try_read()
+            .ok()
+            .and_then(|c| c.get_tip().ok().flatten())
+            .map(|t| t.height as u32)
+            .unwrap_or(0)
+    }
+
     pub fn is_syncing(&self) -> bool {
         let state = self.sync_state.lock().unwrap();
         matches!(
