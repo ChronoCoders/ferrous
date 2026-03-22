@@ -343,9 +343,15 @@ impl PeerManager {
                         let mut security = security_clone.lock().unwrap();
                         security.record_peer(id, ip);
 
-                        // Trigger sync
-                        let sync_guard = sync_manager_clone.lock().unwrap();
-                        if let Some(sync) = &*sync_guard {
+                        // Trigger sync — clone Arc out from wrapper lock before calling
+                        // start_sync, which may block on send_to_peer (30s write timeout).
+                        // Holding the wrapper lock during start_sync would block any
+                        // concurrent inbound handshake thread waiting for the same lock.
+                        let sync_opt = {
+                            let g = sync_manager_clone.lock().unwrap();
+                            g.as_ref().cloned()
+                        };
+                        if let Some(sync) = sync_opt {
                             let _ = sync.start_sync(id);
                         }
                     }
@@ -537,9 +543,13 @@ impl PeerManager {
                         let mut security = security_inner.lock().unwrap();
                         security.record_peer(id, ip);
 
-                        // Trigger sync
-                        let sync_guard = sync_manager_inner.lock().unwrap();
-                        if let Some(sync) = &*sync_guard {
+                        // Trigger sync — clone Arc out from wrapper lock before calling
+                        // start_sync (same reason as outbound path above).
+                        let sync_opt = {
+                            let g = sync_manager_inner.lock().unwrap();
+                            g.as_ref().cloned()
+                        };
+                        if let Some(sync) = sync_opt {
                             let _ = sync.start_sync(id);
                         }
                     }
