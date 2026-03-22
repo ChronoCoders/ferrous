@@ -89,7 +89,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Check if genesis needed
         if chain_guard.get_height() == 0 && chain_guard.get_tip().unwrap().is_none() {
             println!("Creating genesis block...");
-            let genesis = ferrous_node::consensus::block::create_genesis_block();
+            let genesis = ferrous_node::consensus::block::create_genesis_block(
+                chain_guard.params.genesis_n_bits,
+            );
             chain_guard.add_block(genesis)?;
             println!("Genesis block created");
         }
