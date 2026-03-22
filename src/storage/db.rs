@@ -24,6 +24,7 @@ impl Database {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
+        opts.set_keep_log_file_num(3);
 
         // Define column families
         let cfs = vec![
