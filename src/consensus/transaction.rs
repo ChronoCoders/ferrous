@@ -178,6 +178,8 @@ impl Encode for Transaction {
             size += output.encoded_size();
         }
         size += 4; // locktime
+                   // witness_count varint (always present)
+        size += crate::primitives::varint::encode(self.witnesses.len() as u64).len();
         for witness in &self.witnesses {
             size += witness.encoded_size();
         }
@@ -220,21 +222,18 @@ impl Decode for Transaction {
         let (locktime, c4) = u32::decode(&bytes[offset..])?;
         offset += c4;
 
-        if offset == bytes.len() {
-            return Ok((
-                Transaction {
-                    version,
-                    inputs,
-                    outputs,
-                    witnesses: Vec::new(),
-                    locktime,
-                },
-                offset,
-            ));
-        }
+        // Always read the witness count varint. 0 means no witnesses.
+        // This is unambiguous regardless of the surrounding byte slice size,
+        // unlike the old `offset == bytes.len()` heuristic which broke for
+        // any non-last transaction in a multi-transaction block.
+        let (witness_count_u64, cw) = decode_varint(&bytes[offset..]).map_err(map_varint_error)?;
+        let witness_count: usize = witness_count_u64
+            .try_into()
+            .map_err(|_| DecodeError::Overflow)?;
+        offset += cw;
 
-        let mut witnesses = Vec::with_capacity(input_count);
-        for _ in 0..input_count {
+        let mut witnesses = Vec::with_capacity(witness_count);
+        for _ in 0..witness_count {
             let (witness, consumed) = Witness::decode(&bytes[offset..])?;
             offset += consumed;
             witnesses.push(witness);
@@ -289,10 +288,13 @@ impl Transaction {
         out
     }
 
-    /// Encodes the transaction including witness data for each input.
+    /// Encodes the transaction with an explicit witness count varint followed
+    /// by each witness. A count of 0 means no witnesses. This is always
+    /// unambiguous when the transaction is embedded in a larger byte buffer.
     pub fn encode_with_witness(&self) -> Vec<u8> {
         let mut out = self.encode_without_witness();
 
+        out.extend_from_slice(&encode_varint(self.witnesses.len() as u64));
         for witness in &self.witnesses {
             out.extend_from_slice(&witness.encode());
         }
