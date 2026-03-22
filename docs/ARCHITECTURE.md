@@ -206,10 +206,10 @@ Responsibilities:
 
 The node uses a simplified concurrency model relying on `std::sync`:
 
-- `ChainState` is protected by a global `Mutex`, shared between RPC, Mining, and Networking threads.
+- `ChainState` is protected by a global `RwLock`, shared between RPC, Mining, and Networking threads. Read-heavy operations (RPC queries, block template construction) hold a read lock; write operations (block application, reorgs) hold a write lock.
 - `PeerManager` uses internal `Mutex` locks for its peer map and component references (`Relay`, `Sync`, `Discovery`).
 - Background threads:
-  - **RPC Server**: One thread per request (via `tiny_http`).
+  - **RPC Server**: One thread per request — `run()` spawns a new thread per incoming request so that long-running calls (e.g. `mineblocks` PoW, ~150s) do not block concurrent requests.
   - **P2P Listener**: One thread accepting connections.
   - **Peer Threads**: One thread per connected peer for handshake and message reading.
   - **Maintenance Threads**: Separate threads for `PeerDiscovery` (30s loop) and `KeepaliveManager` (60s loop).
@@ -219,7 +219,7 @@ Implications:
 
 - **Global Lock Contention**: `ChainState` lock is the primary bottleneck. Long validation or reorganization holds the lock, blocking RPC and P2P processing.
 - **Deadlock Risk**: Care is taken to avoid holding the `PeerManager` lock while calling into `ChainState`, or vice-versa.
-- **Scaling**: Planned improvements include `RwLock` for `ChainState` (parallel reads), a separate RPC thread pool to isolate long-running requests, and further work on parallel IBD (multi-peer download + ordered apply).
+- **Scaling**: `RwLock` for `ChainState` and per-request RPC concurrency are already implemented. Remaining planned improvements: async I/O for peer threads (currently one thread per peer), and further parallel IBD tuning (multi-peer download with ordered apply, Phase 2/3 complete).
 
 ## Dependencies and Rationale
 

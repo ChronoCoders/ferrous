@@ -1144,11 +1144,17 @@ impl PeerManager {
 
     pub fn broadcast_inventory(&self, item: InvVector) {
         let hash = item.hash;
+        // Collect eligible peer IDs under peers lock, then release before
+        // acquiring cache/batcher — consistent with the disconnect path which
+        // releases peers before acquiring batcher then cache.
+        let peer_ids: Vec<u64> = {
+            let peers = self.peers.lock().unwrap();
+            peers.keys().copied().collect()
+        };
+        // peers lock released — safe to acquire cache then batcher.
         let mut cache = self.broadcast_cache.lock().unwrap();
         let mut batcher = self.batcher.lock().unwrap();
-
-        let peers = self.peers.lock().unwrap();
-        for (&peer_id, _) in peers.iter() {
+        for peer_id in peer_ids {
             if !cache.already_sent(peer_id, &hash) {
                 batcher.add_inv(peer_id, item);
                 cache.mark_sent(peer_id, hash);
