@@ -199,6 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         peer_manager.clone(),
         addr_manager,
         network.clone(),
+        chain.clone(),
     ));
     peer_manager.set_recovery(recovery_manager.clone());
     recovery_manager.start();
