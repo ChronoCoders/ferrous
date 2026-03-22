@@ -41,10 +41,10 @@ impl NetworkMempool {
             }
         }
 
-        // Duplicate check, size cap, and insert are all performed under a single
-        // mempool lock, making the entire check-then-act sequence atomic and
-        // eliminating the TOCTOU race that existed when two separate lock scopes
-        // were used.
+        // Duplicate check, conflict check, size cap, and insert are all performed
+        // under a single mempool lock, making the entire check-then-act sequence
+        // atomic and eliminating the TOCTOU race that existed when two separate
+        // lock scopes were used.
         let mut mempool = self.transactions.lock().unwrap();
 
         if mempool.contains_key(&txid) {
@@ -56,6 +56,25 @@ impl NetworkMempool {
                 "Mempool full ({} entries): transaction rejected",
                 MEMPOOL_MAX_ENTRIES
             ));
+        }
+
+        // Reject if any input conflicts with an already-pending mempool transaction.
+        // Without this check, two sendtoaddress calls within the same block interval
+        // both pass the chain UTXO check (the UTXO is still unspent on-chain) and
+        // produce two transactions spending the same UTXO. build_template then
+        // includes both, and add_block fails on the second with UtxoNotFound.
+        for pending in mempool.values() {
+            for pending_in in &pending.inputs {
+                for new_in in &tx.inputs {
+                    if new_in.prev_txid == pending_in.prev_txid
+                        && new_in.prev_index == pending_in.prev_index
+                    {
+                        return Err(
+                            "Input already spent by a pending mempool transaction".to_string()
+                        );
+                    }
+                }
+            }
         }
 
         mempool.insert(txid, tx);
@@ -80,12 +99,32 @@ impl NetworkMempool {
         mempool.remove(txid);
     }
 
-    // Remove transactions that are in a block
+    // Remove transactions that are in a block, plus any mempool transactions
+    // that conflict with block transactions (spend the same inputs). This handles
+    // the case where a peer mines a block containing a transaction we didn't have
+    // in our mempool, but which spends the same UTXO as one we do have.
     pub fn remove_block_transactions(&self, block_txs: &[Transaction]) {
+        // Collect all OutPoints spent by the confirmed block.
+        let mut spent: std::collections::HashSet<([u8; 32], u32)> =
+            std::collections::HashSet::new();
+        for tx in block_txs {
+            for input in &tx.inputs {
+                spent.insert((input.prev_txid, input.prev_index));
+            }
+        }
+
         let mut mempool = self.transactions.lock().unwrap();
+        // Remove exact matches first.
         for tx in block_txs {
             mempool.remove(&tx.txid());
         }
+        // Evict any remaining mempool tx that spends a now-confirmed input.
+        mempool.retain(|_, pending| {
+            !pending
+                .inputs
+                .iter()
+                .any(|i| spent.contains(&(i.prev_txid, i.prev_index)))
+        });
     }
 
     // Get all transactions
