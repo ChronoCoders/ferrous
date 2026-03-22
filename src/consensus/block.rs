@@ -273,7 +273,7 @@ fn u256_div_2_256(divisor: &U256) -> U256 {
     U256::from_le_bytes(bytes.try_into().unwrap())
 }
 
-pub fn create_genesis_block() -> Block {
+pub fn create_genesis_block(genesis_n_bits: u32) -> Block {
     let coinbase = Transaction {
         version: 1,
         inputs: vec![TxInput {
@@ -300,7 +300,7 @@ pub fn create_genesis_block() -> Block {
         prev_block_hash: [0u8; 32],
         merkle_root,
         timestamp: 1_700_000_000,
-        n_bits: 0x207f_ffff, // Easy testnet difficulty
+        n_bits: genesis_n_bits,
         nonce: 0,
     };
 
