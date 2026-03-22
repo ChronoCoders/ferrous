@@ -521,14 +521,18 @@ impl PeerManager {
                 log::debug!("inbound [{}]: thread started", ip);
                 let version = 70015;
                 let services = 0;
-                // Same pattern: extract Arc clone, release wrapper lock, then
-                // call get_local_height() (which does chain.read()) outside it.
+                // Use the non-blocking variant: the height in VERSION is
+                // advisory and 0 is a safe fallback.  get_local_height()
+                // calls chain.read() which can block for tens of seconds
+                // under write pressure (burst add_block calls), causing the
+                // remote's 30 s outbound timeout to expire before the
+                // handshake even starts.
                 let height = {
                     let sync_opt = {
                         let g = sync_manager_inner.lock().unwrap();
                         g.as_ref().cloned()
                     };
-                    sync_opt.map(|s| s.get_local_height()).unwrap_or(0)
+                    sync_opt.map(|s| s.try_get_local_height()).unwrap_or(0)
                 };
                 log::debug!(
                     "inbound [{}]: height={}, calling perform_inbound_handshake",
