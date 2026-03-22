@@ -231,6 +231,9 @@ impl BlockRelay {
                 self.mempool
                     .remove_block_transactions(&applied.transactions);
             }
+            if !applied_pairs.is_empty() {
+                self.mempool.purge_stale();
+            }
             // Update peer height from the last applied block.  The height comes directly
             // from the sync session's peer_header_map so it's valid for fork-chain blocks
             // that may not yet be on the canonical chain.
@@ -296,6 +299,7 @@ impl BlockRelay {
                         self.announce_block(block_hash)?;
                     }
                     self.mempool.remove_block_transactions(&block.transactions);
+                    self.mempool.purge_stale();
                 }
                 Ok(())
             }

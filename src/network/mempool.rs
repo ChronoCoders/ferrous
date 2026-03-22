@@ -139,6 +139,32 @@ impl NetworkMempool {
         mempool.clear();
     }
 
+    /// Evict any mempool transaction whose inputs are no longer in the UTXO set.
+    /// Must be called with no chain lock held — acquires chain.read() internally.
+    /// This is a no-op when there has been no reorg; on reorg it removes transactions
+    /// whose inputs were on the disconnected chain and no longer exist.
+    pub fn purge_stale(&self) {
+        let chain = self.chain.read().unwrap();
+        let mut mempool = self.transactions.lock().unwrap();
+        let before = mempool.len();
+        mempool.retain(|_, tx| {
+            tx.inputs.iter().all(|input| {
+                let outpoint = OutPoint {
+                    txid: input.prev_txid,
+                    vout: input.prev_index,
+                };
+                chain.is_utxo_unspent(&outpoint)
+            })
+        });
+        let evicted = before - mempool.len();
+        if evicted > 0 {
+            log::info!(
+                "Mempool: purged {} stale transaction(s) after reorg",
+                evicted
+            );
+        }
+    }
+
     // Get mempool size
     pub fn size(&self) -> usize {
         let mempool = self.transactions.lock().unwrap();
