@@ -20,7 +20,7 @@ fi
 
 rpc() {
     printf '{"jsonrpc":"2.0","method":"%s","params":%s,"id":1}' "$1" "$2" | \
-        curl -s -X POST http://127.0.0.1:8332 \
+        curl -s --max-time 300 -X POST http://127.0.0.1:8332 \
              -H 'Content-Type: application/json' -d @-
 }
 
