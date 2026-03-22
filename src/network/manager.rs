@@ -290,9 +290,7 @@ impl PeerManager {
         *id_guard += 1;
         drop(id_guard);
 
-        // Use new_inbound and fix flag as we did before, but now inside this method block
-        let mut peer = Peer::new_inbound(id, conn);
-        peer.inbound = false;
+        let peer = Peer::new_outbound(id, conn);
 
         let peers_clone = Arc::clone(&self.peers);
         let dos_protection_clone = Arc::clone(&self.dos_protection);

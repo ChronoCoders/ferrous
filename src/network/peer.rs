@@ -97,6 +97,33 @@ impl Peer {
         }
     }
 
+    pub fn new_outbound(id: u64, connection: PeerConnection) -> Self {
+        let addr = connection.peer_addr();
+        let now = Instant::now();
+        Self {
+            id,
+            addr,
+            state: PeerState::Connected,
+            connection: Some(connection),
+            version: None,
+            services: 0,
+            start_height: 0,
+            last_ping: now,
+            last_pong: now,
+            last_recv: now,
+            connected_at: now,
+            nonce: 0,
+            inbound: false,
+            message_limiter: RateLimiter::new(Duration::from_secs(1), 100),
+            inv_limiter: RateLimiter::new(Duration::from_secs(1), 50),
+            getdata_limiter: RateLimiter::new(Duration::from_secs(1), 50),
+            bytes_sent: 0,
+            bytes_received: 0,
+            bandwidth_start: now,
+            ban_score: 0,
+        }
+    }
+
     // Check if peer can send message
     pub fn check_message_rate(&mut self) -> bool {
         self.message_limiter.check()
