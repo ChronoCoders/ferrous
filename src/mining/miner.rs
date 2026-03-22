@@ -524,6 +524,15 @@ impl Miner {
         self.build_template_with_script(chain, transactions, self.mining_address.clone())
     }
 
+    pub fn build_template_to(
+        &self,
+        chain: &ChainState,
+        transactions: Vec<Transaction>,
+        script_pubkey: Vec<u8>,
+    ) -> Result<BlockTemplate, MiningError> {
+        self.build_template_with_script(chain, transactions, script_pubkey)
+    }
+
     fn build_template_with_script(
         &self,
         chain: &ChainState,
