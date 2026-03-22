@@ -777,49 +777,29 @@ impl RpcServer {
         let sats = (amount * 100_000_000f64).round() as u64;
         let fee = 1000u64;
 
-        // Phase 1: build transaction + block template under read lock.
-        // Released before PoW so the RPC thread never holds a chain lock
-        // during the long PoW search (same pattern as the node.rs mining loop).
-        let (tx, template) = {
+        // Build transaction under read lock, then submit to mempool.
+        // The background mining loop pulls from the mempool and includes
+        // it in the next block — no PoW in the RPC handler, so the RPC
+        // server stays responsive.
+        let tx = {
             let wallet = self
                 .wallet
                 .lock()
                 .map_err(|_| "Lock poisoned".to_string())?;
             let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
-            let tx = TransactionBuilder::create_transaction(&wallet, &chain, addr, sats, fee)
-                .map_err(|e| format!("Transaction creation failed: {}", e))?;
-            let template = self
-                .miner
-                .build_template(&chain, vec![tx.clone()])
-                .map_err(|e| format!("Template build failed: {:?}", e))?;
-            (tx, template)
-        }; // read lock + wallet lock released here
-
-        // Phase 2: run PoW — no chain lock held.
-        let (header, txs) = self
-            .miner
-            .solve_template(template)
-            .map_err(|e| format!("Mining failed: {:?}", e))?;
-
-        // Phase 3: commit with write lock — brief.
-        {
-            use crate::consensus::block::Block;
-            let mut chain = self
-                .chain
-                .write()
-                .map_err(|_| "Lock poisoned".to_string())?;
-            chain
-                .add_block(Block {
-                    header,
-                    transactions: txs,
-                })
-                .map_err(|e| format!("add_block failed: {:?}", e))?;
-        } // write lock released here
+            TransactionBuilder::create_transaction(&wallet, &chain, addr, sats, fee)
+                .map_err(|e| format!("Transaction creation failed: {}", e))?
+        };
 
         let txid = hex::encode(tx.txid());
-        let blockhash = hex::encode(header.hash());
+        self.mempool
+            .add_transaction(tx)
+            .map_err(|e| format!("Mempool rejected transaction: {}", e))?;
 
-        let response = SendToAddressResponse { txid, blockhash };
+        let response = SendToAddressResponse {
+            txid,
+            blockhash: String::new(),
+        };
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
     }
 

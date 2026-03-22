@@ -273,16 +273,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let miner_mine = miner.clone();
             let relay_mine = relay.clone();
             let recovery_mine = recovery_manager.clone();
+            let mempool_mine = mempool.clone();
             std::thread::spawn(move || loop {
                 use ferrous_node::consensus::block::Block;
                 use ferrous_node::mining::miner::BlockTemplate;
 
                 // Phase 1: build template with read lock — fast (<1ms), no PoW.
+                // Pull pending transactions from the mempool so sendtoaddress
+                // transactions are included in the next mined block.
                 // Read lock is released before PoW starts so RPC, sync, and
                 // the block-dispatch-worker can access the chain concurrently.
+                let pending_txs = mempool_mine.get_all_transactions();
                 let template_result = {
                     let chain_guard = chain_mine.read().unwrap();
-                    miner_mine.build_template(&chain_guard, Vec::new())
+                    miner_mine.build_template(&chain_guard, pending_txs)
                 };
                 // Read lock is now released.
                 let template: BlockTemplate = match template_result {
@@ -305,27 +309,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
 
                 // Phase 3: commit with write lock — brief (~add_block duration).
-                let hash = {
+                let result = {
                     let mut chain_guard = chain_mine.write().unwrap();
-                    match chain_guard.add_block(Block {
+                    chain_guard.add_block(Block {
                         header,
-                        transactions: txs,
-                    }) {
-                        Ok(_) => Some(header.hash()),
-                        Err(e) => {
-                            eprintln!("Mining error (add_block): {:?}", e);
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                            None
-                        }
-                    }
+                        transactions: txs.clone(),
+                    })
                 };
                 // Write lock is now released.
 
-                if let Some(hash) = hash {
-                    // Notify recovery manager so last_block_age reflects locally
-                    // mined blocks, not just P2P-received ones.
-                    recovery_mine.on_new_block();
-                    let _ = relay_mine.announce_block(hash);
+                match result {
+                    Ok(_) => {
+                        // Remove confirmed transactions from mempool.
+                        mempool_mine.remove_block_transactions(&txs);
+                        // Notify recovery manager so last_block_age reflects locally
+                        // mined blocks, not just P2P-received ones.
+                        recovery_mine.on_new_block();
+                        let _ = relay_mine.announce_block(header.hash());
+                    }
+                    Err(e) => {
+                        eprintln!("Mining error (add_block): {:?}", e);
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    }
                 }
             });
         }
