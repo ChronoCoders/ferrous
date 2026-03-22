@@ -301,13 +301,18 @@ impl PeerManager {
         let our_version = self.our_version;
         let our_services = self.our_services;
 
+        // Extract Arc clone then release the wrapper lock before calling
+        // get_local_height(), which acquires chain.read() internally.
+        // Holding the wrapper lock during chain.read() would block any
+        // concurrent inbound handshake thread that also needs the wrapper lock.
         let our_height = {
-            let sync_guard = self.sync_manager.lock().unwrap();
-            if let Some(sync) = &*sync_guard {
-                sync.get_local_height()
-            } else {
-                self.our_height
-            }
+            let sync_opt = {
+                let g = self.sync_manager.lock().unwrap();
+                g.as_ref().cloned()
+            };
+            sync_opt
+                .map(|s| s.get_local_height())
+                .unwrap_or(self.our_height)
         };
 
         let mut peers = peers_clone.lock().unwrap();
@@ -517,13 +522,14 @@ impl PeerManager {
             thread::spawn(move || {
                 let version = 70015;
                 let services = 0;
+                // Same pattern: extract Arc clone, release wrapper lock, then
+                // call get_local_height() (which does chain.read()) outside it.
                 let height = {
-                    let guard = sync_manager_inner.lock().unwrap();
-                    if let Some(sync) = &*guard {
-                        sync.get_local_height()
-                    } else {
-                        0
-                    }
+                    let sync_opt = {
+                        let g = sync_manager_inner.lock().unwrap();
+                        g.as_ref().cloned()
+                    };
+                    sync_opt.map(|s| s.get_local_height()).unwrap_or(0)
                 };
                 let nonce = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
