@@ -586,19 +586,34 @@ impl RpcServer {
         let mut last_hash = [0u8; 32];
 
         for _ in 0..nblocks {
-            let hash = {
+            // Phase 1: build template under read lock.
+            let template = {
+                let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
+                self.miner
+                    .build_template(&chain, Vec::new())
+                    .map_err(|e| format!("Template build failed: {:?}", e))?
+            };
+            // Phase 2: PoW — no chain lock.
+            let (header, txs) = self
+                .miner
+                .solve_template(template)
+                .map_err(|e| format!("Mining failed: {:?}", e))?;
+            // Phase 3: commit — write lock briefly.
+            {
+                use crate::consensus::block::Block;
                 let mut chain = self
                     .chain
                     .write()
                     .map_err(|_| "Lock poisoned".to_string())?;
-                let header = self
-                    .miner
-                    .mine_and_attach(&mut chain, Vec::new())
-                    .map_err(|e| format!("Mining failed: {:?}", e))?;
-                header.hash()
-            };
-            last_hash = hash;
-            block_hashes.push(hex::encode(hash));
+                chain
+                    .add_block(Block {
+                        header,
+                        transactions: txs,
+                    })
+                    .map_err(|e| format!("add_block failed: {:?}", e))?;
+            }
+            last_hash = header.hash();
+            block_hashes.push(hex::encode(header.hash()));
         }
 
         let _ = self.relay.announce_block(last_hash);
@@ -636,19 +651,37 @@ impl RpcServer {
         let mut last_hash = [0u8; 32];
 
         for _ in 0..nblocks {
-            let hash = {
+            // Phase 1: build template under read lock.
+            let template = {
+                let chain = self
+                    .chain
+                    .read()
+                    .map_err(|_| "Chain lock failed".to_string())?;
+                self.miner
+                    .build_template_to(&chain, Vec::new(), script.clone())
+                    .map_err(|e| format!("Template build failed: {:?}", e))?
+            };
+            // Phase 2: PoW — no chain lock.
+            let (header, txs) = self
+                .miner
+                .solve_template(template)
+                .map_err(|e| format!("Mining failed: {:?}", e))?;
+            // Phase 3: commit — write lock briefly.
+            {
+                use crate::consensus::block::Block;
                 let mut chain = self
                     .chain
                     .write()
                     .map_err(|_| "Chain lock failed".to_string())?;
-                let header = self
-                    .miner
-                    .mine_and_attach_to(&mut chain, Vec::new(), script.clone())
-                    .map_err(|e| format!("Mining failed: {:?}", e))?;
-                header.hash()
-            };
-            last_hash = hash;
-            block_hashes.push(hex::encode(hash));
+                chain
+                    .add_block(Block {
+                        header,
+                        transactions: txs,
+                    })
+                    .map_err(|e| format!("add_block failed: {:?}", e))?;
+            }
+            last_hash = header.hash();
+            block_hashes.push(hex::encode(header.hash()));
         }
 
         let _ = self.relay.announce_block(last_hash);
@@ -744,22 +777,44 @@ impl RpcServer {
         let sats = (amount * 100_000_000f64).round() as u64;
         let fee = 1000u64;
 
-        let wallet = self
-            .wallet
-            .lock()
-            .map_err(|_| "Lock poisoned".to_string())?;
-        let mut chain = self
-            .chain
-            .write()
-            .map_err(|_| "Lock poisoned".to_string())?;
+        // Phase 1: build transaction + block template under read lock.
+        // Released before PoW so the RPC thread never holds a chain lock
+        // during the long PoW search (same pattern as the node.rs mining loop).
+        let (tx, template) = {
+            let wallet = self
+                .wallet
+                .lock()
+                .map_err(|_| "Lock poisoned".to_string())?;
+            let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
+            let tx = TransactionBuilder::create_transaction(&wallet, &chain, addr, sats, fee)
+                .map_err(|e| format!("Transaction creation failed: {}", e))?;
+            let template = self
+                .miner
+                .build_template(&chain, vec![tx.clone()])
+                .map_err(|e| format!("Template build failed: {:?}", e))?;
+            (tx, template)
+        }; // read lock + wallet lock released here
 
-        let tx = TransactionBuilder::create_transaction(&wallet, &chain, addr, sats, fee)
-            .map_err(|e| format!("Transaction creation failed: {}", e))?;
-
-        let header = self
+        // Phase 2: run PoW — no chain lock held.
+        let (header, txs) = self
             .miner
-            .mine_and_attach(&mut chain, vec![tx.clone()])
+            .solve_template(template)
             .map_err(|e| format!("Mining failed: {:?}", e))?;
+
+        // Phase 3: commit with write lock — brief.
+        {
+            use crate::consensus::block::Block;
+            let mut chain = self
+                .chain
+                .write()
+                .map_err(|_| "Lock poisoned".to_string())?;
+            chain
+                .add_block(Block {
+                    header,
+                    transactions: txs,
+                })
+                .map_err(|e| format!("add_block failed: {:?}", e))?;
+        } // write lock released here
 
         let txid = hex::encode(tx.txid());
         let blockhash = hex::encode(header.hash());
