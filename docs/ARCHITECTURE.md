@@ -211,7 +211,7 @@ The node uses a simplified concurrency model relying on `std::sync`:
 - Background threads:
   - **RPC Server**: One thread per request — `run()` spawns a new thread per incoming request so that long-running calls (e.g. `mineblocks` PoW, ~150s) do not block concurrent requests.
   - **P2P Listener**: One thread accepting connections.
-  - **Peer Threads**: One thread per connected peer for handshake and message reading.
+  - **Peer Threads**: Short-lived handshake threads (one per new connection, exits after handshake completes). All post-handshake message reading is done by a single central message-handler loop in `PeerManager` that polls all connected peers.
   - **Maintenance Threads**: Separate threads for `PeerDiscovery` (30s loop) and `KeepaliveManager` (60s loop).
 - `Miner` is stateless/immutable configuration wrapped in `Arc`.
 
@@ -240,6 +240,6 @@ Design choices:
 
 ## Limitations and Future Work
 
-- `ChainState` is guarded by a global `Mutex` and is a known bottleneck under load (RPC timeouts can occur during heavy sync/mining).
+- `ChainState` is guarded by a global `RwLock` and is a known bottleneck under load (RPC timeouts can occur during heavy sync/mining).
 - Parallel IBD is in progress: Phase 1 headers-first state machine is deployed; multi-peer download + ordered apply are planned next.
 - Address format and wallet/RPC ergonomics are evolving and will change as Dilithium and later privacy features are integrated.
