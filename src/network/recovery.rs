@@ -1,7 +1,8 @@
+use crate::consensus::chain::ChainState;
 use crate::network::addrman::AddressManager;
 use crate::network::discovery::get_seed_nodes;
 use crate::network::manager::PeerManager;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -10,10 +11,10 @@ pub struct RecoveryManager {
     addr_manager: Arc<Mutex<AddressManager>>,
     state: Arc<Mutex<RecoveryState>>,
     network: crate::consensus::params::Network,
+    chain: Arc<RwLock<ChainState>>,
 }
 
 struct RecoveryState {
-    last_block_time: Instant,
     last_peer_count: usize,
     partition_detected: bool,
     recovery_attempts: u32,
@@ -25,13 +26,14 @@ impl RecoveryManager {
         peer_manager: Arc<PeerManager>,
         addr_manager: Arc<Mutex<AddressManager>>,
         network: crate::consensus::params::Network,
+        chain: Arc<RwLock<ChainState>>,
     ) -> Self {
         Self {
             peer_manager,
             addr_manager,
             network,
+            chain,
             state: Arc::new(Mutex::new(RecoveryState {
-                last_block_time: Instant::now(),
                 last_peer_count: 0,
                 partition_detected: false,
                 recovery_attempts: 0,
@@ -40,6 +42,22 @@ impl RecoveryManager {
                     .unwrap_or_else(Instant::now),
             })),
         }
+    }
+
+    // Returns how many seconds ago the chain tip block was produced.
+    // Uses try_read() so it never blocks the caller.  Returns 0 on lock
+    // contention (treat as "recently updated" — don't falsely trigger).
+    fn tip_age_secs(&self) -> u64 {
+        if let Ok(chain) = self.chain.try_read() {
+            if let Ok(Some(tip)) = chain.get_tip() {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                return now.saturating_sub(tip.block.header.timestamp);
+            }
+        }
+        0
     }
 
     // Start recovery monitoring loop
@@ -75,7 +93,11 @@ impl RecoveryManager {
         });
     }
 
-    // Check if node is partitioned from network
+    // Check if node is partitioned from network.
+    // All conditions use the chain tip timestamp — the ground truth for when
+    // the chain last advanced — rather than an on_new_block() callback, which
+    // is not called by all mining paths (e.g. mineblocks RPC) and which
+    // would falsely age a solo-mining node that has no peers.
     pub fn check_partition(&self) -> bool {
         let peer_count = self.peer_manager.active_peer_count();
         let state = match self.state.lock() {
@@ -83,18 +105,21 @@ impl RecoveryManager {
             Err(_) => return false,
         };
 
-        // Signs of partition:
-        // 1. Zero active peers for >30 seconds
-        if peer_count == 0 && state.last_block_time.elapsed() > Duration::from_secs(30) {
+        let age = self.tip_age_secs();
+
+        // 1. Zero active peers and chain tip is stale (>30 s old).
+        //    At 150 s block time a healthy solo miner keeps tip_age <150 s,
+        //    so this only fires when mining has also stopped.
+        if peer_count == 0 && age > 30 {
             return true;
         }
 
-        // 2. No new blocks for >30 minutes (expected ~2.5 min)
-        if state.last_block_time.elapsed() > Duration::from_secs(1800) {
+        // 2. Chain tip has not advanced for >30 minutes regardless of peers.
+        if age > 1800 {
             return true;
         }
 
-        // 3. All peers suddenly disconnected
+        // 3. All peers suddenly disconnected (was previously >3, now 0).
         if state.last_peer_count > 3 && peer_count == 0 {
             return true;
         }
@@ -251,11 +276,10 @@ impl RecoveryManager {
         }
     }
 
-    pub fn on_new_block(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.last_block_time = Instant::now();
-        }
-    }
+    /// No-op — retained for API compatibility.  last_block_age is now derived
+    /// from the chain tip timestamp directly; callers that previously notified
+    /// the recovery manager of new blocks no longer need to do so.
+    pub fn on_new_block(&self) {}
 
     pub fn is_partitioned(&self) -> bool {
         self.state
@@ -268,11 +292,9 @@ impl RecoveryManager {
         self.state.lock().map(|s| s.recovery_attempts).unwrap_or(0)
     }
 
+    /// Returns the age of the chain tip in seconds (ground truth for chain staleness).
     pub fn get_last_block_age_secs(&self) -> u64 {
-        self.state
-            .lock()
-            .map(|s| s.last_block_time.elapsed().as_secs())
-            .unwrap_or(0)
+        self.tip_age_secs()
     }
 }
 
@@ -284,6 +306,7 @@ impl Clone for RecoveryManager {
             addr_manager: Arc::clone(&self.addr_manager),
             state: Arc::clone(&self.state),
             network: self.network.clone(),
+            chain: Arc::clone(&self.chain),
         }
     }
 }
