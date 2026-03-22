@@ -295,17 +295,28 @@ pub fn create_genesis_block(genesis_n_bits: u32) -> Block {
     let txids = vec![coinbase.txid()];
     let merkle_root = compute_merkle_root(&txids);
 
+    // Pre-computed nonces for known genesis_n_bits values avoid a multi-minute
+    // PoW search on every fresh testnet start. Add an entry here whenever the
+    // genesis n_bits changes (run once, record the nonce, hardcode it below).
+    let known_nonce: Option<u64> = match genesis_n_bits {
+        0x1D16_1C29 => Some(81_971_861), // testnet calibrated genesis
+        0x207f_ffff => Some(0),          // regtest trivial — nonce 0 always works
+        _ => None,
+    };
+
     let mut header = BlockHeader {
         version: 1,
         prev_block_hash: [0u8; 32],
         merkle_root,
         timestamp: 1_700_000_000,
         n_bits: genesis_n_bits,
-        nonce: 0,
+        nonce: known_nonce.unwrap_or(0),
     };
 
-    while !header.check_proof_of_work().unwrap_or(false) {
-        header.nonce = header.nonce.wrapping_add(1);
+    if known_nonce.is_none() {
+        while !header.check_proof_of_work().unwrap_or(false) {
+            header.nonce = header.nonce.wrapping_add(1);
+        }
     }
 
     Block {
