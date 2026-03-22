@@ -518,6 +518,7 @@ impl PeerManager {
             let sync_manager_inner = Arc::clone(&sync_manager_clone);
 
             thread::spawn(move || {
+                log::debug!("inbound [{}]: thread started", ip);
                 let version = 70015;
                 let services = 0;
                 // Same pattern: extract Arc clone, release wrapper lock, then
@@ -529,6 +530,11 @@ impl PeerManager {
                     };
                     sync_opt.map(|s| s.get_local_height()).unwrap_or(0)
                 };
+                log::debug!(
+                    "inbound [{}]: height={}, calling perform_inbound_handshake",
+                    ip,
+                    height
+                );
                 let nonce = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_nanos() as u64)
@@ -558,6 +564,7 @@ impl PeerManager {
                         }
                     }
                     Err(e) => {
+                        log::debug!("inbound [{}]: handshake error — {}", ip, e);
                         println!("Inbound handshake failed from {}: {}", ip, e);
                     }
                 }
