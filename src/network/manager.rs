@@ -301,15 +301,16 @@ impl PeerManager {
 
         // Extract Arc clone then release the wrapper lock before calling
         // get_local_height(), which acquires chain.read() internally.
-        // Holding the wrapper lock during chain.read() would block any
-        // concurrent inbound handshake thread that also needs the wrapper lock.
+        // start_height in VERSION is advisory; use the non-blocking variant so
+        // a burst of add_block write locks never stalls the outbound handshake
+        // thread (or delays connect_to_peer returning to its caller).
         let our_height = {
             let sync_opt = {
                 let g = self.sync_manager.lock().unwrap();
                 g.as_ref().cloned()
             };
             sync_opt
-                .map(|s| s.get_local_height())
+                .map(|s| s.try_get_local_height())
                 .unwrap_or(self.our_height)
         };
 
