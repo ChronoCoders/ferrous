@@ -218,7 +218,7 @@ impl BlockRelay {
             })
         };
 
-        if let Some(applied_pairs) = maybe_applied {
+        if let Some((applied_pairs, requeued_txs)) = maybe_applied {
             // SyncManager handled this block (applied in order or buffered).
             // applied_pairs is empty when the block was only buffered.
             // Each entry is (block, height) for blocks actually committed.
@@ -233,6 +233,10 @@ impl BlockRelay {
             }
             if !applied_pairs.is_empty() {
                 self.mempool.purge_stale();
+                // Re-add transactions from disconnected blocks so they can be re-mined.
+                for tx in requeued_txs {
+                    let _ = self.mempool.add_transaction(tx);
+                }
             }
             // Update peer height from the last applied block.  The height comes directly
             // from the sync session's peer_header_map so it's valid for fork-chain blocks
@@ -266,7 +270,7 @@ impl BlockRelay {
             header: block.header,
             transactions: block.transactions.clone(),
         }) {
-            Ok(()) => {
+            Ok(requeued_txs) => {
                 log::info!(
                     "Relay: block {} added to chain successfully",
                     hex::encode(block_hash)
@@ -300,6 +304,10 @@ impl BlockRelay {
                     }
                     self.mempool.remove_block_transactions(&block.transactions);
                     self.mempool.purge_stale();
+                    // Re-add transactions from disconnected blocks so they can be re-mined.
+                    for tx in requeued_txs {
+                        let _ = self.mempool.add_transaction(tx);
+                    }
                 }
                 Ok(())
             }

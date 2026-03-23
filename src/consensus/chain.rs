@@ -238,7 +238,11 @@ impl ChainState {
         Ok(())
     }
 
-    fn reorganize(&mut self, old_tip: &Hash256, new_tip: &Hash256) -> Result<(), ChainError> {
+    fn reorganize(
+        &mut self,
+        old_tip: &Hash256,
+        new_tip: &Hash256,
+    ) -> Result<Vec<crate::consensus::transaction::Transaction>, ChainError> {
         info!(
             "Reorganizing chain from {} to {}",
             hex::encode(old_tip),
@@ -420,10 +424,43 @@ impl ChainState {
                 .map_err(ChainError::DbError)?;
         }
 
-        Ok(())
+        // Collect non-coinbase transactions from the disconnected blocks whose
+        // inputs are still unspent on the new chain.  These are re-queued into
+        // the mempool by the caller so they can be re-mined.
+        let mut requeued: Vec<crate::consensus::transaction::Transaction> = Vec::new();
+        for block_hash in &old_chain {
+            let block = if let Some(d) = self.blocks.peek(block_hash) {
+                d.block.clone()
+            } else {
+                match self.block_store.get_block(block_hash) {
+                    Ok(Some(b)) => b,
+                    _ => continue,
+                }
+            };
+            for (tx_idx, tx) in block.transactions.iter().enumerate() {
+                if tx_idx == 0 {
+                    continue; // skip coinbase
+                }
+                let all_inputs_valid = tx.inputs.iter().all(|input| {
+                    let outpoint = OutPoint {
+                        txid: input.prev_txid,
+                        vout: input.prev_index,
+                    };
+                    self.utxo_store.has_utxo(&outpoint).unwrap_or(false)
+                });
+                if all_inputs_valid {
+                    requeued.push(tx.clone());
+                }
+            }
+        }
+
+        Ok(requeued)
     }
 
-    pub fn add_block(&mut self, block: Block) -> Result<(), ChainError> {
+    pub fn add_block(
+        &mut self,
+        block: Block,
+    ) -> Result<Vec<crate::consensus::transaction::Transaction>, ChainError> {
         let block_hash = block.hash();
 
         if self
@@ -432,7 +469,7 @@ impl ChainState {
             .map_err(ChainError::DbError)?
             || self.blocks.peek(&block_hash).is_some()
         {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         validate_block(&block.header, &block.transactions).map_err(ChainError::InvalidBlock)?;
@@ -528,15 +565,15 @@ impl ChainState {
         };
 
         if should_update_tip {
-            let did_reorg = if let Some(current_tip_hash) = self.tip {
+            let (did_reorg, requeued_txs) = if let Some(current_tip_hash) = self.tip {
                 if block.header.prev_block_hash != current_tip_hash {
-                    self.reorganize(&current_tip_hash, &block_hash)?;
-                    true
+                    let requeued = self.reorganize(&current_tip_hash, &block_hash)?;
+                    (true, requeued)
                 } else {
-                    false
+                    (false, Vec::new())
                 }
             } else {
-                false
+                (false, Vec::new())
             };
 
             if !did_reorg {
@@ -567,6 +604,7 @@ impl ChainState {
                 .set_tip(&new_tip)
                 .map_err(ChainError::DbError)?;
             self.tip = Some(block_hash);
+            return Ok(requeued_txs);
         } else {
             // Side-chain block: persist data but do NOT update the canonical
             // height index (CF_BLOCK_INDEX).  Updating it here would overwrite
@@ -577,7 +615,7 @@ impl ChainState {
                 .map_err(ChainError::DbError)?;
         }
 
-        Ok(())
+        Ok(Vec::new())
     }
 
     fn apply_block_to_utxo(
