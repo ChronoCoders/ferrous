@@ -765,7 +765,22 @@ impl SyncManager {
                     }
                     drop(state);
                     self.drain_to_peers_and_send(&[peer_id]);
-                    return Ok(());
+                    // If the queue is completely idle the download stalled before
+                    // this peer connected (e.g. node was restarting).  Fall
+                    // through to the fresh-sync path to send GETHEADERS and
+                    // repopulate the pending queue.
+                    let queue_idle = {
+                        let q = self.download_queue.lock().unwrap();
+                        q.pending.is_empty() && q.in_flight.is_empty()
+                    };
+                    if !queue_idle {
+                        return Ok(());
+                    }
+                    log::info!(
+                        "SyncManager: download queue empty, re-fetching headers from peer {}",
+                        peer_id
+                    );
+                    // Fall through to fresh-sync path below.
                 }
                 _ => {}
             }
