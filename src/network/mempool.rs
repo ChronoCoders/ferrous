@@ -1,6 +1,7 @@
 use crate::consensus::chain::ChainState;
-use crate::consensus::transaction::Transaction;
+use crate::consensus::transaction::{Transaction, TxOutput};
 use crate::consensus::utxo::OutPoint;
+use crate::script::engine::{validate_p2pkh, validate_p2wpkh, ScriptContext};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -30,13 +31,52 @@ impl NetworkMempool {
         // eliminating any lock-ordering deadlock risk).
         {
             let chain = self.chain.read().unwrap();
+            let mut spent_outputs: Vec<TxOutput> = Vec::with_capacity(tx.inputs.len());
             for input in &tx.inputs {
                 let outpoint = OutPoint {
                     txid: input.prev_txid,
                     vout: input.prev_index,
                 };
-                if !chain.is_utxo_unspent(&outpoint) {
-                    return Err("Input already spent or doesn't exist".to_string());
+                let utxo = chain
+                    .get_utxo(&outpoint)?
+                    .ok_or_else(|| "Input UTXO not found".to_string())?;
+                spent_outputs.push(utxo.output);
+            }
+            // Validate scripts for all inputs so transactions with invalid
+            // signatures are rejected here rather than causing ScriptValidationFailed
+            // in add_block after PoW has already been solved.
+            for (index, input) in tx.inputs.iter().enumerate() {
+                let script_pubkey = &spent_outputs[index].script_pubkey;
+                let context = ScriptContext {
+                    transaction: &tx,
+                    input_index: index,
+                    spent_outputs: &spent_outputs,
+                };
+                let is_p2pkh = script_pubkey.len() == 25
+                    && script_pubkey[0] == 0x76
+                    && script_pubkey[1] == 0xa9
+                    && script_pubkey[2] == 0x14
+                    && script_pubkey[23] == 0x88
+                    && script_pubkey[24] == 0xac;
+                let is_p2wpkh = script_pubkey.len() == 22
+                    && script_pubkey[0] == 0x00
+                    && script_pubkey[1] == 0x14;
+                if is_p2pkh {
+                    let ok = validate_p2pkh(&input.script_sig, script_pubkey, &context)
+                        .map_err(|e| format!("Script validation error: {:?}", e))?;
+                    if !ok {
+                        return Err("P2PKH script validation failed".to_string());
+                    }
+                } else if is_p2wpkh {
+                    let witness = tx
+                        .witnesses
+                        .get(index)
+                        .ok_or_else(|| "Missing witness for P2WPKH input".to_string())?;
+                    let ok = validate_p2wpkh(witness, script_pubkey, &context)
+                        .map_err(|e| format!("Script validation error: {:?}", e))?;
+                    if !ok {
+                        return Err("P2WPKH script validation failed".to_string());
+                    }
                 }
             }
         }
