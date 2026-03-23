@@ -1,6 +1,7 @@
 use clap::Parser;
-use ferrous_node::consensus::chain::ChainState;
+use ferrous_node::consensus::chain::{ChainError, ChainState};
 use ferrous_node::consensus::params::Network;
+use ferrous_node::consensus::utxo::UtxoError;
 use ferrous_node::mining::{Miner, MiningEvent};
 use ferrous_node::network::manager::PeerManager;
 use ferrous_node::network::mempool::NetworkMempool;
@@ -335,6 +336,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // mined blocks, not just P2P-received ones.
                         recovery_mine.on_new_block();
                         let _ = relay_mine.announce_block(header.hash());
+                    }
+                    Err(ChainError::UtxoError(UtxoError::ScriptValidationFailed)) => {
+                        eprintln!(
+                            "Mining error (add_block): ScriptValidationFailed — clearing mempool"
+                        );
+                        // purge_stale only checks UTXO existence, not script validity.
+                        // A transaction with a valid UTXO but invalid script will loop
+                        // forever. Clear the entire mempool to break the cycle.
+                        mempool_mine.clear();
+                        std::thread::sleep(std::time::Duration::from_secs(1));
                     }
                     Err(e) => {
                         eprintln!("Mining error (add_block): {:?}", e);
