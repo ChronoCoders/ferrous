@@ -1,6 +1,7 @@
 use crate::consensus::block::{Block, U256};
 use crate::consensus::chain::ChainState;
 use crate::consensus::difficulty::validate_difficulty;
+use crate::consensus::transaction::Transaction;
 use crate::consensus::validation::validate_timestamp;
 use crate::network::manager::PeerManager;
 use crate::network::message::NetworkMessage;
@@ -11,6 +12,10 @@ use crate::primitives::serialize::Encode;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
+
+/// Return type of `receive_block_for_sync`: applied (block, height) pairs and
+/// transactions from any disconnected blocks (reorg rehydration candidates).
+type SyncBlockResult = Option<(Vec<(Block, u32)>, Vec<Transaction>)>;
 
 /// Number of blocks each peer may have in-flight simultaneously.
 const DOWNLOAD_WINDOW: usize = 64;
@@ -303,7 +308,7 @@ impl SyncManager {
     /// Returns `Some(applied)` → sync handled this block (applied or buffered).
     ///   Each entry is `(block, height)` for a block successfully added to the chain.
     ///   An empty vec means the block was buffered and no apply happened yet.
-    pub fn receive_block_for_sync(&self, block: Block) -> Option<Vec<(Block, u32)>> {
+    pub fn receive_block_for_sync(&self, block: Block) -> SyncBlockResult {
         let block_hash = block.header.hash();
 
         // Is this block part of the current sync session?
@@ -332,14 +337,14 @@ impl SyncManager {
                 _ => {
                     // Arrived before we transitioned to DownloadingBlocks — buffer it.
                     self.block_buffer.lock().unwrap().insert(height, block);
-                    return Some(vec![]);
+                    return Some((vec![], vec![]));
                 }
             }
         };
 
         if height < next_apply_height {
             // Stale/duplicate — already applied.
-            return Some(vec![]);
+            return Some((vec![], vec![]));
         }
 
         if height > next_apply_height {
@@ -363,7 +368,7 @@ impl SyncManager {
                 }
             }
             self.drain_to_peers_and_send(&active_peers);
-            return Some(vec![]);
+            return Some((vec![], vec![]));
         }
 
         // height == next_apply_height.
@@ -381,7 +386,7 @@ impl SyncManager {
                 self.download_queue.lock().unwrap().requeue_front(h);
             }
             self.drain_to_peers_and_send(&active_peers);
-            return Some(vec![]);
+            return Some((vec![], vec![]));
         }
 
         // Prev-hash guard (height > 0).
@@ -403,13 +408,14 @@ impl SyncManager {
                         self.download_queue.lock().unwrap().requeue_front(h);
                     }
                     self.drain_to_peers_and_send(&active_peers);
-                    return Some(vec![]);
+                    return Some((vec![], vec![]));
                 }
             }
         }
 
         // Apply the block and drain any consecutive buffered blocks.
         let mut applied: Vec<(Block, u32)> = Vec::new();
+        let mut requeued: Vec<crate::consensus::transaction::Transaction> = Vec::new();
         let mut current_height = height;
         let mut current_block = block;
 
@@ -420,7 +426,8 @@ impl SyncManager {
             };
 
             match result {
-                Ok(()) => {
+                Ok(disconnected_txs) => {
+                    requeued.extend(disconnected_txs);
                     let applied_hash = current_block.header.hash();
                     applied.push((current_block, current_height));
                     current_height += 1;
@@ -429,7 +436,8 @@ impl SyncManager {
                     let orphans = self.drain_orphans_for_parent(applied_hash);
                     for orphan in orphans {
                         let result = { self.chain.write().unwrap().add_block(orphan.clone()) };
-                        if result.is_ok() {
+                        if let Ok(disconnected_txs) = result {
+                            requeued.extend(disconnected_txs);
                             log::debug!(
                                 "SyncManager: applied orphan {} from pool",
                                 hex::encode(orphan.header.hash())
@@ -488,7 +496,7 @@ impl SyncManager {
             }
         }
 
-        Some(applied)
+        Some((applied, requeued))
     }
 
     // -----------------------------------------------------------------------

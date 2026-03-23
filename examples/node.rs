@@ -323,9 +323,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Write lock is now released.
 
                 match result {
-                    Ok(_) => {
+                    Ok(requeued_txs) => {
                         // Remove confirmed transactions from mempool.
                         mempool_mine.remove_block_transactions(&txs);
+                        mempool_mine.purge_stale();
+                        // Re-add transactions from any disconnected blocks.
+                        for tx in requeued_txs {
+                            let _ = mempool_mine.add_transaction(tx);
+                        }
                         // Notify recovery manager so last_block_age reflects locally
                         // mined blocks, not just P2P-received ones.
                         recovery_mine.on_new_block();
@@ -333,6 +338,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Err(e) => {
                         eprintln!("Mining error (add_block): {:?}", e);
+                        // Purge stale mempool entries — a reorg may have
+                        // invalidated transactions in the template we just tried.
+                        mempool_mine.purge_stale();
                         std::thread::sleep(std::time::Duration::from_secs(1));
                     }
                 }
