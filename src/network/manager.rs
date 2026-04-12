@@ -165,6 +165,12 @@ impl PeerManager {
         }
     }
 
+    /// Clear the DoS failed-attempt cooldown for an IP so recovery can
+    /// immediately retry a configured seed node after a transient TCP failure.
+    pub fn clear_failed_attempt(&self, ip: std::net::IpAddr) {
+        self.dos_protection.lock().unwrap().clear_failed_attempt(ip);
+    }
+
     pub fn punish_peer(&self, peer_id: u64, score: u32) {
         let should_remove = {
             let mut peers = self.peers.lock().unwrap();
