@@ -173,6 +173,12 @@ impl DosProtection {
         }
     }
 
+    /// Clear failed-attempt cooldown for an IP (used by recovery to unblock
+    /// configured seed nodes after a transient TCP failure).
+    pub fn clear_failed_attempt(&mut self, ip: IpAddr) {
+        self.failed_attempts.remove(&ip);
+    }
+
     /// Check if can allocate memory for peer
     pub fn can_allocate(&self, peer_id: u64, bytes: usize) -> bool {
         let current = self.memory_usage_by_peer.get(&peer_id).unwrap_or(&0);
