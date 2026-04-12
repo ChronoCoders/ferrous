@@ -183,10 +183,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Parse seed nodes and keep the addresses so RecoveryManager can
+    // reconnect to them during Stage 2/4 without relying on get_seed_nodes()
+    // (which returns an empty list for testnet).
+    let mut configured_seeds: Vec<std::net::SocketAddr> = Vec::new();
     for seed in args.seed_nodes {
-        if let Ok(addr) = seed.parse() {
+        if let Ok(addr) = seed.parse::<std::net::SocketAddr>() {
             println!("Connecting to seed node {}...", addr);
             let _ = peer_manager.connect_to_peer(addr);
+            configured_seeds.push(addr);
         } else {
             eprintln!("Invalid seed address: {}", seed);
         }
@@ -203,6 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         addr_manager,
         network.clone(),
         chain.clone(),
+        configured_seeds,
     ));
     peer_manager.set_recovery(recovery_manager.clone());
     recovery_manager.start();

@@ -1,7 +1,7 @@
 use crate::consensus::chain::ChainState;
 use crate::network::addrman::AddressManager;
-use crate::network::discovery::get_seed_nodes;
 use crate::network::manager::PeerManager;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -10,8 +10,11 @@ pub struct RecoveryManager {
     peer_manager: Arc<PeerManager>,
     addr_manager: Arc<Mutex<AddressManager>>,
     state: Arc<Mutex<RecoveryState>>,
-    network: crate::consensus::params::Network,
     chain: Arc<RwLock<ChainState>>,
+    /// Seed nodes configured via --seed-nodes CLI flag.  Used by all recovery
+    /// stages so that Stage 4 full_network_reset() can always reconnect even
+    /// when get_seed_nodes() returns an empty list for testnet.
+    configured_seeds: Vec<SocketAddr>,
 }
 
 struct RecoveryState {
@@ -27,12 +30,26 @@ impl RecoveryManager {
         addr_manager: Arc<Mutex<AddressManager>>,
         network: crate::consensus::params::Network,
         chain: Arc<RwLock<ChainState>>,
+        configured_seeds: Vec<SocketAddr>,
     ) -> Self {
+        // Pre-populate addr_manager with configured seeds so Stage 1
+        // (reconnect_to_known_peers via get_best_addresses) can find them.
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as u32)
+            .unwrap_or(0);
+        {
+            let mut am = addr_manager.lock().unwrap();
+            for seed in &configured_seeds {
+                am.add_address(*seed, 1, now);
+            }
+        }
+        let _ = network; // network field removed; seeds are explicit now
         Self {
             peer_manager,
             addr_manager,
-            network,
             chain,
+            configured_seeds,
             state: Arc::new(Mutex::new(RecoveryState {
                 last_peer_count: 0,
                 partition_detected: false,
@@ -194,15 +211,8 @@ impl RecoveryManager {
     fn reconnect_to_seeds(&self) -> Result<(), String> {
         println!("Stage 2: Reconnecting to seed nodes");
 
-        // We need to implement get_network on peer_manager or pass it in
-        // For now, assume we can get it or hardcode regtest if missing
-        // Actually, peer_manager doesn't expose network easily, but we can guess or store it
-        // Let's assume Regtest for now or add get_network to PeerManager
-        // For now, just use hardcoded seeds logic here or import from discovery
-        let seeds = get_seed_nodes(self.network.clone());
-
-        for seed in seeds {
-            let _ = self.peer_manager.connect_to_peer(seed);
+        for seed in &self.configured_seeds {
+            let _ = self.peer_manager.connect_to_peer(*seed);
         }
 
         Ok(())
@@ -239,26 +249,32 @@ impl RecoveryManager {
         // Disconnect everything
         self.force_reconnect();
 
-        let mut addr_mgr = self
-            .addr_manager
-            .lock()
-            .map_err(|e| format!("Poisoned mutex: {}", e))?;
-        addr_mgr.clear();
-
-        let seeds = get_seed_nodes(self.network.clone());
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as u32)
-            .unwrap_or(0);
-
-        for seed in &seeds {
-            addr_mgr.add_address(*seed, 1, now);
+        // Reset addr_manager to only our configured seeds.
+        {
+            let mut addr_mgr = self
+                .addr_manager
+                .lock()
+                .map_err(|e| format!("Poisoned mutex: {}", e))?;
+            addr_mgr.clear();
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as u32)
+                .unwrap_or(0);
+            for seed in &self.configured_seeds {
+                addr_mgr.add_address(*seed, 1, now);
+            }
         }
-        drop(addr_mgr);
 
-        // Reconnect to seeds
-        for seed in seeds {
-            let _ = self.peer_manager.connect_to_peer(seed);
+        // Clear any DoS failed-attempt cooldowns for configured seeds so a
+        // transient TCP failure from an earlier recovery stage does not block
+        // this reconnection attempt.
+        for seed in &self.configured_seeds {
+            self.peer_manager.clear_failed_attempt(seed.ip());
+        }
+
+        // Reconnect to configured seeds.
+        for seed in &self.configured_seeds {
+            let _ = self.peer_manager.connect_to_peer(*seed);
         }
 
         Ok(())
@@ -305,8 +321,8 @@ impl Clone for RecoveryManager {
             peer_manager: Arc::clone(&self.peer_manager),
             addr_manager: Arc::clone(&self.addr_manager),
             state: Arc::clone(&self.state),
-            network: self.network.clone(),
             chain: Arc::clone(&self.chain),
+            configured_seeds: self.configured_seeds.clone(),
         }
     }
 }
