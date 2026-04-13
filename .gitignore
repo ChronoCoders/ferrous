@@ -24,3 +24,7 @@ Thumbs.db
 
 
 
+
+
+# Review archives
+*.tar.gz
