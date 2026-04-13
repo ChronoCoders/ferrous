@@ -26,3 +26,9 @@ Thumbs.db
 
 claude.md
 CLAUDE.md
+
+# Claude Code local config
+.claude/
+
+# Review archives
+*.tar.gz
