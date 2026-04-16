@@ -144,6 +144,13 @@ impl PeerManager {
             self.batcher.lock().unwrap().clear_peer(peer_id);
             self.broadcast_cache.lock().unwrap().clear_peer(peer_id);
             self.security.lock().unwrap().remove_peer(peer_id);
+            let sync = {
+                let sg = self.sync_manager.lock().unwrap();
+                sg.as_ref().map(Arc::clone)
+            };
+            if let Some(sync) = sync {
+                sync.on_peer_disconnected(peer_id);
+            }
             Ok(())
         } else {
             Err("Peer not found".to_string())
@@ -213,17 +220,24 @@ impl PeerManager {
 
     pub fn start_maintenance(&self) {
         let peers = Arc::clone(&self.peers);
+        let dos = Arc::clone(&self.dos_protection);
+        let batcher = Arc::clone(&self.batcher);
+        let cache = Arc::clone(&self.broadcast_cache);
+        let security = Arc::clone(&self.security);
+        let sync_manager = Arc::clone(&self.sync_manager);
 
         thread::spawn(move || {
             loop {
                 thread::sleep(Duration::from_secs(60));
 
-                // Cleanup logic inline to avoid cloning whole manager structure just for this
                 let timeout = Duration::from_secs(20 * 60);
 
-                {
+                // Collect dead peers while holding the lock, then release
+                // before cleanup — same lock-ordering rule as disconnect_peer.
+                let dead: Vec<(u64, std::net::IpAddr, bool)> = {
                     let mut peers_guard = peers.lock().unwrap();
                     let keys: Vec<u64> = peers_guard.keys().cloned().collect();
+                    let mut to_remove: Vec<u64> = Vec::new();
 
                     for peer_id in keys {
                         let should_remove = if let Some(peer) = peers_guard.get(&peer_id) {
@@ -232,8 +246,8 @@ impl PeerManager {
                             } else {
                                 let recv_rate = peer.get_recv_rate();
                                 if recv_rate > 10_000_000.0 {
-                                    println!(
-                                        "Peer {} exceeded bandwidth limit: {:.2} MB/s",
+                                    log::warn!(
+                                        "peer {} exceeded bandwidth limit: {:.2} MB/s",
                                         peer_id,
                                         recv_rate / 1_000_000.0
                                     );
@@ -247,10 +261,33 @@ impl PeerManager {
                         };
 
                         if should_remove {
-                            println!("Disconnecting peer {}", peer_id);
-                            peers_guard.remove(&peer_id);
+                            to_remove.push(peer_id);
                         }
                     }
+
+                    to_remove
+                        .into_iter()
+                        .filter_map(|id| {
+                            peers_guard
+                                .remove(&id)
+                                .map(|p| (id, p.addr.ip(), p.inbound))
+                        })
+                        .collect()
+                };
+                // peers lock released — safe to acquire all cleanup locks.
+                for (id, ip, inbound) in dead {
+                    log::warn!("disconnecting inactive peer {}", id);
+                    let sync = {
+                        let sg = sync_manager.lock().unwrap();
+                        sg.as_ref().map(Arc::clone)
+                    };
+                    if let Some(sync) = sync {
+                        sync.on_peer_disconnected(id);
+                    }
+                    batcher.lock().unwrap().clear_peer(id);
+                    cache.lock().unwrap().clear_peer(id);
+                    dos.lock().unwrap().record_disconnection(id, ip, inbound);
+                    security.lock().unwrap().remove_peer(id);
                 }
             }
         });
@@ -961,21 +998,56 @@ impl PeerManager {
                                                         "Invalid payload from {}: {:?}",
                                                         id, e
                                                     );
-                                                    // Severe violation
-                                                    // Re-acquire lock to punish
+                                                    // Severe violation — ban and fully clean up.
                                                     let mut peers = peers_clone.lock().unwrap();
                                                     if let Some(peer) = peers.get_mut(&id) {
                                                         peer.add_ban_score(20);
                                                         if peer.should_ban() {
-                                                            // We can remove directly here as we re-acquired lock
-                                                            // and we are outside the main loop lock scope for 'peer'
-                                                            // Wait, 'peers' variable shadows outer 'peers'?
-                                                            // Yes, 'let mut peers = ...'.
-                                                            // So we can remove.
-                                                            peers.remove(&id);
+                                                            let dci = peers
+                                                                .remove(&id)
+                                                                .map(|p| (p.addr.ip(), p.inbound));
+                                                            let rem = peers.len();
+                                                            drop(peers);
+                                                            {
+                                                                let sg = sync_clone.lock().unwrap();
+                                                                if let Some(sync) = &*sg {
+                                                                    sync.on_peer_disconnected(id);
+                                                                }
+                                                            }
+                                                            batcher_clone
+                                                                .lock()
+                                                                .unwrap()
+                                                                .clear_peer(id);
+                                                            broadcast_cache_clone
+                                                                .lock()
+                                                                .unwrap()
+                                                                .clear_peer(id);
+                                                            if let Some((ip, inbound)) = dci {
+                                                                dos_protection_clone
+                                                                    .lock()
+                                                                    .unwrap()
+                                                                    .record_disconnection(
+                                                                        id, ip, inbound,
+                                                                    );
+                                                                security_clone
+                                                                    .lock()
+                                                                    .unwrap()
+                                                                    .remove_peer(id);
+                                                            }
+                                                            if rem == 0 {
+                                                                let recovery_bg =
+                                                                    Arc::clone(&recovery_clone);
+                                                                thread::spawn(move || {
+                                                                    let rg =
+                                                                        recovery_bg.lock().unwrap();
+                                                                    if let Some(r) = &*rg {
+                                                                        let _ = r.recover();
+                                                                    }
+                                                                });
+                                                            }
+                                                            continue 'peer_loop;
                                                         }
                                                     }
-                                                    // continue; // Loop continue
                                                 } else {
                                                     // Valid payload processing...
                                                     // Re-acquire lock for rate limits
@@ -1016,8 +1088,49 @@ impl PeerManager {
                                                         }
 
                                                         if peer.should_ban() {
-                                                            peers.remove(&id);
-                                                            // continue;
+                                                            let dci = peers
+                                                                .remove(&id)
+                                                                .map(|p| (p.addr.ip(), p.inbound));
+                                                            let rem = peers.len();
+                                                            drop(peers);
+                                                            {
+                                                                let sg = sync_clone.lock().unwrap();
+                                                                if let Some(sync) = &*sg {
+                                                                    sync.on_peer_disconnected(id);
+                                                                }
+                                                            }
+                                                            batcher_clone
+                                                                .lock()
+                                                                .unwrap()
+                                                                .clear_peer(id);
+                                                            broadcast_cache_clone
+                                                                .lock()
+                                                                .unwrap()
+                                                                .clear_peer(id);
+                                                            if let Some((ip, inbound)) = dci {
+                                                                dos_protection_clone
+                                                                    .lock()
+                                                                    .unwrap()
+                                                                    .record_disconnection(
+                                                                        id, ip, inbound,
+                                                                    );
+                                                                security_clone
+                                                                    .lock()
+                                                                    .unwrap()
+                                                                    .remove_peer(id);
+                                                            }
+                                                            if rem == 0 {
+                                                                let recovery_bg =
+                                                                    Arc::clone(&recovery_clone);
+                                                                thread::spawn(move || {
+                                                                    let rg =
+                                                                        recovery_bg.lock().unwrap();
+                                                                    if let Some(r) = &*rg {
+                                                                        let _ = r.recover();
+                                                                    }
+                                                                });
+                                                            }
+                                                            continue 'peer_loop;
                                                         } else {
                                                             // Continue processing
                                                             drop(peers); // Drop again for dispatch

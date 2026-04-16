@@ -1,6 +1,7 @@
 use crate::consensus::chain::ChainState;
 use crate::network::addrman::AddressManager;
 use crate::network::manager::PeerManager;
+use crate::network::sync::SyncManager;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
@@ -15,6 +16,7 @@ pub struct RecoveryManager {
     /// stages so that Stage 4 full_network_reset() can always reconnect even
     /// when get_seed_nodes() returns an empty list for testnet.
     configured_seeds: Vec<SocketAddr>,
+    sync_manager: Arc<Mutex<Option<Arc<SyncManager>>>>,
 }
 
 struct RecoveryState {
@@ -50,6 +52,7 @@ impl RecoveryManager {
             addr_manager,
             chain,
             configured_seeds,
+            sync_manager: Arc::new(Mutex::new(None)),
             state: Arc::new(Mutex::new(RecoveryState {
                 last_peer_count: 0,
                 partition_detected: false,
@@ -59,6 +62,11 @@ impl RecoveryManager {
                     .unwrap_or_else(Instant::now),
             })),
         }
+    }
+
+    pub fn set_sync_manager(&self, sync: Arc<SyncManager>) {
+        let mut guard = self.sync_manager.lock().unwrap();
+        *guard = Some(sync);
     }
 
     // Returns how many seconds ago the chain tip block was produced.
@@ -132,7 +140,15 @@ impl RecoveryManager {
         }
 
         // 2. Chain tip has not advanced for >30 minutes regardless of peers.
-        if age > 1800 {
+        // Skipped during active IBD: the local tip is intrinsically old when
+        // syncing historical blocks, so tip age is not a reliable signal here.
+        let is_syncing = {
+            let sg = self.sync_manager.lock().unwrap();
+            sg.as_ref().map(Arc::clone)
+        }
+        .map(|s| s.is_syncing())
+        .unwrap_or(false);
+        if age > 1800 && !is_syncing {
             return true;
         }
 
@@ -323,6 +339,7 @@ impl Clone for RecoveryManager {
             state: Arc::clone(&self.state),
             chain: Arc::clone(&self.chain),
             configured_seeds: self.configured_seeds.clone(),
+            sync_manager: Arc::clone(&self.sync_manager),
         }
     }
 }
