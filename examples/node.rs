@@ -211,6 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         configured_seeds,
     ));
     peer_manager.set_recovery(recovery_manager.clone());
+    recovery_manager.set_sync_manager(sync_manager.clone());
     recovery_manager.start();
 
     if args.dashboard {
