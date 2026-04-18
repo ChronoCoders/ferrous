@@ -5,8 +5,8 @@
 # once the chain reaches coinbase maturity (>100 blocks).
 #
 # Usage:
-#   On seed1: nohup bash /root/ferrous/txgen.sh myqpJpMZ14CrHTo7NMRpTrNAzkoSM1oa1W >> /root/ferrous/txgen_log.txt 2>&1 &
-#   On seed4: nohup bash /root/ferrous/txgen.sh mjyDe3YRuTPRRbYCanhD4s8WMyDZRwn2p1 >> /root/ferrous/txgen_log.txt 2>&1 &
+#   On seed1: nohup bash /root/ferrous/txgen.sh n31JNwEpiiH1Mg6MMkT4r1VJEJQQq1gKe1 >> /root/ferrous/txgen_log.txt 2>&1 &
+#   On seed4: nohup bash /root/ferrous/txgen.sh mpXMTZxyBStwBmoumFRTGqmMvB8HDdtmEG >> /root/ferrous/txgen_log.txt 2>&1 &
 
 DEST_ADDR="${1}"
 MIN_HEIGHT=101
