@@ -65,11 +65,6 @@ pub fn address_to_script_pubkey(address: &str) -> Result<Vec<u8>, String> {
         return Err("Invalid payload length".to_string());
     }
 
-    let network_prefix = payload[0];
-    if network_prefix != 0x6f {
-        return Err("Invalid network prefix".to_string());
-    }
-
     let hash160 = &payload[1..21];
 
     let mut script = Vec::with_capacity(25);
