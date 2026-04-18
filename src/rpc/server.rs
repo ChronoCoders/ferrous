@@ -10,8 +10,10 @@ use crate::primitives::serialize::{Decode, Encode};
 use crate::primitives::varint;
 use crate::rpc::methods::*;
 use crate::wallet::address::script_pubkey_to_address;
+use crate::wallet::bip39;
 use crate::wallet::builder::TransactionBuilder;
 use crate::wallet::manager::Wallet;
+use crate::wallet::shamir;
 use serde_json::{json, Value};
 use std::io::Read;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -256,6 +258,10 @@ impl RpcServer {
             "forcereconnect" => self.forcereconnect(),
             "resetnetwork" => self.resetnetwork(),
             "sendrawtransaction" => self.sendrawtransaction(params),
+            "getwalletinfo" => self.getwalletinfo(),
+            "encryptwallet" => self.encryptwallet(params),
+            "importseed" => self.importseed(params),
+            "getshamirshares" => self.getshamirshares(params),
             "stop" => Ok(json!("stopping")),
             _ => return Err((-32601, "Method not found".to_string())),
         };
@@ -806,12 +812,12 @@ impl RpcServer {
         // it in the next block — no PoW in the RPC handler, so the RPC
         // server stays responsive.
         let tx = {
-            let wallet = self
+            let mut wallet = self
                 .wallet
                 .lock()
                 .map_err(|_| "Lock poisoned".to_string())?;
             let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
-            TransactionBuilder::create_transaction(&wallet, &chain, addr, sats, fee)
+            TransactionBuilder::create_transaction(&mut wallet, &chain, addr, sats, fee)
                 .map_err(|e| format!("Transaction creation failed: {}", e))?
         };
 
@@ -1012,6 +1018,131 @@ impl RpcServer {
             .map_err(|e| format!("Failed to connect: {}", e))?;
 
         Ok(json!("added"))
+    }
+
+    fn getwalletinfo(&self) -> Result<Value, String> {
+        let wallet = self
+            .wallet
+            .lock()
+            .map_err(|_| "Lock poisoned".to_string())?;
+        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
+        let balance_sats = wallet.get_balance(&chain)?;
+        let response = GetWalletInfoResponse {
+            encrypted: wallet.is_encrypted(),
+            has_seed: wallet.has_seed(),
+            receive_addresses: wallet.receive_index(),
+            change_addresses: wallet.change_index(),
+            balance_sats,
+        };
+        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+    }
+
+    fn encryptwallet(&self, params: &Value) -> Result<Value, String> {
+        let passphrase = params
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_str())
+            .ok_or("Invalid params: expected [passphrase]")?;
+
+        let wallet = self
+            .wallet
+            .lock()
+            .map_err(|_| "Lock poisoned".to_string())?;
+
+        if wallet.is_encrypted() {
+            return Err("Wallet is already encrypted".to_string());
+        }
+
+        wallet.save_encrypted(passphrase)?;
+        Ok(json!(
+            "Wallet encrypted. Restart node to load encrypted wallet."
+        ))
+    }
+
+    fn importseed(&self, params: &Value) -> Result<Value, String> {
+        let arr = params
+            .as_array()
+            .ok_or("Invalid params: expected [mnemonic, passphrase?]")?;
+
+        let mnemonic = arr
+            .first()
+            .and_then(|v| v.as_str())
+            .ok_or("Invalid params: expected [mnemonic, passphrase?]")?;
+
+        let bip39_passphrase = arr.get(1).and_then(|v| v.as_str()).unwrap_or("");
+
+        if !bip39_passphrase.is_empty() {
+            return Err(
+                "BIP39 passphrase not yet supported. Import using empty passphrase only."
+                    .to_string(),
+            );
+        }
+
+        let entropy =
+            bip39::mnemonic_to_entropy(mnemonic).map_err(|e| format!("Invalid mnemonic: {}", e))?;
+
+        if entropy.len() != 32 {
+            return Err(format!(
+                "Expected 32-byte entropy (256-bit mnemonic), got {}",
+                entropy.len()
+            ));
+        }
+
+        let mut entropy_arr = [0u8; 32];
+        entropy_arr.copy_from_slice(&entropy);
+
+        let mut wallet = self
+            .wallet
+            .lock()
+            .map_err(|_| "Lock poisoned".to_string())?;
+
+        wallet.set_seed(entropy_arr)?;
+
+        let response = ImportSeedResponse {
+            address_count: wallet.receive_index(),
+        };
+        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+    }
+
+    fn getshamirshares(&self, params: &Value) -> Result<Value, String> {
+        let arr = params.as_array().ok_or("Invalid params: expected [m, n]")?;
+
+        let m = arr
+            .first()
+            .and_then(|v| v.as_u64())
+            .ok_or("Invalid params: m must be a positive integer")? as u8;
+
+        let n = arr
+            .get(1)
+            .and_then(|v| v.as_u64())
+            .ok_or("Invalid params: n must be a positive integer")? as u8;
+
+        let wallet = self
+            .wallet
+            .lock()
+            .map_err(|_| "Lock poisoned".to_string())?;
+
+        if !wallet.has_seed() {
+            return Err("No seed to split".to_string());
+        }
+
+        let entropy = wallet
+            .seed_entropy()
+            .ok_or("Seed entropy unavailable".to_string())?;
+
+        let raw_shares =
+            shamir::split(&entropy, m, n).map_err(|e| format!("Shamir split failed: {}", e))?;
+
+        let shares = raw_shares
+            .into_iter()
+            .map(|s| ShamirShare {
+                index: s[0],
+                share: hex::encode(&s[1..]),
+            })
+            .collect();
+
+        let response = GetShamirSharesResponse { shares, m, n };
+        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
     }
 
     fn error_response(
