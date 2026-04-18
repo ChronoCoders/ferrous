@@ -9,7 +9,7 @@ pub struct TransactionBuilder;
 
 impl TransactionBuilder {
     pub fn create_transaction(
-        wallet: &Wallet,
+        wallet: &mut Wallet,
         chain: &ChainState,
         to_address: &str,
         amount: u64,
@@ -23,6 +23,8 @@ impl TransactionBuilder {
             .checked_add(fee)
             .ok_or_else(|| "Amount overflow".to_string())?;
 
+        // get_utxos() returns UTXOs sorted descending by value; select_coins
+        // iterates in that order without re-sorting.
         let utxos = wallet.get_utxos(chain)?;
 
         let (selected, change) = select_coins(utxos, total_needed)?;
@@ -36,11 +38,7 @@ impl TransactionBuilder {
         });
 
         if change > 0 {
-            let change_address = wallet
-                .addresses()
-                .into_iter()
-                .next()
-                .ok_or_else(|| "Wallet has no change address".to_string())?;
+            let change_address = wallet.generate_change_address()?;
             let change_script = address_to_script_pubkey(&change_address)?;
             outputs.push(TxOutput {
                 value: change,

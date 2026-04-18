@@ -106,3 +106,30 @@ pub struct GetMiningInfoResponse {
     pub hashrate: f64,
     pub chain: String,
 }
+
+#[derive(serde::Serialize)]
+pub struct GetWalletInfoResponse {
+    pub encrypted: bool,
+    pub has_seed: bool,
+    pub receive_addresses: u32,
+    pub change_addresses: u32,
+    pub balance_sats: u64,
+}
+
+#[derive(serde::Serialize)]
+pub struct ShamirShare {
+    pub index: u8,
+    pub share: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct GetShamirSharesResponse {
+    pub shares: Vec<ShamirShare>,
+    pub m: u8,
+    pub n: u8,
+}
+
+#[derive(serde::Serialize)]
+pub struct ImportSeedResponse {
+    pub address_count: u32,
+}
