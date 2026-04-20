@@ -77,9 +77,9 @@ struct UtxoEntry {
 
 ## Roadmap
 
-1.  **Phase 1**: Foundation (PoW, UTXO, P2P, headers-first IBD).
-2.  **Phase 2**: Parallel IBD completion + testnet reset.
-3.  **Phase 3**: Wallet integration.
+1.  **Phase 1**: Foundation (PoW, UTXO, P2P, headers-first IBD). ✓
+2.  **Phase 2**: Parallel IBD completion + testnet reset. ✓
+3.  **Phase 3**: Wallet integration (BIP39, Shamir SSS, encryption). ✓
 4.  **Phase 4**: Post-Quantum Cryptography (CRYSTALS-Dilithium).
 5.  **Phase 5**: Privacy Layer (RingCT + CLSAG).
 6.  **Phase 6**: Security audit + Mainnet launch.

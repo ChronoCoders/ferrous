@@ -77,8 +77,13 @@ Persistent storage and indexes:
 
 Wallet management and transaction building:
 
-- [manager.rs](file:///c:/ferrous/src/wallet/manager.rs): Wallet state and address management.
-- [builder.rs](file:///c:/ferrous/src/wallet/builder.rs): Transaction construction.
+- [bip39.rs](file:///c:/ferrous/src/wallet/bip39.rs): BIP39 entropy/mnemonic/seed derivation. Converts 256-bit entropy to a 24-word mnemonic and derives a 64-byte seed via PBKDF2-HMAC-SHA512 (2048 iterations).
+- [bip39_wordlist.rs](file:///c:/ferrous/src/wallet/bip39_wordlist.rs): The 2048-word BIP39 English wordlist.
+- [shamir.rs](file:///c:/ferrous/src/wallet/shamir.rs): GF(256) Shamir's Secret Sharing. Splits arbitrary byte secrets into M-of-N shares using polynomial evaluation over GF(256) with irreducible polynomial 0x11b.
+- [keys.rs](file:///c:/ferrous/src/wallet/keys.rs): `KeyStore` — persistent key storage in binary FERR v2 format. Encrypts with ChaCha20-Poly1305 AEAD keyed by PBKDF2-HMAC-SHA512 (210,000 iterations). Derives keys from BIP39 seed via SHA-512. Migrates old CSV wallets on load. Atomic writes via tmp+rename.
+- [address.rs](file:///c:/ferrous/src/wallet/address.rs): Base58Check address encoding/decoding. P2PKH script construction and address recovery from script pubkeys.
+- [manager.rs](file:///c:/ferrous/src/wallet/manager.rs): `Wallet` — high-level wallet interface. Wraps `KeyStore` with UTXO queries, balance calculation, and address generation. UTXOs returned sorted descending by value for greedy coin selection.
+- [builder.rs](file:///c:/ferrous/src/wallet/builder.rs): Transaction construction. Selects coins (largest-first), builds outputs, signs inputs with ECDSA, generates change address via dedicated change derivation path.
 
 ### primitives
 
@@ -94,7 +99,7 @@ Low-level utilities:
 
 Defined in [chain.rs](file:///c:/ferrous/src/consensus/chain.rs#L28-L35), `ChainState` holds the in-memory view of the active chain:
 
-- Map of block hash to `BlockData` (header, transactions, height, cumulative work).
+- `LruCache<Hash256, BlockData>` capped at 2048 entries. Blocks not in the cache are served from RocksDB on demand.
 - Height index (height → block hash).
 - Tip hash and height.
 - `UtxoSet` for validating new transactions.
@@ -125,8 +130,9 @@ Defined in [miner.rs](file:///c:/ferrous/src/mining/miner.rs#L10-L14), `Miner` e
 Responsibilities:
 
 - `create_coinbase(height, subsidy, fees)` builds a coinbase transaction that commits to the block height in `script_sig`.
-- `mine_block(chain, transactions)` constructs a block template, computes the target via `calculate_next_target`, and searches nonces until `check_proof_of_work` passes.
-- `mine_and_attach(chain, transactions)` mines a block and attaches it to `ChainState` in one operation.
+- `build_template(chain)` reads chain state under a read lock and returns a `BlockTemplate` (coinbase, transactions, target). Lock is released immediately.
+- `solve_template(template)` runs the nonce search in parallel via rayon with no chain lock held.
+- `build_template_to(chain, script)` variant used by `generatetoaddress` for a custom coinbase script.
 
 ### Network Recovery and Diagnostics
 
@@ -143,11 +149,13 @@ To ensure robustness, the node includes a dedicated recovery system:
 
 Defined in [server.rs](file:///c:/ferrous/src/rpc/server.rs#L8-L12), `RpcServer` owns:
 
-- `Arc<Mutex<ChainState>>` for synchronized access to the chain.
+- `Arc<RwLock<ChainState>>` for synchronized access to the chain.
 - `Arc<Miner>` for mining operations.
+- `Arc<Mutex<Wallet>>` for wallet operations.
 - `Arc<PeerManager>` for P2P network control.
 - `Arc<RecoveryManager>` for network health monitoring.
 - `Arc<NetworkStats>` for metrics.
+- `Arc<NetworkMempool>` for transaction pool access.
 - A `tiny_http::Server` instance bound to the configured address.
 
 Responsibilities:
@@ -182,10 +190,10 @@ Responsibilities:
 1. The node is started from [examples/node.rs](file:///c:/ferrous/examples/node.rs) with a chosen network.
 2. `create_genesis()` builds and mines a genesis block in-memory.
 3. `ChainState::new` initializes the chain with genesis and a fresh `UtxoSet`.
-4. `Miner::mine_and_attach` is invoked either via CLI mining (`--mine`) or via RPC (`mineblocks` / `generatetoaddress`):
-   - `next_block_timestamp` uses MedianTimePast and network-adjusted time to pick a valid timestamp.
-   - `calculate_next_target` in [difficulty.rs](file:///c:/ferrous/src/consensus/difficulty.rs#L63-L145) computes the next difficulty target from the previous header and timestamp.
-   - `Miner` iterates nonce values until `BlockHeader::check_proof_of_work` succeeds.
+4. Block production uses a three-phase split to avoid holding the chain lock during PoW:
+   - **Phase 1 (build)**: `build_template(&ChainState)` acquires a read lock, reads the tip, selects mempool transactions, constructs a coinbase, and returns a `BlockTemplate`. Lock released immediately.
+   - **Phase 2 (solve)**: `solve_template(BlockTemplate)` searches nonces in parallel via rayon with no chain lock held. `next_block_timestamp` enforces MedianTimePast; `calculate_next_target` computes the difficulty target.
+   - **Phase 3 (commit)**: `ChainState::add_block` acquires a write lock briefly to validate and attach the solved block.
 5. `ChainState::add_block` validates the new block and connects it:
    - Validates difficulty via `validate_difficulty`.
    - Validates structure and PoW via `validate_block`.

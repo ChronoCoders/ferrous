@@ -7,19 +7,21 @@
 - JSON-RPC API (20+ methods) and TUI Dashboard + Monitor
 - Parallel IBD: headers-first state machine deployed 
 
-## Phase 2: Parallel IBD Completion + Testnet Reset
+## Phase 2: Parallel IBD Completion + Testnet Reset ✓
 - BlockDownloadQueue with work-stealing multi-peer download
 - BlockApplyBuffer with sequential ordered validation
-- Testnet reset with 4 vCPU servers, 5+ nodes all mining
 - RPC threading fix: RwLock + separate thread pool
 
-## Phase 3: Wallet Integration
-- BIP39 seed phrase (12-24 words)
-- Shamir's Secret Sharing recovery (M-of-N)
-- Wallet encryption (KDF + AEAD, replacing XOR obfuscation)
-- RPC authentication
+## Phase 3: Wallet Integration ✓
+- BIP39 seed phrase (24-word / 256-bit entropy)
+- Shamir's Secret Sharing recovery (M-of-N, GF(256))
+- Wallet encryption (PBKDF2-HMAC-SHA512 KDF + ChaCha20-Poly1305 AEAD)
+- Change address via dedicated derivation path
+- Coin selection sorted descending by value
+- New RPC handlers: getwalletinfo, encryptwallet, importseed, getshamirshares
 
 ## Phase 4: Post-Quantum Cryptography
+- RPC authentication (required before any non-loopback exposure)
 - CRYSTALS-Dilithium (NIST FIPS 204) — replaces ECDSA
 - New address format for Dilithium public keys
 - Block/mempool size policy redesign (Dilithium sigs 2.4-4.6KB)
