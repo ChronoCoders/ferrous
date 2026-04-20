@@ -32,9 +32,14 @@ Implemented methods:
 - `getbestblockhash`
 - `getnewaddress`
 - `getbalance`
+- `getwalletinfo`
+- `encryptwallet`
+- `importseed`
+- `getshamirshares`
 - `listunspent`
 - `listaddresses`
 - `sendtoaddress`
+- `sendrawtransaction`
 - `generatetoaddress`
 - `getnetworkinfo`
 - `addnode`
@@ -289,18 +294,208 @@ Creates and broadcasts a transaction paying `amount` to `address`.
 
 ### Response
 
-`result` is a JSON object:
+`result` is a JSON object containing only the transaction ID. The transaction is submitted to the mempool and included in the next mined block.
 
 ```json
 {
   "jsonrpc": "2.0",
   "result": {
-    "txid": "9b1a...",
-    "blockhash": "000000..."
+    "txid": "9b1a..."
   },
   "id": 1
 }
 ```
+
+## sendrawtransaction
+
+Decodes a hex-encoded raw transaction, validates its structure, and submits it to the mempool.
+
+### Request
+
+`params` is an array with a single hex string.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "sendrawtransaction",
+  "params": ["0100000001..."],
+  "id": 1
+}
+```
+
+### Response
+
+`result` is the transaction ID as a hex string:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": "9b1a...",
+  "id": 1
+}
+```
+
+### Errors
+
+- If the hex is invalid: `"Invalid hex"`
+- If the transaction fails to decode: `"Failed to decode transaction"`
+- If the transaction fails structure checks: `"Invalid transaction: <details>"`
+- If the mempool rejects it: `"Mempool rejected: <details>"`
+
+## getwalletinfo
+
+Returns information about the current wallet state.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getwalletinfo",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "encrypted": false,
+    "has_seed": true,
+    "receive_addresses": 1,
+    "change_addresses": 0,
+    "balance_sats": 5000000000
+  },
+  "id": 1
+}
+```
+
+Fields:
+
+- `encrypted`: Whether the wallet file is encrypted with ChaCha20-Poly1305.
+- `has_seed`: Whether a BIP39 seed is present (enabling deterministic key derivation and Shamir backup).
+- `receive_addresses`: Number of receive addresses generated so far.
+- `change_addresses`: Number of change addresses generated so far.
+- `balance_sats`: Wallet balance in satoshis (frsats).
+
+## encryptwallet
+
+Encrypts the wallet file using ChaCha20-Poly1305 with a PBKDF2-HMAC-SHA512 key derivation (210,000 iterations). The node must be restarted after encryption to load the encrypted wallet.
+
+### Request
+
+`params` is an array with a single string: the passphrase.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "encryptwallet",
+  "params": ["my-strong-passphrase"],
+  "id": 1
+}
+```
+
+### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": "Wallet encrypted. Restart node to load encrypted wallet.",
+  "id": 1
+}
+```
+
+### Errors
+
+- If the wallet is already encrypted: `"Wallet is already encrypted"`
+
+## importseed
+
+Imports a BIP39 mnemonic phrase, rederives all wallet keys, and saves the wallet. Only 24-word (256-bit entropy) mnemonics are supported. BIP39 passphrase is not yet supported.
+
+### Request
+
+`params` is an array: `[mnemonic, passphrase?]`. Passphrase must be omitted or empty.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "importseed",
+  "params": ["word1 word2 ... word24"],
+  "id": 1
+}
+```
+
+### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "address_count": 1
+  },
+  "id": 1
+}
+```
+
+Fields:
+
+- `address_count`: Number of receive addresses derived after import.
+
+### Errors
+
+- If the mnemonic is invalid: `"Invalid mnemonic: <details>"`
+- If the entropy is not 32 bytes: `"Expected 32-byte entropy (256-bit mnemonic), got <n>"`
+- If a non-empty passphrase is supplied: `"BIP39 passphrase not yet supported. Import using empty passphrase only."`
+
+## getshamirshares
+
+Splits the wallet's BIP39 seed entropy into M-of-N Shamir shares using GF(256) arithmetic. Any M shares can recover the seed; fewer than M shares reveal nothing.
+
+### Request
+
+`params` is an array: `[m, n]` where `2 ≤ m ≤ n ≤ 10`.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getshamirshares",
+  "params": [2, 3],
+  "id": 1
+}
+```
+
+### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "shares": [
+      {"index": 1, "share": "a3f0..."},
+      {"index": 2, "share": "7c12..."},
+      {"index": 3, "share": "e841..."}
+    ],
+    "m": 2,
+    "n": 3
+  },
+  "id": 1
+}
+```
+
+Fields:
+
+- `shares`: Array of `{index, share}` objects. `index` is 1-based; `share` is hex-encoded.
+- `m`: Minimum number of shares required to recover the seed.
+- `n`: Total number of shares produced.
+
+### Errors
+
+- If no seed is present: `"No seed to split"`
+- If M/N parameters are invalid: `"Shamir split failed: <details>"`
 
 ## generatetoaddress
 
