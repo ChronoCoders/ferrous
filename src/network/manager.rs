@@ -160,10 +160,10 @@ impl PeerManager {
     pub fn check_network_health(&self) {
         let security = self.security.lock().unwrap();
         if security.detect_eclipse_attempt() {
-            println!("Potential Eclipse attack detected!");
+            log::warn!("Potential Eclipse attack detected!");
             // Log stats
             let (netgroups, peers, max_pct) = security.get_diversity_stats();
-            println!(
+            log::warn!(
                 "Network diversity: {} netgroups, {} peers, max {:.2}%",
                 netgroups,
                 peers,
@@ -184,7 +184,7 @@ impl PeerManager {
             if let Some(peer) = peers.get_mut(&peer_id) {
                 peer.add_ban_score(score);
                 if peer.should_ban() {
-                    println!("Peer {} banned (score: {})", peer_id, peer.get_ban_score());
+                    log::warn!("Peer {} banned (score: {})", peer_id, peer.get_ban_score());
                     true
                 } else {
                     false
@@ -213,7 +213,7 @@ impl PeerManager {
         }
 
         for peer_id in to_disconnect {
-            println!("Disconnecting inactive peer {}", peer_id);
+            log::debug!("Disconnecting inactive peer {}", peer_id);
             let _ = self.disconnect_peer(peer_id);
         }
     }
@@ -371,10 +371,10 @@ impl PeerManager {
             let mut peers = peers_clone.lock().unwrap();
             if let Some(mut peer) = peers.remove(&id) {
                 drop(peers);
-                println!("Starting handshake with outbound peer {}", addr);
+                log::debug!("Starting handshake with outbound peer {}", addr);
                 match perform_handshake(&mut peer, our_version, our_services, our_height, nonce) {
                     Ok(_) => {
-                        println!("Handshake success with {}", addr);
+                        log::debug!("Handshake success with {}", addr);
                         {
                             let mut peers = peers_clone.lock().unwrap();
                             peer.connected_at = Instant::now();
@@ -403,7 +403,7 @@ impl PeerManager {
                         }
                     }
                     Err(e) => {
-                        println!("Handshake failed with {}: {}", addr, e);
+                        log::warn!("Handshake failed with {}: {}", addr, e);
                         // Cleanup on failure
                         let mut peers = peers_clone.lock().unwrap();
                         if let Some(peer) = peers.remove(&id) {
@@ -546,7 +546,7 @@ impl PeerManager {
                 return;
             }
 
-            println!("New inbound connection from {}", peer_addr);
+            log::debug!("New inbound connection from {}", peer_addr);
 
             let mut next_id = next_peer_id_clone.lock().unwrap();
             let id = *next_id;
@@ -589,7 +589,7 @@ impl PeerManager {
                     .unwrap_or(0);
                 match perform_inbound_handshake(&mut peer, version, services, height, nonce) {
                     Ok(_) => {
-                        println!("Inbound handshake success from {}", ip);
+                        log::debug!("Inbound handshake success from {}", ip);
                         peer.state = PeerState::Active;
                         peer.connected_at = Instant::now();
                         peer.last_recv = Instant::now();
@@ -613,7 +613,7 @@ impl PeerManager {
                     }
                     Err(e) => {
                         log::debug!("inbound [{}]: handshake error — {}", ip, e);
-                        println!("Inbound handshake failed from {}: {}", ip, e);
+                        log::warn!("Inbound handshake failed from {}: {}", ip, e);
                     }
                 }
             });
@@ -764,7 +764,7 @@ impl PeerManager {
                     if let Some(peer) = peers.get_mut(&peer_id) {
                         for msg in messages {
                             if let Err(e) = peer.send(&msg) {
-                                println!("Failed to send batched message: {}", e);
+                                log::warn!("Failed to send batched message: {}", e);
                             }
                         }
                     }
@@ -859,7 +859,7 @@ impl PeerManager {
                             Ok(Some(msg)) => {
                                 // VALIDATION CHECKPOINT 1: Message structure and size
                                 if let Err(e) = msg.validate() {
-                                    println!("Invalid message from {}: {:?}", id, e);
+                                    log::warn!("Invalid message from {}: {:?}", id, e);
                                     peer.add_ban_score(10);
                                     if peer.should_ban() {
                                         // NLL: peer's last use is peer.should_ban() above.
@@ -910,10 +910,10 @@ impl PeerManager {
 
                                     // Check general message rate
                                     if !peer.check_message_rate() {
-                                        println!("Peer {} exceeded message rate limit", id);
+                                        log::warn!("Peer {} exceeded message rate limit", id);
                                         peer.add_ban_score(10);
                                         if peer.should_ban() {
-                                            println!("Banning peer {} for rate limit abuse", id);
+                                            log::warn!("Banning peer {} for rate limit abuse", id);
                                             {
                                                 let stats_guard = stats_clone.lock().unwrap();
                                                 if let Some(stats) = &*stats_guard {
@@ -994,9 +994,10 @@ impl PeerManager {
                                             Ok(payload) => {
                                                 // VALIDATION CHECKPOINT 2: Payload content
                                                 if let Err(e) = payload.validate() {
-                                                    println!(
+                                                    log::warn!(
                                                         "Invalid payload from {}: {:?}",
-                                                        id, e
+                                                        id,
+                                                        e
                                                     );
                                                     // Severe violation — ban and fully clean up.
                                                     let mut peers = peers_clone.lock().unwrap();
@@ -1064,7 +1065,7 @@ impl PeerManager {
                                                                 if !is_trusted
                                                                     && !peer.check_inv_rate()
                                                                 {
-                                                                    println!(
+                                                                    log::warn!(
                                                                         "Peer {} exceeded INV rate",
                                                                         id
                                                                     );
@@ -1080,7 +1081,7 @@ impl PeerManager {
                                                                 if !is_trusted
                                                                     && !peer.check_getdata_rate()
                                                                 {
-                                                                    println!("Peer {} exceeded GetData rate", id);
+                                                                    log::warn!("Peer {} exceeded GetData rate", id);
                                                                     peer.add_ban_score(20);
                                                                 }
                                                             }
@@ -1158,9 +1159,10 @@ impl PeerManager {
                                                 }
                                             }
                                             Err(e) => {
-                                                println!(
+                                                log::warn!(
                                                     "Error parsing message from peer {}: {:?}",
-                                                    id, e
+                                                    id,
+                                                    e
                                                 );
                                                 let stats_guard = stats_clone.lock().unwrap();
                                                 if let Some(stats) = &*stats_guard {
@@ -1182,7 +1184,7 @@ impl PeerManager {
                                 // by the old deferred disconnect path (which held `peers` from
                                 // the outer lock() and then tried to call peers_clone.lock()
                                 // again in the disconnect block).
-                                println!("Error receiving from peer {}: {:?}", id, e);
+                                log::warn!("Error receiving from peer {}: {:?}", id, e);
                                 let dconn_info =
                                     peers.remove(&id).map(|p| (p.addr.ip(), p.inbound));
                                 let remaining = peers.len();
