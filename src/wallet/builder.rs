@@ -38,7 +38,7 @@ impl TransactionBuilder {
         });
 
         if change > 0 {
-            let change_address = wallet.generate_change_address()?;
+            let change_address = wallet.get_or_create_change_address()?;
             let change_script = address_to_script_pubkey(&change_address)?;
             outputs.push(TxOutput {
                 value: change,
