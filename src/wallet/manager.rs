@@ -34,6 +34,10 @@ impl Wallet {
         self.keystore.generate_change()
     }
 
+    pub fn get_or_create_change_address(&mut self) -> Result<String, String> {
+        self.keystore.get_or_create_change()
+    }
+
     // ── key / seed accessors ──────────────────────────────────────────────────
 
     pub fn has_seed(&self) -> bool {
@@ -185,6 +189,32 @@ mod tests {
         );
         assert_eq!(wallet.receive_index(), 1);
         assert_eq!(wallet.change_index(), 1);
+    }
+
+    #[test]
+    fn test_get_or_create_change_address_stable() {
+        let dir = TempDir::new().unwrap();
+        let mut wallet = empty_wallet(&dir);
+        wallet.set_seed([0xAB; 32]).unwrap();
+
+        let first = wallet.get_or_create_change_address().unwrap();
+        assert_eq!(
+            wallet.change_index(),
+            1,
+            "first call must create the address"
+        );
+
+        let second = wallet.get_or_create_change_address().unwrap();
+        assert_eq!(
+            wallet.change_index(),
+            1,
+            "change_index must not increment on reuse"
+        );
+        assert_eq!(first, second, "must return the same address each time");
+
+        let third = wallet.get_or_create_change_address().unwrap();
+        assert_eq!(wallet.change_index(), 1);
+        assert_eq!(first, third);
     }
 
     #[test]
