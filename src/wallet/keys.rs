@@ -307,6 +307,23 @@ impl KeyStore {
         Ok(address)
     }
 
+    pub fn get_or_create_change(&mut self) -> Result<String, String> {
+        if self.change_index == 0 {
+            return self.generate_change();
+        }
+        match self.seed_entropy {
+            Some(entropy) => {
+                let sk = Self::derive_key(&entropy, b"change", 0)?;
+                let pk = PrivateKey::new(sk);
+                Ok(pubkey_to_address(
+                    &pk.public_key_bytes(),
+                    self.network_prefix,
+                ))
+            }
+            None => self.generate_change(),
+        }
+    }
+
     // ── seed management ───────────────────────────────────────────────────────
 
     pub fn set_seed(&mut self, entropy: [u8; 32]) -> Result<(), String> {
