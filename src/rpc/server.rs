@@ -1270,6 +1270,26 @@ impl RpcServer {
     }
 }
 
+fn difficulty_from_compact(bits: u32) -> Option<f64> {
+    if bits == 0 {
+        return None;
+    }
+    let exponent = ((bits >> 24) & 0xff) as i32;
+    let mantissa_u32 = bits & 0x00ff_ffff;
+    if mantissa_u32 == 0 {
+        return None;
+    }
+
+    let mantissa = mantissa_u32 as f64;
+    let target = mantissa * 2f64.powi(8 * (exponent - 3));
+
+    let diff1_mantissa = 0x0000ffffu32 as f64;
+    let diff1_exponent = 0x1d_i32;
+    let diff1_target = diff1_mantissa * 2f64.powi(8 * (diff1_exponent - 3));
+
+    Some(diff1_target / target)
+}
+
 #[cfg(test)]
 mod auth_tests {
     use super::RpcServer;
@@ -1330,24 +1350,4 @@ mod auth_tests {
         let result = value.strip_prefix("Basic ");
         assert!(result.is_none());
     }
-}
-
-fn difficulty_from_compact(bits: u32) -> Option<f64> {
-    if bits == 0 {
-        return None;
-    }
-    let exponent = ((bits >> 24) & 0xff) as i32;
-    let mantissa_u32 = bits & 0x00ff_ffff;
-    if mantissa_u32 == 0 {
-        return None;
-    }
-
-    let mantissa = mantissa_u32 as f64;
-    let target = mantissa * 2f64.powi(8 * (exponent - 3));
-
-    let diff1_mantissa = 0x0000ffffu32 as f64;
-    let diff1_exponent = 0x1d_i32;
-    let diff1_target = diff1_mantissa * 2f64.powi(8 * (diff1_exponent - 3));
-
-    Some(diff1_target / target)
 }
