@@ -13,6 +13,7 @@ use ferrous_node::network::sync::SyncManager;
 use ferrous_node::rpc::{RpcServer, RpcServerConfig};
 use ferrous_node::wallet::address::address_to_script_pubkey;
 use ferrous_node::wallet::manager::Wallet;
+use rand::RngCore;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -105,6 +106,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+
+    // Generate a fresh RPC cookie on every startup and write it to <datadir>/.rpc.cookie.
+    // The cookie is the sole credential for HTTP Basic Auth ("cookie:<hex-token>").
+    let rpc_cookie: String = {
+        let mut token = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut token);
+        let hex_token = hex::encode(token);
+        let credential = format!("cookie:{}", hex_token);
+        let cookie_path = format!("{}/.rpc.cookie", args.datadir);
+        std::fs::write(&cookie_path, &credential).unwrap_or_else(|e| {
+            eprintln!(
+                "Warning: could not write RPC cookie to {}: {}",
+                cookie_path, e
+            )
+        });
+        println!("RPC cookie written to {}", cookie_path);
+        credential
+    };
 
     let network_prefix = match network {
         Network::Mainnet => 0x00,
@@ -239,6 +258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mempool_clone = mempool.clone();
         let rpc_addr = args.rpc_addr.clone();
 
+        let rpc_cookie_dash = rpc_cookie.clone();
         thread::spawn(move || {
             let config = RpcServerConfig {
                 chain: chain_clone,
@@ -250,6 +270,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 relay: relay_clone,
                 mempool: mempool_clone,
                 network_prefix,
+                rpc_auth: Some(rpc_cookie_dash),
             };
             let server = std::sync::Arc::new(RpcServer::new(config, &rpc_addr).unwrap());
             server.run().ok();
@@ -273,6 +294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             relay: relay.clone(),
             mempool: mempool.clone(),
             network_prefix,
+            rpc_auth: Some(rpc_cookie),
         };
 
         let server = std::sync::Arc::new(

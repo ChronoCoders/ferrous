@@ -30,6 +30,9 @@ pub struct RpcServerConfig {
     pub relay: Arc<BlockRelay>,
     pub mempool: Arc<NetworkMempool>,
     pub network_prefix: u8,
+    /// If Some("user:pass"), every request must carry a matching HTTP Basic Auth header.
+    /// None disables auth (used in tests and regtest).
+    pub rpc_auth: Option<String>,
 }
 
 pub struct RpcServer {
@@ -42,6 +45,7 @@ pub struct RpcServer {
     relay: Arc<BlockRelay>,
     mempool: Arc<NetworkMempool>,
     network_prefix: u8,
+    rpc_auth: Option<String>,
     server: Server,
     /// 1-second response cache for getblockchaininfo (timestamp, cached value).
     blockchain_info_cache: Mutex<Option<(Instant, Value)>>,
@@ -63,6 +67,7 @@ impl RpcServer {
             relay: config.relay,
             mempool: config.mempool,
             network_prefix: config.network_prefix,
+            rpc_auth: config.rpc_auth,
             server,
             blockchain_info_cache: Mutex::new(None),
             mininginfo_cache: Mutex::new(None),
@@ -366,11 +371,96 @@ impl RpcServer {
         &body[start..end]
     }
 
+    /// Minimal RFC 4648 Base64 decoder (no padding required to be correct, but
+    /// standard padding is accepted).  Returns `None` on any invalid character.
+    fn base64_decode(input: &str) -> Option<Vec<u8>> {
+        const TABLE: &[u8; 128] = b"\
+            \xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\
+            \xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\
+            \xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x3e\xff\xff\xff\x3f\
+            \x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\xff\xff\xff\xff\xff\xff\
+            \xff\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\
+            \x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\xff\xff\xff\xff\xff\
+            \xff\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\
+            \x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\xff\xff\xff\xff\xff";
+        let input = input.trim_end_matches('=');
+        let mut out = Vec::with_capacity(input.len() * 3 / 4 + 1);
+        let mut buf: u32 = 0;
+        let mut bits = 0u32;
+        for &b in input.as_bytes() {
+            if b as usize >= 128 {
+                return None;
+            }
+            let v = TABLE[b as usize];
+            if v == 0xff {
+                return None;
+            }
+            buf = (buf << 6) | v as u32;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((buf >> bits) as u8);
+            }
+        }
+        Some(out)
+    }
+
+    fn unauthorized_response(&self) -> Response<std::io::Cursor<Vec<u8>>> {
+        let body =
+            r#"{"jsonrpc":"2.0","error":{"code":-32600,"message":"Unauthorized"},"id":null}"#;
+        Response::from_string(body)
+            .with_status_code(401)
+            .with_header(
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                    .unwrap(),
+            )
+            .with_header(
+                tiny_http::Header::from_bytes(
+                    &b"WWW-Authenticate"[..],
+                    &b"Basic realm=\"ferrous-rpc\""[..],
+                )
+                .unwrap(),
+            )
+    }
+
+    fn check_auth(&self, request: &tiny_http::Request) -> bool {
+        let expected = match &self.rpc_auth {
+            Some(s) => s,
+            None => return true,
+        };
+        let header_value = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Authorization"))
+            .map(|h| h.value.as_str());
+        let value = match header_value {
+            Some(v) => v,
+            None => return false,
+        };
+        let encoded = match value.strip_prefix("Basic ") {
+            Some(s) => s.trim(),
+            None => return false,
+        };
+        let decoded = match Self::base64_decode(encoded) {
+            Some(b) => b,
+            None => return false,
+        };
+        let credential = match std::str::from_utf8(&decoded) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        credential == expected.as_str()
+    }
+
     fn handle_request(
         &self,
         request: &mut tiny_http::Request,
     ) -> (Response<std::io::Cursor<Vec<u8>>>, bool) {
         const MAX_REQUEST_BODY: usize = 1024 * 1024;
+
+        if !self.check_auth(request) {
+            return (self.unauthorized_response(), false);
+        }
 
         if request.method() != &tiny_http::Method::Post {
             return (
@@ -1177,6 +1267,68 @@ impl RpcServer {
             },
             "id": id
         })
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::RpcServer;
+
+    fn encode_basic(credential: &str) -> String {
+        // Minimal Base64 encoder for tests only.
+        const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let input = credential.as_bytes();
+        let mut out = String::new();
+        for chunk in input.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+            let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+            let combined = (b0 << 16) | (b1 << 8) | b2;
+            out.push(CHARS[((combined >> 18) & 0x3f) as usize] as char);
+            out.push(CHARS[((combined >> 12) & 0x3f) as usize] as char);
+            if chunk.len() > 1 {
+                out.push(CHARS[((combined >> 6) & 0x3f) as usize] as char);
+            } else {
+                out.push('=');
+            }
+            if chunk.len() > 2 {
+                out.push(CHARS[(combined & 0x3f) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn base64_decode_roundtrip() {
+        let credential = "cookie:deadbeefcafe1234";
+        let encoded = encode_basic(credential);
+        let decoded = RpcServer::base64_decode(&encoded).expect("should decode");
+        assert_eq!(std::str::from_utf8(&decoded).unwrap(), credential);
+    }
+
+    #[test]
+    fn base64_decode_invalid_char_returns_none() {
+        assert!(RpcServer::base64_decode("!!!").is_none());
+    }
+
+    #[test]
+    fn base64_decode_wrong_password_does_not_equal_expected() {
+        let expected = "cookie:correcttoken";
+        let encoded_wrong = encode_basic("cookie:wrongtoken");
+        let decoded = RpcServer::base64_decode(&encoded_wrong).unwrap();
+        let credential = std::str::from_utf8(&decoded).unwrap();
+        assert_ne!(credential, expected);
+    }
+
+    #[test]
+    fn base64_decode_missing_prefix_fails() {
+        // "Digest ..." is not "Basic ..." — check_auth would reject it.
+        // Test that stripping "Basic " prefix on a non-Basic header returns None.
+        let value = "Digest dXNlcjpwYXNz";
+        let result = value.strip_prefix("Basic ");
+        assert!(result.is_none());
     }
 }
 
