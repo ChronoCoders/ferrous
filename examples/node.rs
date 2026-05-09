@@ -107,15 +107,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Generate a fresh RPC cookie on every startup and write it to <datadir>/.rpc.cookie.
-    // The cookie is the sole credential for HTTP Basic Auth ("cookie:<hex-token>").
-    // Failure to write is fatal — the node must not start with an unreadable credential.
-    let rpc_cookie: String = {
+    // Load or generate the RPC cookie for HTTP Basic Auth ("cookie:<hex-token>").
+    // Reuse the existing cookie on restart so clients do not need to re-read it.
+    // Only generate a new cookie if the file does not exist.
+    // Failure to read or write is fatal — the node must not start with an unreadable credential.
+    let cookie_path = std::path::PathBuf::from(format!("{}/.rpc.cookie", args.datadir));
+    let rpc_cookie: String = if cookie_path.exists() {
+        std::fs::read_to_string(&cookie_path)
+            .map_err(|e| format!("Fatal: could not read existing RPC cookie: {}", e))?
+            .trim()
+            .to_string()
+    } else {
         let mut token = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut token);
-        let hex_token = hex::encode(token);
-        let credential = format!("cookie:{}", hex_token);
-        let cookie_path = format!("{}/.rpc.cookie", args.datadir);
+        let credential = format!("cookie:{}", hex::encode(token));
         #[cfg(unix)]
         {
             use std::io::Write;
@@ -127,23 +132,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .mode(0o600)
                 .open(&cookie_path)
                 .and_then(|mut f| f.write_all(credential.as_bytes()))
-                .map_err(|e| {
-                    format!(
-                        "Fatal: could not write RPC cookie to {}: {}",
-                        cookie_path, e
-                    )
-                })?;
+                .map_err(|e| format!("Fatal: could not write RPC cookie: {}", e))?;
         }
         #[cfg(not(unix))]
         {
-            std::fs::write(&cookie_path, &credential).map_err(|e| {
-                format!(
-                    "Fatal: could not write RPC cookie to {}: {}",
-                    cookie_path, e
-                )
-            })?;
+            std::fs::write(&cookie_path, &credential)
+                .map_err(|e| format!("Fatal: could not write RPC cookie: {}", e))?;
         }
-        println!("RPC cookie written to {}", cookie_path);
+        println!("RPC cookie written to {}", cookie_path.display());
         credential
     };
 
