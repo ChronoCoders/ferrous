@@ -22,7 +22,7 @@ pub fn randomx_pow_hash(input: &[u8], epoch_key: &[u8]) -> [u8; 32] {
     use randomx_rs::{RandomXCache, RandomXFlag, RandomXVM};
     let flags = RandomXFlag::get_recommended_flags();
     let cache = RandomXCache::new(flags, epoch_key).expect("RandomX cache init failed");
-    let vm = RandomXVM::new(flags, Some(&cache), None).expect("RandomX VM init failed");
+    let vm = RandomXVM::new(flags, Some(cache), None).expect("RandomX VM init failed");
     let result = vm.calculate_hash(input).expect("RandomX hash failed");
     let mut out = [0u8; 32];
     out.copy_from_slice(&result[..32]);
