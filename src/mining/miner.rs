@@ -156,7 +156,7 @@ mod tests {
             nonce: 0,
         };
 
-        while !header.check_proof_of_work().unwrap() {
+        while !header.check_proof_of_work(b"ferrous-testnet-v4").unwrap() {
             header.nonce += 1;
         }
 
@@ -441,7 +441,7 @@ impl Miner {
 
                 local_header.nonce = current_nonce;
 
-                if local_header.check_proof_of_work().unwrap_or(false) {
+                if local_header.check_proof_of_work(b"ferrous-testnet-v4").unwrap_or(false) {
                     found.store(true, Ordering::Relaxed);
                     solution_nonce.store(current_nonce, Ordering::Relaxed);
                     solution_timestamp.store(local_header.timestamp, Ordering::Relaxed);
@@ -502,7 +502,7 @@ impl Miner {
         }
 
         if !final_header
-            .check_proof_of_work()
+            .check_proof_of_work(b"ferrous-testnet-v4")
             .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?
         {
             return Err(MiningError::ChainError(
@@ -622,7 +622,7 @@ impl Miner {
 
                 local_header.nonce = current_nonce;
 
-                if local_header.check_proof_of_work().unwrap_or(false) {
+                if local_header.check_proof_of_work(b"ferrous-testnet-v4").unwrap_or(false) {
                     found.store(true, Ordering::Relaxed);
                     solution_nonce.store(current_nonce, Ordering::Relaxed);
                     solution_timestamp.store(local_header.timestamp, Ordering::Relaxed);
@@ -683,7 +683,7 @@ impl Miner {
         }
 
         if !final_header
-            .check_proof_of_work()
+            .check_proof_of_work(b"ferrous-testnet-v4")
             .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?
         {
             return Err(MiningError::ChainError(

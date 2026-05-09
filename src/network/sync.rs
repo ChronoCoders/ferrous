@@ -1162,7 +1162,7 @@ impl SyncManager {
 
             // PoW check
             if !header
-                .check_proof_of_work()
+                .check_proof_of_work(b"ferrous-testnet-v4")
                 .map_err(|_| "PoW check error")?
             {
                 return Err(format!(
