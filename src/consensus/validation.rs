@@ -63,7 +63,7 @@ pub fn validate_block(
 
     // 4. Verify proof of work
     if !header
-        .check_proof_of_work()
+        .check_proof_of_work(b"ferrous-testnet-v4")
         .map_err(|_| ValidationError::InvalidProofOfWork)?
     {
         return Err(ValidationError::InvalidProofOfWork);
