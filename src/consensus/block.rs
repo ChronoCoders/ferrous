@@ -238,11 +238,16 @@ impl BlockHeader {
     /// Verifies that the block header hash satisfies the proof-of-work target.
     ///
     /// Returns `Ok(true)` when `hash <= target`, `Ok(false)` otherwise.
-    pub fn check_proof_of_work(&self) -> Result<bool, TargetError> {
+    pub fn check_proof_of_work(&self, epoch_key: &[u8]) -> Result<bool, TargetError> {
         let target = self.target()?;
-        let hash = self.hash();
-        let hash_value = U256::from_le_bytes(hash);
+        let pow_hash = crate::primitives::hash::randomx_pow_hash(&self.encode(), epoch_key);
+        let hash_value = U256::from_bytes_le(&pow_hash);
         Ok(hash_value <= target)
+    }
+
+    pub fn epoch_key(height: u64) -> Vec<u8> {
+        let epoch = height / 2048;
+        crate::primitives::hash::sha256d(&epoch.to_le_bytes()).to_vec()
     }
 }
 
@@ -314,7 +319,7 @@ pub fn create_genesis_block(genesis_n_bits: u32) -> Block {
     };
 
     if known_nonce.is_none() {
-        while !header.check_proof_of_work().unwrap_or(false) {
+        while !header.check_proof_of_work(b"ferrous-testnet-v4").unwrap_or(false) {
             header.nonce = header.nonce.wrapping_add(1);
         }
     }
