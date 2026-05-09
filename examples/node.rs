@@ -109,18 +109,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Generate a fresh RPC cookie on every startup and write it to <datadir>/.rpc.cookie.
     // The cookie is the sole credential for HTTP Basic Auth ("cookie:<hex-token>").
+    // Failure to write is fatal — the node must not start with an unreadable credential.
     let rpc_cookie: String = {
         let mut token = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut token);
         let hex_token = hex::encode(token);
         let credential = format!("cookie:{}", hex_token);
         let cookie_path = format!("{}/.rpc.cookie", args.datadir);
-        std::fs::write(&cookie_path, &credential).unwrap_or_else(|e| {
-            eprintln!(
-                "Warning: could not write RPC cookie to {}: {}",
-                cookie_path, e
-            )
-        });
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&cookie_path)
+                .and_then(|mut f| f.write_all(credential.as_bytes()))
+                .map_err(|e| {
+                    format!(
+                        "Fatal: could not write RPC cookie to {}: {}",
+                        cookie_path, e
+                    )
+                })?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&cookie_path, &credential).map_err(|e| {
+                format!(
+                    "Fatal: could not write RPC cookie to {}: {}",
+                    cookie_path, e
+                )
+            })?;
+        }
         println!("RPC cookie written to {}", cookie_path);
         credential
     };
