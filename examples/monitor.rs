@@ -80,6 +80,59 @@ struct NodeUpdate {
     stats: NodeStats,
 }
 
+/// Minimal RFC 4648 Base64 encoder — no external crate required.
+fn base64_encode(input: &str) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((n >> 18) & 0x3f) as usize] as char);
+        out.push(CHARS[((n >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(CHARS[((n >> 6) & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(CHARS[(n & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// Read .rpc.cookie from the remote node via SSH and return a ready-to-use
+/// Base64-encoded credential for the Authorization header, or None on failure.
+fn read_cookie_via_ssh(remote_ip: &str) -> Option<String> {
+    let output = Command::new("ssh")
+        .args([
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "BatchMode=yes",
+            &format!("root@{}", remote_ip),
+            "cat /root/ferrous/data/.rpc.cookie",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let credential = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if credential.is_empty() {
+        None
+    } else {
+        Some(base64_encode(&credential))
+    }
+}
+
 fn spawn_ssh_tunnel(remote_ip: &str, local_port: u16) -> Option<Child> {
     Command::new("ssh")
         .args([
@@ -110,6 +163,11 @@ fn main() -> io::Result<()> {
         Arc::new(Mutex::new(spawn_ssh_tunnel("45.77.64.221", 18332)));
     // Give tunnels a moment to establish before polling begins.
     thread::sleep(Duration::from_secs(2));
+
+    // Read RPC cookies from each node via SSH before tunnels start polling.
+    // Cookies are stable across restarts (commit 7d76866) so reading once is sufficient.
+    let auth_1 = read_cookie_via_ssh("45.77.153.141");
+    let auth_4 = read_cookie_via_ssh("45.77.64.221");
 
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<NodeUpdate>();
@@ -143,6 +201,7 @@ fn main() -> io::Result<()> {
         "seed1".to_string(),
         "45.77.153.141".to_string(),
         18331,
+        auth_1,
     );
     let poller_4 = spawn_poller(
         tx,
@@ -150,6 +209,7 @@ fn main() -> io::Result<()> {
         "seed4".to_string(),
         "45.77.64.221".to_string(),
         18332,
+        auth_4,
     );
 
     enable_raw_mode()?;
@@ -626,6 +686,7 @@ fn spawn_poller(
     name: String,
     ip: String,
     local_port: u16,
+    auth: Option<String>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut last_good = default_node_stats(&name, &ip, local_port);
@@ -640,7 +701,13 @@ fn spawn_poller(
                 .min(u64::from(u32::MAX));
             last_poll_at = now;
 
-            let (stats, ok) = poll_node(&name, &ip, local_port, Some((&last_good, delta_secs)));
+            let (stats, ok) = poll_node(
+                &name,
+                &ip,
+                local_port,
+                Some((&last_good, delta_secs)),
+                auth.as_deref(),
+            );
             if ok {
                 consecutive_failures = 0;
                 last_good = stats.clone();
@@ -683,6 +750,7 @@ fn poll_node(
     ip: &str,
     local_port: u16,
     prior: Option<(&NodeStats, u64)>,
+    auth: Option<&str>,
 ) -> (NodeStats, bool) {
     let mut stats = default_node_stats(name, ip, local_port);
     stats.last_updated = Instant::now();
@@ -694,7 +762,7 @@ fn poll_node(
 
     // getblockchaininfo
     let t0 = Instant::now();
-    let info = match rpc_call(local_port, "getblockchaininfo", Value::Array(vec![])) {
+    let info = match rpc_call(local_port, "getblockchaininfo", Value::Array(vec![]), auth) {
         Ok(v) => v,
         Err(e) => {
             stats.reachable = false;
@@ -719,7 +787,7 @@ fn poll_node(
         .to_string();
 
     // getpeerinfo
-    if let Ok(v) = rpc_call(local_port, "getpeerinfo", Value::Array(vec![])) {
+    if let Ok(v) = rpc_call(local_port, "getpeerinfo", Value::Array(vec![]), auth) {
         if let Some(arr) = v.as_array() {
             stats.peer_count = Some(arr.len() as u32);
         } else if let Some(obj) = v.as_object() {
@@ -732,7 +800,7 @@ fn poll_node(
     }
 
     // getmininginfo — difficulty and hashrate come from here
-    match rpc_call(local_port, "getmininginfo", Value::Array(vec![])) {
+    match rpc_call(local_port, "getmininginfo", Value::Array(vec![]), auth) {
         Ok(v) => {
             stats.difficulty = v
                 .get("difficulty")
@@ -750,7 +818,8 @@ fn poll_node(
             stats.mining_error = Some(format!("Mining: getmininginfo unavailable ({})", e));
 
             if !stats.best_hash.is_empty() {
-                if let Ok(block) = rpc_call(local_port, "getblock", json!([stats.best_hash])) {
+                if let Ok(block) = rpc_call(local_port, "getblock", json!([stats.best_hash]), auth)
+                {
                     if let Some(bits_hex) = block.get("bits").and_then(|b| b.as_str()) {
                         if let Ok(bits) = u32::from_str_radix(bits_hex, 16) {
                             if let Some(d) = difficulty_from_compact(bits) {
@@ -765,7 +834,7 @@ fn poll_node(
         }
     }
 
-    match rpc_call(local_port, "getnetworkinfo", Value::Array(vec![])) {
+    match rpc_call(local_port, "getnetworkinfo", Value::Array(vec![]), auth) {
         Ok(v) => {
             stats.connections = v
                 .get("connections")
@@ -789,7 +858,7 @@ fn poll_node(
         }
     }
 
-    match rpc_call(local_port, "getrecoverystatus", Value::Array(vec![])) {
+    match rpc_call(local_port, "getrecoverystatus", Value::Array(vec![]), auth) {
         Ok(v) => {
             stats.partition_detected = v.get("partition_detected").and_then(|b| b.as_bool());
             stats.recovery_attempts = v
@@ -812,7 +881,7 @@ fn poll_node(
 
     if need_refresh {
         // Try to fetch recent blocks — failure here does NOT make node OFFLINE
-        match fetch_recent_blocks(local_port, stats.blocks, 10) {
+        match fetch_recent_blocks(local_port, stats.blocks, 10, auth) {
             Ok((recent, txs)) => {
                 stats.recent_blocks = recent;
                 stats.recent_txs = txs;
@@ -866,6 +935,7 @@ fn fetch_recent_blocks(
     local_port: u16,
     tip_height: u32,
     count: usize,
+    auth: Option<&str>,
 ) -> Result<(Vec<RecentBlock>, Vec<RecentTx>), String> {
     let now = now_unix_secs();
     let heights: Vec<u32> = (0..count)
@@ -882,7 +952,7 @@ fn fetch_recent_blocks(
             "id": (i as u64) + 1
         }));
     }
-    let responses = rpc_batch(local_port, Value::Array(reqs))?;
+    let responses = rpc_batch(local_port, Value::Array(reqs), auth)?;
     let mut by_id: HashMap<u64, Value> = HashMap::with_capacity(responses.len());
     for r in responses {
         if let Some(id) = r.get("id").and_then(|v| v.as_u64()) {
@@ -919,7 +989,7 @@ fn fetch_recent_blocks(
             "id": 1000u64 + (i as u64)
         }));
     }
-    let block_responses = rpc_batch(local_port, Value::Array(block_reqs))?;
+    let block_responses = rpc_batch(local_port, Value::Array(block_reqs), auth)?;
     let mut blocks_by_id: HashMap<u64, Value> = HashMap::with_capacity(block_responses.len());
     for r in block_responses {
         if let Some(id) = r.get("id").and_then(|v| v.as_u64()) {
@@ -1108,14 +1178,19 @@ fn last_good_snapshot(prev: &NodeStats, delta_secs: u64) -> NodeStats {
     s
 }
 
-fn rpc_call(local_port: u16, method: &str, params: Value) -> Result<Value, String> {
+fn rpc_call(
+    local_port: u16,
+    method: &str,
+    params: Value,
+    auth: Option<&str>,
+) -> Result<Value, String> {
     let req = json!({
         "jsonrpc": "2.0",
         "method": method,
         "params": params,
         "id": 1
     });
-    let resp = http_post_json(local_port, &req.to_string())?;
+    let resp = http_post_json(local_port, &req.to_string(), auth)?;
 
     if resp.get("error").is_some() {
         return Err(resp.to_string());
@@ -1126,24 +1201,30 @@ fn rpc_call(local_port: u16, method: &str, params: Value) -> Result<Value, Strin
         .ok_or_else(|| "Missing result".to_string())
 }
 
-fn rpc_batch(local_port: u16, requests: Value) -> Result<Vec<Value>, String> {
-    let resp = http_post_json(local_port, &requests.to_string())?;
+fn rpc_batch(local_port: u16, requests: Value, auth: Option<&str>) -> Result<Vec<Value>, String> {
+    let resp = http_post_json(local_port, &requests.to_string(), auth)?;
     match resp {
         Value::Array(items) => Ok(items),
         other => Ok(vec![other]),
     }
 }
 
-fn http_post_json(local_port: u16, body: &str) -> Result<Value, String> {
+fn http_post_json(local_port: u16, body: &str, auth: Option<&str>) -> Result<Value, String> {
     let mut stream =
         TcpStream::connect_timeout(&local_socket_addr(local_port), Duration::from_secs(5))
             .map_err(|e| format!("{}", e))?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(20)));
 
+    let auth_header = match auth {
+        Some(b64) => format!("Authorization: Basic {}\r\n", b64),
+        None => String::new(),
+    };
+
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\n{auth}Content-Length: {len}\r\nConnection: close\r\n\r\n{body}",
         port = local_port,
+        auth = auth_header,
         len = body.len(),
         body = body
     );
@@ -1163,6 +1244,9 @@ fn http_post_json(local_port: u16, body: &str) -> Result<Value, String> {
     let header = parts.next().unwrap_or("");
     let body = parts.next().unwrap_or("");
 
+    if header.contains("401") {
+        return Err("HTTP 401 Unauthorized (cookie mismatch or missing)".to_string());
+    }
     if !header.contains("200") {
         return Err(format!(
             "HTTP error: {}",
