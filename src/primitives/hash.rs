@@ -16,8 +16,7 @@ pub fn sha256d(data: &[u8]) -> Hash256 {
     out
 }
 
-/// RandomX proof-of-work hash. Used exclusively for PoW verification.
-/// Block identity (storage, P2P, RPC) continues to use sha256d.
+#[cfg(target_os = "linux")]
 pub fn randomx_pow_hash(input: &[u8], epoch_key: &[u8]) -> [u8; 32] {
     use randomx_rs::{RandomXCache, RandomXFlag, RandomXVM};
     let flags = RandomXFlag::get_recommended_flags();
@@ -27,6 +26,11 @@ pub fn randomx_pow_hash(input: &[u8], epoch_key: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&result[..32]);
     out
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn randomx_pow_hash(_input: &[u8], _epoch_key: &[u8]) -> [u8; 32] {
+    panic!("RandomX PoW is only supported on Linux. Run on the VPS.")
 }
 
 /// Computes a tagged hash used for domain-separated hashing in signatures.
