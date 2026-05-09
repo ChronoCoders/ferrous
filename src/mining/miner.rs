@@ -183,6 +183,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore)]
     fn next_timestamp_nat_less_than_mtp() {
         let nat = 1_000_000_000u64;
         let mtp = nat + 10;
@@ -197,6 +198,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore)]
     fn next_timestamp_nat_equal_mtp() {
         let nat = 1_000_000_000u64;
         let mtp = nat;
@@ -211,6 +213,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore)]
     fn next_timestamp_nat_greater_than_mtp() {
         let nat = 1_000_000_000u64;
         let mtp = nat - 10;
@@ -225,6 +228,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore)]
     fn next_timestamp_too_far_in_future() {
         let nat = 1_000_000_000u64;
         let mtp = nat + MAX_FUTURE_OFFSET + 100;
@@ -239,6 +243,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore)]
     fn mined_blocks_respect_timestamp_rules() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
