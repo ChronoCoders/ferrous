@@ -36,6 +36,7 @@ pub enum ValidationError {
 pub fn validate_block(
     header: &BlockHeader,
     transactions: &[Transaction],
+    height: u32,
 ) -> Result<(), ValidationError> {
     // 1. Must have at least one transaction
     if transactions.is_empty() {
@@ -62,8 +63,9 @@ pub fn validate_block(
     }
 
     // 4. Verify proof of work
+    let epoch_key = BlockHeader::epoch_key(height as u64);
     if !header
-        .check_proof_of_work(b"ferrous-testnet-v4")
+        .check_proof_of_work(&epoch_key)
         .map_err(|_| ValidationError::InvalidProofOfWork)?
     {
         return Err(ValidationError::InvalidProofOfWork);
