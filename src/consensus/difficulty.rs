@@ -3,18 +3,20 @@ use crate::consensus::params::ChainParams;
 use num_bigint::BigUint;
 
 pub const MAINNET_TARGET_BLOCK_TIME: u64 = 150;
-/// Mainnet: equivalent to Bitcoin difficulty-1 (n_bits 0x1d00ffff).
-/// Big-endian: 0x000000FFFF000...000 — requires 32 leading zero bits.
+/// Mainnet: RandomX conservative launch target — 10 leading zero bits.
+/// Big-endian: 0x003FFFFF...FFFF (2^246 - 1). Easier than testnet at launch;
+/// the ±1% per-block difficulty algorithm tightens toward the actual hashrate.
 pub const MAINNET_MAX_TARGET: U256 = U256([
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0, 0,
-    0, 0,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x3F, 0x00,
 ]);
 
-/// Testnet: equivalent to n_bits 0x1f00ffff.
-/// Big-endian: 0x0000FFFF000...000 — requires 16 leading zero bits (65536× easier than mainnet).
+/// Testnet: RandomX calibrated for 40.12 H/s (2 nodes × 20.06 H/s) at 150 s block time.
+/// target = floor(2^256 / (40.12 × 150)) = floor(2^256 / 6018).
+/// Big-endian: 0x000AE3D6D27BB41C... — requires ~12 leading zero bits.
 pub const TESTNET_MAX_TARGET: U256 = U256([
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF,
-    0, 0,
+    0xE3, 0x0A, 0x80, 0xDF, 0xFD, 0x58, 0x6A, 0x9E, 0x3A, 0x0F, 0x8D, 0x06, 0x73, 0xB8, 0x88, 0xF9,
+    0x4B, 0x43, 0x29, 0xDB, 0xF0, 0x31, 0xF5, 0x3E, 0x1C, 0xB4, 0x7B, 0xD2, 0xD6, 0xE3, 0x0A, 0x00,
 ]);
 
 /// Regtest: near-trivial (n_bits 0x207fffff) — instant block generation for tests.
