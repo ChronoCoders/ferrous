@@ -134,6 +134,10 @@ fn read_cookie_via_ssh(remote_ip: &str) -> Option<String> {
 }
 
 fn spawn_ssh_tunnel(remote_ip: &str, local_port: u16) -> Option<Child> {
+    // Skip spawn if the port is already forwarding — avoids "Address already in use" noise.
+    if is_port_reachable(local_port) {
+        return None;
+    }
     Command::new("ssh")
         .args([
             "-N",
@@ -151,6 +155,8 @@ fn spawn_ssh_tunnel(remote_ip: &str, local_port: u16) -> Option<Child> {
             &format!("{}:127.0.0.1:8332", local_port),
             &format!("root@{}", remote_ip),
         ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .ok()
 }
@@ -188,6 +194,8 @@ fn main() -> io::Result<()> {
                     None => true,
                     Some(ref mut child) => child.try_wait().ok().flatten().is_some(),
                 };
+                // spawn_ssh_tunnel already checks is_port_reachable, but skip the
+                // call entirely when the child is alive to avoid redundant work.
                 if dead {
                     *guard = spawn_ssh_tunnel(ip, port);
                 }
