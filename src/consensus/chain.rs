@@ -472,8 +472,6 @@ impl ChainState {
             return Ok(Vec::new());
         }
 
-        validate_block(&block.header, &block.transactions).map_err(ChainError::InvalidBlock)?;
-
         let (height, cumulative_work) = if block.header.prev_block_hash == [0u8; 32] {
             (0, block.header.work())
         } else {
@@ -536,6 +534,9 @@ impl ChainState {
                 prev_data.cumulative_work + block.header.work(),
             )
         };
+
+        validate_block(&block.header, &block.transactions, height as u32)
+            .map_err(ChainError::InvalidBlock)?;
 
         if height > 0 {
             validate_coinbase_height(&block.transactions[0], height as u32)

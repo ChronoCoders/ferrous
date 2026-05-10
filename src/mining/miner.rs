@@ -156,7 +156,8 @@ mod tests {
             nonce: 0,
         };
 
-        while !header.check_proof_of_work(b"ferrous-testnet-v4").unwrap() {
+        let epoch_key = BlockHeader::epoch_key(0);
+        while !header.check_proof_of_work(&epoch_key).unwrap() {
             header.nonce += 1;
         }
 
@@ -420,6 +421,8 @@ impl Miner {
             .active_start_micros
             .store(now_micros(), Ordering::Relaxed);
 
+        let epoch_key = BlockHeader::epoch_key(height as u64);
+
         let num_workers = std::env::var("FERROUS_MINER_THREADS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -446,7 +449,10 @@ impl Miner {
 
                 local_header.nonce = current_nonce;
 
-                if local_header.check_proof_of_work(b"ferrous-testnet-v4").unwrap_or(false) {
+                if local_header
+                    .check_proof_of_work(&epoch_key)
+                    .unwrap_or(false)
+                {
                     found.store(true, Ordering::Relaxed);
                     solution_nonce.store(current_nonce, Ordering::Relaxed);
                     solution_timestamp.store(local_header.timestamp, Ordering::Relaxed);
@@ -507,7 +513,7 @@ impl Miner {
         }
 
         if !final_header
-            .check_proof_of_work(b"ferrous-testnet-v4")
+            .check_proof_of_work(&epoch_key)
             .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?
         {
             return Err(MiningError::ChainError(
@@ -606,6 +612,8 @@ impl Miner {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|v| *v > 0)
             .unwrap_or_else(num_cpus::get);
+        let epoch_key = BlockHeader::epoch_key(height as u64);
+
         let found = Arc::new(AtomicBool::new(false));
         let solution_nonce = Arc::new(AtomicU64::new(0));
         let solution_timestamp = Arc::new(AtomicU64::new(header.timestamp));
@@ -627,7 +635,10 @@ impl Miner {
 
                 local_header.nonce = current_nonce;
 
-                if local_header.check_proof_of_work(b"ferrous-testnet-v4").unwrap_or(false) {
+                if local_header
+                    .check_proof_of_work(&epoch_key)
+                    .unwrap_or(false)
+                {
                     found.store(true, Ordering::Relaxed);
                     solution_nonce.store(current_nonce, Ordering::Relaxed);
                     solution_timestamp.store(local_header.timestamp, Ordering::Relaxed);
@@ -688,7 +699,7 @@ impl Miner {
         }
 
         if !final_header
-            .check_proof_of_work(b"ferrous-testnet-v4")
+            .check_proof_of_work(&epoch_key)
             .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?
         {
             return Err(MiningError::ChainError(

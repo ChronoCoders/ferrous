@@ -1,4 +1,4 @@
-use crate::consensus::block::{Block, U256};
+use crate::consensus::block::{Block, BlockHeader, U256};
 use crate::consensus::chain::ChainState;
 use crate::consensus::difficulty::validate_difficulty;
 use crate::consensus::transaction::Transaction;
@@ -1161,8 +1161,9 @@ impl SyncManager {
             };
 
             // PoW check
+            let epoch_key = BlockHeader::epoch_key((prev_height + 1) as u64);
             if !header
-                .check_proof_of_work(b"ferrous-testnet-v4")
+                .check_proof_of_work(&epoch_key)
                 .map_err(|_| "PoW check error")?
             {
                 return Err(format!(
