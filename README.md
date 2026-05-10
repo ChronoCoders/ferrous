@@ -1,12 +1,12 @@
 # Ferrous Network
 
-A next-generation, memory-safe Layer 1 blockchain engineered from the ground up in Rust. Ferrous combines the battle-tested security of Bitcoin-like Proof-of-Work consensus with a modern, modular architecture designed for high performance and long-term extensibility.
+A Rust-built Layer 1 blockchain inspired by Bitcoin's UTXO model — written from scratch with a focus on memory safety, ASIC-resistant PoW, and long-term cryptographic security.
 
-Featuring a custom-built, asynchronous P2P networking stack with automatic partition recovery, persistent RocksDB storage, and a strict "zero-warnings" code quality policy, Ferrous serves as both a production-ready foundation for decentralized applications and a reference implementation for future cryptographic upgrades (Post-Quantum signatures, RingCT privacy).
+Featuring a custom-built P2P networking stack with automatic partition recovery, persistent RocksDB storage, RandomX proof-of-work, and a post-quantum cryptography roadmap (CRYSTALS-Dilithium, RingCT), Ferrous is an independent chain engineered for high performance and extensibility.
 
 ## Features
 
-- **Consensus**: SHA256d Proof-of-Work with per-block difficulty adjustment (150s target).
+- **Consensus**: RandomX Proof-of-Work with per-block difficulty adjustment (150s target).
 - **Networking**: Full P2P stack with headers-first sync, block relay, and inventory protocol.
 - **Storage**: Persistent blockchain state using RocksDB.
 - **Architecture**: Modular design separating consensus, networking, and storage logic.
@@ -120,7 +120,7 @@ curl -X POST http://127.0.0.1:8332 \
 
 ### Roadmap
 
-- **Phase 1 (Current)**: Bitcoin-like foundation — PoW, UTXO, P2P, headers-first IBD (in progress: parallel IBD Phase 1 deployed).
+- **Phase 1 (Current)**: Core foundation — RandomX PoW, UTXO, P2P, headers-first IBD (parallel IBD deployed).
 - **Phase 2**: Parallel IBD completion (Phase 2 + Phase 3) + testnet reset.
 - **Phase 3**: Wallet integration — BIP39 seed phrase + Shamir's Secret Sharing recovery.
 - **Phase 4**: Post-Quantum Cryptography — CRYSTALS-Dilithium (before Ring CT).

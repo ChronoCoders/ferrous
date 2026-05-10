@@ -91,7 +91,7 @@ Low-level utilities:
 
 - [hash.rs](file:///c:/ferrous/src/primitives/hash.rs): `sha256d` and `Hash256` type alias.
 - [serialize.rs](file:///c:/ferrous/src/primitives/serialize.rs): Custom binary encoding/decoding traits.
-- [varint.rs](file:///c:/ferrous/src/primitives/varint.rs): Bitcoin-style VarInt encoding.
+- [varint.rs](file:///c:/ferrous/src/primitives/varint.rs): Compact-size VarInt encoding.
 
 ## Key Abstractions
 
