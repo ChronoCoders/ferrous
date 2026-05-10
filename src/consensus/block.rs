@@ -320,10 +320,7 @@ pub fn create_genesis_block(genesis_n_bits: u32) -> Block {
 
     if known_nonce.is_none() {
         let epoch_key = BlockHeader::epoch_key(0);
-        while !header
-            .check_proof_of_work(&epoch_key)
-            .unwrap_or(false)
-        {
+        while !header.check_proof_of_work(&epoch_key).unwrap_or(false) {
             header.nonce = header.nonce.wrapping_add(1);
         }
     }
