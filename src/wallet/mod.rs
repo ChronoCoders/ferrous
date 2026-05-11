@@ -1,4 +1,5 @@
 pub mod address;
+pub mod dilithium;
 pub mod bip39;
 pub mod bip39_wordlist;
 pub mod builder;
