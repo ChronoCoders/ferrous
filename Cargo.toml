@@ -35,6 +35,9 @@ lru = "0.12"
 hmac = "0.12"
 pbkdf2 = { version = "0.12", features = ["hmac"] }
 chacha20poly1305 = "0.10"
+ml-dsa = { version = "0.1.0-rc.11", features = ["getrandom"] }
+blake3 = "1.5"
+bech32 = "0.11"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 randomx-rs = "1.4"
