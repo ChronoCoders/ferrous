@@ -1,4 +1,9 @@
-/// Script opcodes (subset for P2PKH/P2WPKH support)
+pub const OP_PUSHDATA2: u8 = 0x4d;
+pub const OP_HASH256: u8 = 0xaa;
+pub const OP_EQUALVERIFY: u8 = 0x88;
+pub const OP_CHECKSIG: u8 = 0xac;
+
+/// Script opcodes (subset for P2PKH/P2WPKH/P2DL support)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 #[allow(non_camel_case_types)]
@@ -32,6 +37,7 @@ pub enum OpCode {
 
     // Crypto ops
     OP_HASH160 = 0xa9,
+    OP_HASH256 = 0xaa,
     OP_EQUAL = 0x87,
     OP_EQUALVERIFY = 0x88,
     OP_CHECKSIG = 0xac,
@@ -69,6 +75,7 @@ impl OpCode {
             0x76 => Some(OpCode::OP_DUP),
             0x75 => Some(OpCode::OP_DROP),
             0xa9 => Some(OpCode::OP_HASH160),
+            0xaa => Some(OpCode::OP_HASH256),
             0x87 => Some(OpCode::OP_EQUAL),
             0x88 => Some(OpCode::OP_EQUALVERIFY),
             0xac => Some(OpCode::OP_CHECKSIG),

@@ -52,6 +52,10 @@ impl PrivateKey {
         &self.inner
     }
 
+    pub fn key_bytes(&self) -> [u8; 32] {
+        self.inner.secret_bytes()
+    }
+
     pub fn public_key_bytes(&self) -> Vec<u8> {
         let secp = Secp256k1::new();
         let pubkey = PublicKey::from_secret_key(&secp, &self.inner);

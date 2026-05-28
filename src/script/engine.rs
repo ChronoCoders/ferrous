@@ -146,6 +146,14 @@ pub fn execute_script(
                     return Err(ScriptError::StackUnderflow);
                 }
             }
+            Some(OpCode::OP_HASH256) => {
+                if let Some(item) = stack.pop() {
+                    let hash: [u8; 32] = blake3::hash(&item).into();
+                    stack.push(hash.to_vec());
+                } else {
+                    return Err(ScriptError::StackUnderflow);
+                }
+            }
             Some(OpCode::OP_EQUAL) => {
                 if stack.len() < 2 {
                     return Err(ScriptError::StackUnderflow);
