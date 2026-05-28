@@ -2,8 +2,8 @@ use crate::consensus::chain::ChainState;
 use crate::consensus::transaction::{Transaction, TxInput, TxOutput};
 use crate::script::sighash::compute_sighash;
 use crate::wallet::address::address_to_script_pubkey;
+use crate::wallet::dilithium::DilithiumKeypair;
 use crate::wallet::manager::{Wallet, WalletUtxo};
-use secp256k1::{Message, Secp256k1};
 
 pub struct TransactionBuilder;
 
@@ -101,6 +101,18 @@ fn select_coins(
     Ok((selected, change))
 }
 
+/// Push `data` onto a script using the minimal valid push opcode.
+/// For Dilithium: sig (3309 B) and pubkey (1952 B) both require OP_PUSHDATA2.
+fn push_data(script: &mut Vec<u8>, data: &[u8]) {
+    if data.len() <= 75 {
+        script.push(data.len() as u8);
+    } else if data.len() <= 0xFFFF {
+        script.push(0x4d); // OP_PUSHDATA2
+        script.extend_from_slice(&(data.len() as u16).to_le_bytes());
+    }
+    script.extend_from_slice(data);
+}
+
 fn sign_transaction(
     tx: &mut Transaction,
     spent_outputs: &[TxOutput],
@@ -109,8 +121,6 @@ fn sign_transaction(
     if tx.inputs.is_empty() {
         return Ok(());
     }
-
-    let secp = Secp256k1::new();
 
     let mut script_sigs: Vec<Vec<u8>> = Vec::with_capacity(tx.inputs.len());
 
@@ -125,20 +135,19 @@ fn sign_transaction(
             .get_private_key(&address)
             .ok_or_else(|| "Private key not found".to_string())?;
 
+        let sk_bytes = private_key.key_bytes();
+        let dilithium_kp = DilithiumKeypair::from_signing_key_bytes(&sk_bytes)
+            .map_err(|e| format!("Dilithium key error: {}", e))?;
+
         let sighash = compute_sighash(tx, index, spent_outputs)
             .map_err(|e| format!("Sighash error: {:?}", e))?;
-        let message =
-            Message::from_digest_slice(&sighash).map_err(|e| format!("Message error: {}", e))?;
-        let sig = secp.sign_ecdsa(&message, private_key.inner());
-        let der_sig = sig.serialize_der();
-        let mut sig_with_hashtype = der_sig.to_vec();
-        sig_with_hashtype.push(0x01);
+
+        let sig_bytes = dilithium_kp.sign(&sighash);
+        let pubkey_bytes = dilithium_kp.verifying_key_bytes();
+
         let mut script_sig = Vec::new();
-        script_sig.push(sig_with_hashtype.len() as u8);
-        script_sig.extend_from_slice(&sig_with_hashtype);
-        let pubkey = private_key.public_key_bytes();
-        script_sig.push(pubkey.len() as u8);
-        script_sig.extend_from_slice(&pubkey);
+        push_data(&mut script_sig, &sig_bytes);
+        push_data(&mut script_sig, &pubkey_bytes);
         script_sigs.push(script_sig);
     }
 
