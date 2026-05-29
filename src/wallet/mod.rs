@@ -1,8 +1,8 @@
 pub mod address;
-pub mod dilithium;
 pub mod bip39;
 pub mod bip39_wordlist;
 pub mod builder;
+pub mod dilithium;
 pub mod keys;
 pub mod manager;
 pub mod shamir;
