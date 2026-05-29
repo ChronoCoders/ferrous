@@ -1,6 +1,6 @@
 use ml_dsa::{
-    Generate, KeyExport, KeyInit, Keypair, MlDsa65, Signature, SigningKey, Signer, VerifyingKey,
-    Verifier,
+    Generate, KeyExport, KeyInit, Keypair, MlDsa65, Signature, Signer, SigningKey, Verifier,
+    VerifyingKey,
 };
 
 pub struct DilithiumKeypair {
