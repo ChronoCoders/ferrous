@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 // ── wire format ──────────────────────────────────────────────────────────────
 // [4]  magic  0x46455252 ("FERR")
-// [1]  version 0x02
+// [1]  version 0x03  (0x02 = ECDSA-era Vec<[u8;32]>, 0x03 = Dilithium Vec<Vec<u8>>)
 // [1]  flags  bit0=encrypted bit1=has_seed
 // [32] salt   (KDF input, random)
 // [12] nonce  (ChaCha20-Poly1305)
@@ -21,15 +21,26 @@ use std::path::{Path, PathBuf};
 // [16] auth_tag     (Poly1305 tag; zeroed when not encrypted)
 
 const MAGIC: [u8; 4] = [0x46, 0x45, 0x52, 0x52];
-const VERSION: u8 = 0x02;
+const VERSION: u8 = 0x03;
 const FLAG_ENCRYPTED: u8 = 0x01;
 const FLAG_HAS_SEED: u8 = 0x02;
 const PBKDF2_ITERS: u32 = 210_000;
 // header bytes before ciphertext: 4+1+1+32+12+8 = 58
 const HEADER_LEN: usize = 58;
 
+// Legacy ECDSA-era payload — keys stored as fixed [u8; 32].
+// Used only for loading v0.02 wallets and migrating them to V3.
 #[derive(Serialize, Deserialize)]
-struct WalletPayload {
+struct WalletPayloadV2 {
+    seed_entropy: Option<[u8; 32]>,
+    keys: Vec<(String, [u8; 32])>,
+    receive_index: u32,
+    change_index: u32,
+}
+
+// Current Dilithium-era payload — keys stored as Vec<u8> (32-byte seed).
+#[derive(Serialize, Deserialize)]
+struct WalletPayloadV3 {
     seed_entropy: Option<[u8; 32]>,
     keys: Vec<(String, Vec<u8>)>,
     receive_index: u32,
@@ -40,12 +51,19 @@ struct WalletPayload {
 
 #[derive(Debug, Clone)]
 pub struct PrivateKey {
-    inner: Vec<u8>, // Dilithium signing key seed (bytes from DilithiumKeypair::signing_key_bytes)
+    inner: Vec<u8>, // Dilithium signing key seed — invariant: inner.len() == 32
 }
 
 impl PrivateKey {
-    pub fn new(inner: Vec<u8>) -> Self {
-        Self { inner }
+    /// Constructs a `PrivateKey` from raw seed bytes. Returns `Err` if `inner.len() != 32`.
+    pub fn new(inner: Vec<u8>) -> Result<Self, String> {
+        if inner.len() != 32 {
+            return Err(format!(
+                "Invalid signing key length: {} (expected 32)",
+                inner.len()
+            ));
+        }
+        Ok(Self { inner })
     }
 
     pub fn key_bytes(&self) -> Vec<u8> {
@@ -53,8 +71,9 @@ impl PrivateKey {
     }
 
     pub fn public_key_bytes(&self) -> Vec<u8> {
+        // Safe: inner.len() == 32 is guaranteed by PrivateKey::new.
         DilithiumKeypair::from_signing_key_bytes(&self.inner)
-            .expect("stored signing key is always valid")
+            .expect("32-byte inner is always a valid Dilithium seed")
             .verifying_key_bytes()
     }
 }
@@ -121,6 +140,7 @@ impl KeyStore {
             return Err("Wallet file is truncated".to_string());
         }
 
+        let version = data[4];
         let flags = data[5];
         let is_encrypted = flags & FLAG_ENCRYPTED != 0;
         let salt = &data[6..38];
@@ -155,7 +175,6 @@ impl KeyStore {
             let cipher = ChaCha20Poly1305::new(key);
             let nonce = Nonce::from_slice(nonce_bytes);
 
-            // ChaCha20-Poly1305 decrypt expects ciphertext || tag.
             let mut ct_with_tag = ciphertext.to_vec();
             ct_with_tag.extend_from_slice(auth_tag);
 
@@ -166,23 +185,56 @@ impl KeyStore {
             ciphertext.to_vec()
         };
 
-        let wp: WalletPayload = bincode::deserialize(&plaintext)
-            .map_err(|e| format!("Wallet payload corrupt: {}", e))?;
+        match version {
+            0x02 => {
+                // ECDSA-era wallet: keys are [u8; 32]. Migrate to V3 on load.
+                let wp: WalletPayloadV2 = bincode::deserialize(&plaintext)
+                    .map_err(|e| format!("Wallet payload corrupt: {}", e))?;
 
-        let mut entries = HashMap::with_capacity(wp.keys.len());
-        for (addr, key_bytes) in wp.keys {
-            entries.insert(addr, PrivateKey::new(key_bytes));
+                let mut entries = HashMap::with_capacity(wp.keys.len());
+                for (addr, key_arr) in wp.keys {
+                    let pk = PrivateKey::new(key_arr.to_vec())
+                        .map_err(|e| format!("Invalid key in wallet: {}", e))?;
+                    entries.insert(addr, pk);
+                }
+
+                let ks = Self {
+                    entries,
+                    seed_entropy: wp.seed_entropy,
+                    receive_index: wp.receive_index,
+                    change_index: wp.change_index,
+                    path: path_buf,
+                    network_prefix,
+                    encrypted: is_encrypted,
+                };
+
+                // Re-save as V3 so future loads use the current format.
+                ks.save_with_passphrase(passphrase)?;
+                Ok(ks)
+            }
+            0x03 => {
+                let wp: WalletPayloadV3 = bincode::deserialize(&plaintext)
+                    .map_err(|e| format!("Wallet payload corrupt: {}", e))?;
+
+                let mut entries = HashMap::with_capacity(wp.keys.len());
+                for (addr, key_bytes) in wp.keys {
+                    let pk = PrivateKey::new(key_bytes)
+                        .map_err(|e| format!("Invalid key in wallet: {}", e))?;
+                    entries.insert(addr, pk);
+                }
+
+                Ok(Self {
+                    entries,
+                    seed_entropy: wp.seed_entropy,
+                    receive_index: wp.receive_index,
+                    change_index: wp.change_index,
+                    path: path_buf,
+                    network_prefix,
+                    encrypted: is_encrypted,
+                })
+            }
+            v => Err(format!("Unknown wallet version: 0x{:02x}", v)),
         }
-
-        Ok(Self {
-            entries,
-            seed_entropy: wp.seed_entropy,
-            receive_index: wp.receive_index,
-            change_index: wp.change_index,
-            path: path_buf,
-            network_prefix,
-            encrypted: is_encrypted,
-        })
     }
 
     // ── save ──────────────────────────────────────────────────────────────────
@@ -201,7 +253,7 @@ impl KeyStore {
                 .map_err(|e| format!("Failed to create wallet directory: {}", e))?;
         }
 
-        let payload = WalletPayload {
+        let payload = WalletPayloadV3 {
             seed_entropy: self.seed_entropy,
             keys: self
                 .entries
@@ -235,7 +287,6 @@ impl KeyStore {
             let cipher = ChaCha20Poly1305::new(key);
             let nonce = Nonce::from_slice(&nonce_bytes);
 
-            // encrypt() returns ciphertext || 16-byte tag.
             let ct_with_tag = cipher
                 .encrypt(nonce, plaintext.as_ref())
                 .map_err(|_| "Encryption failed".to_string())?;
@@ -274,7 +325,7 @@ impl KeyStore {
             Some(entropy) => Self::derive_key(&entropy, b"receive", self.receive_index)?,
             None => {
                 let kp = DilithiumKeypair::generate();
-                PrivateKey::new(kp.signing_key_bytes())
+                PrivateKey::new(kp.signing_key_bytes())?
             }
         };
         let address = pubkey_to_address(&key.public_key_bytes(), self.network_prefix);
@@ -289,7 +340,7 @@ impl KeyStore {
             Some(entropy) => Self::derive_key(&entropy, b"change", self.change_index)?,
             None => {
                 let kp = DilithiumKeypair::generate();
-                PrivateKey::new(kp.signing_key_bytes())
+                PrivateKey::new(kp.signing_key_bytes())?
             }
         };
         let address = pubkey_to_address(&key.public_key_bytes(), self.network_prefix);
@@ -321,7 +372,6 @@ impl KeyStore {
         self.entries.clear();
         self.seed_entropy = Some(entropy);
 
-        // Rederive all previously-counted receive and change keys from seed.
         let rx = self.receive_index;
         let cx = self.change_index;
         for i in 0..rx {
@@ -374,9 +424,9 @@ impl KeyStore {
         hasher.update(kind);
         hasher.update(index.to_le_bytes());
         let hash = hasher.finalize();
-        // Use first 32 bytes as the Dilithium seed
-        DilithiumKeypair::from_signing_key_bytes(&hash[..32])
-            .map(|kp| PrivateKey::new(kp.signing_key_bytes()))
+        let kp = DilithiumKeypair::from_signing_key_bytes(&hash[..32])
+            .map_err(|e| format!("Derived key invalid (index {}): {}", index, e))?;
+        PrivateKey::new(kp.signing_key_bytes())
             .map_err(|e| format!("Derived key invalid (index {}): {}", index, e))
     }
 
@@ -403,8 +453,9 @@ impl KeyStore {
             let raw = hex::decode(hex_key)
                 .map_err(|e| format!("Invalid key hex in legacy wallet: {}", e))?;
             let key_bytes = csv_deobfuscate(&raw, address.as_bytes());
-            // Treat the legacy 32-byte key material as a Dilithium seed
-            entries.insert(address, PrivateKey::new(key_bytes));
+            let pk = PrivateKey::new(key_bytes)
+                .map_err(|e| format!("Invalid key in legacy wallet: {}", e))?;
+            entries.insert(address, pk);
         }
 
         let n = entries.len() as u32;
@@ -522,7 +573,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = tmp_wallet(&dir);
 
-        // Write an old-format wallet by hand.
         {
             let address = "mTestAddr1111111111111111111111111";
             let key_bytes = [0x01u8; 32];
@@ -536,18 +586,75 @@ mod tests {
             std::fs::write(&path, csv.as_bytes()).unwrap();
         }
 
-        // load() must detect legacy format, migrate, and return a valid KeyStore.
         let ks = KeyStore::load(&path, 0x6f).unwrap();
         assert_eq!(ks.entries().len(), 1);
         assert_eq!(ks.receive_index, 1);
         assert!(!ks.is_encrypted());
 
-        // After migration the file on disk must be in the new binary format.
         let data = std::fs::read(&path).unwrap();
         assert_eq!(&data[..4], &MAGIC);
+        assert_eq!(data[4], VERSION); // must be v3 after migration
     }
 
-    // ── 6. generate_new increments receive_index; generate_change increments change_index
+    // ── 6. FERR v2 binary wallet migration ────────────────────────────────────
+    #[test]
+    fn test_v2_wallet_migration() {
+        use bincode;
+
+        let dir = TempDir::new().unwrap();
+        let path = tmp_wallet(&dir);
+
+        // Manually serialize a V2 payload and write a FERR v2 wallet file.
+        let v2_key: [u8; 32] = [0x42u8; 32];
+        let addr = "tfrr1fake_address_for_v2_migration_test";
+        let wp_v2 = WalletPayloadV2 {
+            seed_entropy: None,
+            keys: vec![(addr.to_string(), v2_key)],
+            receive_index: 1,
+            change_index: 0,
+        };
+
+        let plaintext = bincode::serialize(&wp_v2).unwrap();
+        let payload_len = plaintext.len() as u64;
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&MAGIC);
+        out.push(0x02); // version v2
+        out.push(0x00); // flags: unencrypted, no seed
+        out.extend_from_slice(&[0u8; 32]); // salt (unused for unencrypted)
+        out.extend_from_slice(&[0u8; 12]); // nonce (unused for unencrypted)
+        out.extend_from_slice(&payload_len.to_le_bytes());
+        out.extend_from_slice(&plaintext); // ciphertext = plaintext
+        out.extend_from_slice(&[0u8; 16]); // auth_tag (zeroed for unencrypted)
+        std::fs::write(&path, &out).unwrap();
+
+        // Load must migrate to v3 transparently.
+        let ks = KeyStore::load(&path, 0x6f).unwrap();
+        assert_eq!(ks.entries().len(), 1);
+        assert!(ks.entries().contains_key(addr));
+        assert_eq!(ks.receive_index, 1);
+        assert_eq!(ks.change_index, 0);
+
+        // Verify the key bytes were preserved (v2_key used as Dilithium seed).
+        let pk = ks.entries().get(addr).unwrap();
+        assert_eq!(pk.key_bytes(), v2_key.to_vec());
+
+        // Disk file must now be v3.
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(&data[..4], &MAGIC);
+        assert_eq!(data[4], VERSION); // 0x03
+    }
+
+    // ── 7. PrivateKey::new rejects wrong-length input ─────────────────────────
+    #[test]
+    fn test_private_key_length_validation() {
+        assert!(PrivateKey::new(vec![0u8; 32]).is_ok());
+        assert!(PrivateKey::new(vec![0u8; 31]).is_err());
+        assert!(PrivateKey::new(vec![0u8; 33]).is_err());
+        assert!(PrivateKey::new(vec![]).is_err());
+    }
+
+    // ── 8. generate_new increments receive_index; generate_change increments change_index
     #[test]
     fn test_index_increments() {
         let dir = TempDir::new().unwrap();
@@ -569,7 +676,6 @@ mod tests {
         assert_eq!(ks.receive_index, 2);
         assert_eq!(ks.change_index, 1);
 
-        // Reload and verify indices persisted.
         let ks2 = KeyStore::load(&path, 0x6f).unwrap();
         assert_eq!(ks2.receive_index, 2);
         assert_eq!(ks2.change_index, 1);
