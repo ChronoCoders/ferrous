@@ -5,7 +5,7 @@ use crate::consensus::merkle::{compute_merkle_root, compute_witness_merkle_root}
 use crate::consensus::transaction::{Transaction, MAX_MONEY};
 use crate::primitives::hash::sha256d;
 
-pub const MAX_BLOCK_WEIGHT: u64 = 4_000_000;
+pub const MAX_BLOCK_WEIGHT: u64 = 40_000_000;
 pub const COINBASE_MATURITY: u64 = 100;
 /// Maximum number of seconds a block timestamp may exceed the node's wall-clock time.
 /// Exposed as a constant so tests and per-network config can reference it directly.
