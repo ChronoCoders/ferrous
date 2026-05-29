@@ -1,6 +1,6 @@
 use crate::consensus::transaction::{Transaction, TxOutput};
 use crate::primitives::hash::Hash256;
-use crate::script::engine::{validate_p2pkh, validate_p2wpkh, ScriptContext};
+use crate::script::engine::{validate_p2dl, ScriptContext};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -139,29 +139,14 @@ impl UtxoSet {
                     spent_outputs: &spent_outputs,
                 };
 
-                let is_p2pkh = script_pubkey.len() == 25
-                    && script_pubkey[0] == 0x76
-                    && script_pubkey[1] == 0xa9
-                    && script_pubkey[2] == 0x14
-                    && script_pubkey[23] == 0x88
-                    && script_pubkey[24] == 0xac;
+                let is_p2dl = script_pubkey.len() == 36
+                    && script_pubkey[0] == 0xaa
+                    && script_pubkey[1] == 0x20
+                    && script_pubkey[34] == 0x88
+                    && script_pubkey[35] == 0xac;
 
-                let is_p2wpkh = script_pubkey.len() == 22
-                    && script_pubkey[0] == 0x00
-                    && script_pubkey[1] == 0x14;
-
-                if is_p2pkh {
-                    let result = validate_p2pkh(&input.script_sig, script_pubkey, &context)
-                        .map_err(|_| UtxoError::ScriptValidationFailed)?;
-                    if !result {
-                        return Err(UtxoError::ScriptValidationFailed);
-                    }
-                } else if is_p2wpkh {
-                    let witness = tx
-                        .witnesses
-                        .get(index)
-                        .ok_or(UtxoError::ScriptValidationFailed)?;
-                    let result = validate_p2wpkh(witness, script_pubkey, &context)
+                if is_p2dl {
+                    let result = validate_p2dl(&input.script_sig, script_pubkey, &context)
                         .map_err(|_| UtxoError::ScriptValidationFailed)?;
                     if !result {
                         return Err(UtxoError::ScriptValidationFailed);

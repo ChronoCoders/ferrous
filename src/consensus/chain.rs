@@ -7,7 +7,7 @@ use crate::consensus::validation::{
     ValidationError, COINBASE_MATURITY,
 };
 use crate::primitives::hash::Hash256;
-use crate::script::engine::{validate_p2pkh, ScriptContext};
+use crate::script::engine::{validate_p2dl, ScriptContext};
 use crate::storage::{BlockStore, ChainStateStore, ChainTip, Database, UtxoStore};
 use log::info;
 use lru::LruCache;
@@ -689,7 +689,7 @@ impl ChainState {
                         spent_outputs: &spent_outputs,
                     };
 
-                    match validate_p2pkh(&input.script_sig, script_pubkey, &context) {
+                    match validate_p2dl(&input.script_sig, script_pubkey, &context) {
                         Ok(true) => {}
                         _ => return Err(ChainError::UtxoError(UtxoError::ScriptValidationFailed)),
                     }

@@ -1,7 +1,7 @@
 use crate::consensus::chain::ChainState;
 use crate::consensus::transaction::{Transaction, TxOutput};
 use crate::consensus::utxo::OutPoint;
-use crate::script::engine::{validate_p2pkh, validate_p2wpkh, ScriptContext};
+use crate::script::engine::{validate_p2dl, ScriptContext};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -52,30 +52,16 @@ impl NetworkMempool {
                     input_index: index,
                     spent_outputs: &spent_outputs,
                 };
-                let is_p2pkh = script_pubkey.len() == 25
-                    && script_pubkey[0] == 0x76
-                    && script_pubkey[1] == 0xa9
-                    && script_pubkey[2] == 0x14
-                    && script_pubkey[23] == 0x88
-                    && script_pubkey[24] == 0xac;
-                let is_p2wpkh = script_pubkey.len() == 22
-                    && script_pubkey[0] == 0x00
-                    && script_pubkey[1] == 0x14;
-                if is_p2pkh {
-                    let ok = validate_p2pkh(&input.script_sig, script_pubkey, &context)
+                let is_p2dl = script_pubkey.len() == 36
+                    && script_pubkey[0] == 0xaa
+                    && script_pubkey[1] == 0x20
+                    && script_pubkey[34] == 0x88
+                    && script_pubkey[35] == 0xac;
+                if is_p2dl {
+                    let ok = validate_p2dl(&input.script_sig, script_pubkey, &context)
                         .map_err(|e| format!("Script validation error: {:?}", e))?;
                     if !ok {
-                        return Err("P2PKH script validation failed".to_string());
-                    }
-                } else if is_p2wpkh {
-                    let witness = tx
-                        .witnesses
-                        .get(index)
-                        .ok_or_else(|| "Missing witness for P2WPKH input".to_string())?;
-                    let ok = validate_p2wpkh(witness, script_pubkey, &context)
-                        .map_err(|e| format!("Script validation error: {:?}", e))?;
-                    if !ok {
-                        return Err("P2WPKH script validation failed".to_string());
+                        return Err("P2DL script validation failed".to_string());
                     }
                 }
             }
