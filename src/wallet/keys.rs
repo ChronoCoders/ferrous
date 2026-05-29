@@ -1,10 +1,10 @@
 use crate::wallet::address::pubkey_to_address;
 use crate::wallet::bip39::{entropy_to_mnemonic, mnemonic_to_seed};
+use crate::wallet::dilithium::DilithiumKeypair;
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use pbkdf2::pbkdf2_hmac;
 use rand::RngCore;
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::HashMap;
@@ -31,7 +31,7 @@ const HEADER_LEN: usize = 58;
 #[derive(Serialize, Deserialize)]
 struct WalletPayload {
     seed_entropy: Option<[u8; 32]>,
-    keys: Vec<(String, [u8; 32])>,
+    keys: Vec<(String, Vec<u8>)>,
     receive_index: u32,
     change_index: u32,
 }
@@ -40,26 +40,22 @@ struct WalletPayload {
 
 #[derive(Debug, Clone)]
 pub struct PrivateKey {
-    inner: SecretKey,
+    inner: Vec<u8>, // Dilithium signing key seed (bytes from DilithiumKeypair::signing_key_bytes)
 }
 
 impl PrivateKey {
-    pub fn new(inner: SecretKey) -> Self {
+    pub fn new(inner: Vec<u8>) -> Self {
         Self { inner }
     }
 
-    pub fn inner(&self) -> &SecretKey {
-        &self.inner
-    }
-
-    pub fn key_bytes(&self) -> [u8; 32] {
-        self.inner.secret_bytes()
+    pub fn key_bytes(&self) -> Vec<u8> {
+        self.inner.clone()
     }
 
     pub fn public_key_bytes(&self) -> Vec<u8> {
-        let secp = Secp256k1::new();
-        let pubkey = PublicKey::from_secret_key(&secp, &self.inner);
-        pubkey.serialize().to_vec()
+        DilithiumKeypair::from_signing_key_bytes(&self.inner)
+            .expect("stored signing key is always valid")
+            .verifying_key_bytes()
     }
 }
 
@@ -175,9 +171,7 @@ impl KeyStore {
 
         let mut entries = HashMap::with_capacity(wp.keys.len());
         for (addr, key_bytes) in wp.keys {
-            let sk = SecretKey::from_slice(&key_bytes)
-                .map_err(|e| format!("Invalid key in wallet: {}", e))?;
-            entries.insert(addr, PrivateKey::new(sk));
+            entries.insert(addr, PrivateKey::new(key_bytes));
         }
 
         Ok(Self {
@@ -212,7 +206,7 @@ impl KeyStore {
             keys: self
                 .entries
                 .iter()
-                .map(|(addr, pk)| (addr.clone(), pk.inner.secret_bytes()))
+                .map(|(addr, pk)| (addr.clone(), pk.inner.clone()))
                 .collect(),
             receive_index: self.receive_index,
             change_index: self.change_index,
@@ -277,13 +271,10 @@ impl KeyStore {
 
     pub fn generate_new(&mut self) -> Result<String, String> {
         let key = match self.seed_entropy {
-            Some(entropy) => {
-                let sk = Self::derive_key(&entropy, b"receive", self.receive_index)?;
-                PrivateKey::new(sk)
-            }
+            Some(entropy) => Self::derive_key(&entropy, b"receive", self.receive_index)?,
             None => {
-                let mut rng = rand::thread_rng();
-                PrivateKey::new(SecretKey::new(&mut rng))
+                let kp = DilithiumKeypair::generate();
+                PrivateKey::new(kp.signing_key_bytes())
             }
         };
         let address = pubkey_to_address(&key.public_key_bytes(), self.network_prefix);
@@ -295,13 +286,10 @@ impl KeyStore {
 
     pub fn generate_change(&mut self) -> Result<String, String> {
         let key = match self.seed_entropy {
-            Some(entropy) => {
-                let sk = Self::derive_key(&entropy, b"change", self.change_index)?;
-                PrivateKey::new(sk)
-            }
+            Some(entropy) => Self::derive_key(&entropy, b"change", self.change_index)?,
             None => {
-                let mut rng = rand::thread_rng();
-                PrivateKey::new(SecretKey::new(&mut rng))
+                let kp = DilithiumKeypair::generate();
+                PrivateKey::new(kp.signing_key_bytes())
             }
         };
         let address = pubkey_to_address(&key.public_key_bytes(), self.network_prefix);
@@ -317,8 +305,7 @@ impl KeyStore {
         }
         match self.seed_entropy {
             Some(entropy) => {
-                let sk = Self::derive_key(&entropy, b"change", 0)?;
-                let pk = PrivateKey::new(sk);
+                let pk = Self::derive_key(&entropy, b"change", 0)?;
                 Ok(pubkey_to_address(
                     &pk.public_key_bytes(),
                     self.network_prefix,
@@ -338,14 +325,12 @@ impl KeyStore {
         let rx = self.receive_index;
         let cx = self.change_index;
         for i in 0..rx {
-            let sk = Self::derive_key(&entropy, b"receive", i)?;
-            let pk = PrivateKey::new(sk);
+            let pk = Self::derive_key(&entropy, b"receive", i)?;
             let addr = pubkey_to_address(&pk.public_key_bytes(), self.network_prefix);
             self.entries.insert(addr, pk);
         }
         for i in 0..cx {
-            let sk = Self::derive_key(&entropy, b"change", i)?;
-            let pk = PrivateKey::new(sk);
+            let pk = Self::derive_key(&entropy, b"change", i)?;
             let addr = pubkey_to_address(&pk.public_key_bytes(), self.network_prefix);
             self.entries.insert(addr, pk);
         }
@@ -381,7 +366,7 @@ impl KeyStore {
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    fn derive_key(entropy: &[u8; 32], kind: &[u8], index: u32) -> Result<SecretKey, String> {
+    fn derive_key(entropy: &[u8; 32], kind: &[u8], index: u32) -> Result<PrivateKey, String> {
         let mnemonic = entropy_to_mnemonic(entropy).map_err(|e| format!("BIP39: {}", e))?;
         let seed = mnemonic_to_seed(&mnemonic, "");
         let mut hasher = Sha512::new();
@@ -389,7 +374,9 @@ impl KeyStore {
         hasher.update(kind);
         hasher.update(index.to_le_bytes());
         let hash = hasher.finalize();
-        SecretKey::from_slice(&hash[..32])
+        // Use first 32 bytes as the Dilithium seed
+        DilithiumKeypair::from_signing_key_bytes(&hash[..32])
+            .map(|kp| PrivateKey::new(kp.signing_key_bytes()))
             .map_err(|e| format!("Derived key invalid (index {}): {}", index, e))
     }
 
@@ -416,13 +403,8 @@ impl KeyStore {
             let raw = hex::decode(hex_key)
                 .map_err(|e| format!("Invalid key hex in legacy wallet: {}", e))?;
             let key_bytes = csv_deobfuscate(&raw, address.as_bytes());
-            let sk = SecretKey::from_slice(&key_bytes).map_err(|e| {
-                format!(
-                    "Invalid secret key in legacy wallet (possible corruption): {}",
-                    e
-                )
-            })?;
-            entries.insert(address, PrivateKey::new(sk));
+            // Treat the legacy 32-byte key material as a Dilithium seed
+            entries.insert(address, PrivateKey::new(key_bytes));
         }
 
         let n = entries.len() as u32;
