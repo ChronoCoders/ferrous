@@ -5,8 +5,8 @@
 # once the chain reaches coinbase maturity (>100 blocks).
 #
 # Usage:
-#   On seed1: nohup bash /root/ferrous/txgen.sh n31JNwEpiiH1Mg6MMkT4r1VJEJQQq1gKe1 >> /root/ferrous/txgen_log.txt 2>&1 &
-#   On seed4: nohup bash /root/ferrous/txgen.sh mpXMTZxyBStwBmoumFRTGqmMvB8HDdtmEG >> /root/ferrous/txgen_log.txt 2>&1 &
+#   On seed1: nohup bash /root/ferrous/txgen.sh tfrr1f2zrsjq6tv0w7rq4sntmnujw09admwc6yrqrtu7xs3uskstyazfsuk8gay >> /root/ferrous/txgen_log.txt 2>&1 &
+#   On seed4: nohup bash /root/ferrous/txgen.sh tfrr1mf9uwjnxx3uny9ekpmptrmrc02vw4srw6xhtc6exqa97s6e4r3rqjps8wx >> /root/ferrous/txgen_log.txt 2>&1 &
 
 DEST_ADDR="${1}"
 MIN_HEIGHT=101
@@ -18,9 +18,12 @@ if [ -z "$DEST_ADDR" ]; then
     exit 1
 fi
 
+COOKIE_FILE="/root/ferrous/data/.rpc.cookie"
+
 rpc() {
     printf '{"jsonrpc":"2.0","method":"%s","params":%s,"id":1}' "$1" "$2" | \
-        curl -s --max-time 300 -X POST http://127.0.0.1:8332 \
+        curl -s --max-time 300 -u "$(cat "$COOKIE_FILE" 2>/dev/null || echo '')" \
+             -X POST http://127.0.0.1:8332 \
              -H 'Content-Type: application/json' -d @-
 }
 
