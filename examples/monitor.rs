@@ -571,16 +571,15 @@ fn render_summary_row(f: &mut Frame, area: Rect, seed1: &NodeStats, seed4: &Node
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     };
 
-    let now = now_unix_secs();
     let last_block_seed1 = seed1
         .recent_blocks
         .first()
-        .map(|b| now.saturating_sub(b.block_time))
+        .map(|b| b.time_ago_secs)
         .or(seed1.last_block_age_secs);
     let last_block_seed4 = seed4
         .recent_blocks
         .first()
-        .map(|b| now.saturating_sub(b.block_time))
+        .map(|b| b.time_ago_secs)
         .or(seed4.last_block_age_secs);
 
     let last_block_line = format!(
