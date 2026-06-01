@@ -76,11 +76,13 @@ curl -X POST http://127.0.0.1:8332 \
 
 ## Project Status
 
-**Version**: 0.1.0 (Alpha)
-**Phase**: Phase 1 Foundation (In Progress)
+**Version**: 0.4.0 (Alpha)
+**Phase**: Phase 4 — Post-Quantum Cryptography (complete). Phase 5 (Ring CT) is next.
 
 ### Implemented
 
+- **Consensus**: RandomX proof-of-work (CPU-friendly, ASIC-resistant), per-block ±1% difficulty adjustment, 150s target.
+- **Cryptography**: CRYSTALS-Dilithium (ML-DSA-65, NIST FIPS 204) signatures; bech32m P2DL addresses with BLAKE3 pubkey hashing. ECDSA/P2PKH fully removed.
 - **Core**: Block/Tx validation, Merkle roots, UTXO set management.
 - **Networking**:
   - Handshake (Version/Verack)
@@ -106,9 +108,18 @@ curl -X POST http://127.0.0.1:8332 \
   - `listunspent`
   - `listaddresses`
   - `sendtoaddress`
+  - `sendrawtransaction`
+  - `getrawmempool`
+  - `getwalletinfo`
+  - `encryptwallet`
+  - `importseed`
+  - `getshamirshares`
   - `getnetworkinfo`
   - `getpeerinfo`
   - `getconnectioncount`
+  - `getnetworkhealth`
+  - `getrecoverystatus`
+  - `forcereconnect`
   - `resetnetwork`
   - `stop`
 - **UI**: Terminal User Interface (TUI) for real-time statistics.
@@ -120,11 +131,11 @@ curl -X POST http://127.0.0.1:8332 \
 
 ### Roadmap
 
-- **Phase 1 (Current)**: Core foundation — RandomX PoW, UTXO, P2P, headers-first IBD (parallel IBD deployed).
-- **Phase 2**: Parallel IBD completion (Phase 2 + Phase 3) + testnet reset.
-- **Phase 3**: Wallet integration — BIP39 seed phrase + Shamir's Secret Sharing recovery.
-- **Phase 4**: Post-Quantum Cryptography — CRYSTALS-Dilithium (before Ring CT).
-- **Phase 5**: Privacy Features — Ring Confidential Transactions + CLSAG.
+- **Phase 1 ✓**: Core foundation — RandomX PoW, UTXO, P2P, headers-first IBD.
+- **Phase 2 ✓**: Parallel IBD — multi-peer BlockDownloadQueue + apply-buffer backpressure.
+- **Phase 3 ✓**: Wallet integration — BIP39 seed phrase + Shamir's Secret Sharing recovery, ChaCha20-Poly1305 encryption.
+- **Phase 4 ✓**: Post-Quantum Cryptography — CRYSTALS-Dilithium (ML-DSA-65), bech32m P2DL addresses. Live on testnet since 2026-05-31.
+- **Phase 5 (Current)**: Privacy Features — Ring Confidential Transactions + CLSAG.
 - **Phase 6**: Security audit + Mainnet launch.
 
 ## Documentation
