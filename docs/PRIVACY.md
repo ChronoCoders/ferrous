@@ -24,13 +24,13 @@ This ensures that even if a quantum computer breaks the privacy layer (EC-based)
   - Stored in a dedicated RocksDB column family.
 
 ### 2. Commitments (Hiding Amounts)
-- **Algorithm**: Pedersen Commitments.
+- **Algorithm**: Pedersen Commitments over Ristretto255 (`curve25519-dalek`).
   - `C = xG + aH`
 - **Blinding**: Deterministic derivation from wallet seed.
 - **Balance Check**: `Sum(In) - Sum(Out) - Fee = 0`.
 
 ### 3. Range Proofs (Hiding Amounts)
-- **Algorithm**: Bulletproofs+ (aggregated).
+- **Algorithm**: Bulletproofs (aggregated), Ristretto255. (Amended from Bulletproofs+ on 2026-06-01 — use the reviewed `bulletproofs` crate; see `PHASE5_PLAN.md`.)
 - **Function**: Proves that committed values are positive [0, 2^64) without revealing them.
 
 ### 4. Post-Quantum Authorization (Security)
