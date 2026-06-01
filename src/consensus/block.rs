@@ -304,8 +304,8 @@ pub fn create_genesis_block(genesis_n_bits: u32) -> Block {
     // PoW search on every fresh testnet start. Add an entry here whenever the
     // genesis n_bits changes (run once, record the nonce, hardcode it below).
     let known_nonce: Option<u64> = match genesis_n_bits {
-        0x1F0A_E3D6 => Some(99), // testnet RandomX genesis (epoch 0, found in 7.9s)
-        0x207f_ffff => Some(0),  // regtest trivial — nonce 0 always works
+        0x1F06_1C4F => Some(2467), // testnet RandomX genesis (epoch 0, 71.5 H/s recal)
+        0x207f_ffff => Some(0),    // regtest trivial — nonce 0 always works
         _ => None,
     };
 
