@@ -44,9 +44,9 @@ impl Network {
                 max_target: crate::consensus::difficulty::TESTNET_MAX_TARGET,
                 difficulty_adjustment: true,
                 allow_min_difficulty_blocks: false,
-                // RandomX calibrated for 71.5 H/s (seed4: 30.9 + seed1: 40.6) at 150s.
-                // n_bits = compact(TESTNET_MAX_TARGET) = 0x1F061C4F
-                genesis_n_bits: 0x1F06_1C4F,
+                // RandomX calibrated for 26 H/s (2 nodes × 13 H/s, 1 vCPU each) at 150s.
+                // n_bits = compact(TESTNET_MAX_TARGET) = 0x1F10CDD9
+                genesis_n_bits: 0x1F10_CDD9,
             },
             Network::Regtest => ChainParams {
                 target_block_time: 1,
