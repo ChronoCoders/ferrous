@@ -362,6 +362,57 @@ impl BlockRelay {
         Ok(())
     }
 
+    /// Announce a single transaction to one specific peer (INV with one TX vector),
+    /// instead of broadcasting to all peers like `announce_transaction`.
+    pub fn announce_transaction_to_peer(&self, peer_id: u64, txid: [u8; 32]) -> Result<(), String> {
+        let inv = InvMessage {
+            inventory: vec![InvVector {
+                inv_type: INV_TX,
+                hash: txid,
+            }],
+        };
+        let magic = self.peer_manager.magic();
+        let msg = NetworkMessage::new(magic, CMD_INV, inv.encode());
+        self.peer_manager.send_to_peer(peer_id, &msg)
+    }
+
+    /// Reconcile the local mempool to a freshly handshaked peer: announce every
+    /// current mempool transaction so txs created during a disconnect window
+    /// propagate on (re)connect rather than waiting to be mined.
+    ///
+    /// All txids are sent in a single INV (one message, not one per tx) to avoid
+    /// tripping the per-peer INV rate limiter. The mempool lock is released before
+    /// the send; no chain lock is taken. Best-effort — failures are logged only.
+    pub fn reconcile_mempool_to_peer(&self, peer_id: u64) {
+        let inventory: Vec<InvVector> = self
+            .mempool
+            .get_all_transactions()
+            .iter()
+            .map(|tx| InvVector {
+                inv_type: INV_TX,
+                hash: tx.txid(),
+            })
+            .collect();
+
+        if inventory.is_empty() {
+            return;
+        }
+
+        let count = inventory.len();
+        let inv = InvMessage { inventory };
+        let magic = self.peer_manager.magic();
+        let msg = NetworkMessage::new(magic, CMD_INV, inv.encode());
+
+        match self.peer_manager.send_to_peer(peer_id, &msg) {
+            Ok(()) => log::debug!(
+                "Relay: reconciled {} mempool tx(s) to peer {}",
+                count,
+                peer_id
+            ),
+            Err(e) => log::debug!("Relay: mempool reconcile to peer {} failed: {}", peer_id, e),
+        }
+    }
+
     // Handle received transaction
     pub fn handle_transaction(&self, _peer_id: u64, tx: &Transaction) -> Result<(), String> {
         match self.mempool.add_transaction(tx.clone()) {

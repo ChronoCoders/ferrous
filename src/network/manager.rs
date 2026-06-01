@@ -339,6 +339,7 @@ impl PeerManager {
         let dos_protection_clone = Arc::clone(&self.dos_protection);
         let security_clone = Arc::clone(&self.security);
         let sync_manager_clone = Arc::clone(&self.sync_manager);
+        let relay_clone = Arc::clone(&self.relay);
         let our_version = self.our_version;
         let our_services = self.our_services;
 
@@ -400,6 +401,15 @@ impl PeerManager {
                         };
                         if let Some(sync) = sync_opt {
                             let _ = sync.start_sync(id);
+                        }
+
+                        // Reconcile mempool to the new peer (no peers lock held here).
+                        let relay_opt = {
+                            let g = relay_clone.lock().unwrap();
+                            g.as_ref().cloned()
+                        };
+                        if let Some(relay) = relay_opt {
+                            relay.reconcile_mempool_to_peer(id);
                         }
                     }
                     Err(e) => {
@@ -486,6 +496,7 @@ impl PeerManager {
         let dos_protection_clone = Arc::clone(&self.dos_protection);
         let security_clone = Arc::clone(&self.security);
         let sync_manager_clone = Arc::clone(&self.sync_manager);
+        let relay_clone = Arc::clone(&self.relay);
         let max_peers = self.max_peers;
         let magic = self.magic;
 
@@ -560,6 +571,7 @@ impl PeerManager {
             let dos_protection_inner = Arc::clone(&dos_protection_clone);
             let security_inner = Arc::clone(&security_clone);
             let sync_manager_inner = Arc::clone(&sync_manager_clone);
+            let relay_inner = Arc::clone(&relay_clone);
 
             thread::spawn(move || {
                 log::debug!("inbound [{}]: thread started", ip);
@@ -609,6 +621,15 @@ impl PeerManager {
                         };
                         if let Some(sync) = sync_opt {
                             let _ = sync.start_sync(id);
+                        }
+
+                        // Reconcile mempool to the new peer (no peers lock held here).
+                        let relay_opt = {
+                            let g = relay_inner.lock().unwrap();
+                            g.as_ref().cloned()
+                        };
+                        if let Some(relay) = relay_opt {
+                            relay.reconcile_mempool_to_peer(id);
                         }
                     }
                     Err(e) => {
