@@ -11,7 +11,7 @@ use ferrous_node::network::relay::BlockRelay;
 use ferrous_node::network::stats::NetworkStats;
 use ferrous_node::network::sync::SyncManager;
 use ferrous_node::rpc::{RpcServer, RpcServerConfig};
-use ferrous_node::wallet::address::address_to_script_pubkey;
+use ferrous_node::wallet::address::{address_to_hash, address_to_script_pubkey};
 use ferrous_node::wallet::manager::Wallet;
 use rand::RngCore;
 use std::sync::mpsc;
@@ -33,6 +33,12 @@ struct Args {
     /// If not provided, a new address will be generated from the wallet
     #[arg(long)]
     mining_address: Option<String>,
+
+    /// Mine to a specific bech32m address (e.g. tfrr1.../frr1...).
+    /// Takes precedence over --mining-address and the persisted address.
+    /// Must be a valid address for the node's network.
+    #[arg(long)]
+    mine_to: Option<String>,
 
     #[arg(long, default_value = "mainnet")]
     network: String,
@@ -192,14 +198,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Wallet::load(&args.wallet, network_prefix).map_err(std::io::Error::other)?,
     ));
 
-    // Determine mining address: explicit flag wins; otherwise reuse a stable
-    // address cached in the datadir so it does not rotate on every restart.
-    let mining_addr_str = match args.mining_address {
-        Some(addr) => addr,
-        None => {
-            let persist_path = std::path::Path::new(&db_path).join("mining_address");
-            resolve_mining_address(&wallet, &persist_path).map_err(std::io::Error::other)?
+    // Determine mining address. Precedence:
+    //   1. --mine-to <bech32m address>  (validated against the node's network)
+    //   2. --mining-address <hex|bech32> (legacy, unvalidated)
+    //   3. persisted address cached in the datadir (stable across restarts)
+    //   4. a freshly generated wallet address (also persisted)
+    let mining_addr_str = if let Some(addr) = args.mine_to {
+        let (_, prefix) = address_to_hash(&addr).map_err(std::io::Error::other)?;
+        if prefix != network_prefix {
+            return Err(std::io::Error::other(format!(
+                "--mine-to address is for network prefix 0x{:02x}, but this node is 0x{:02x}",
+                prefix, network_prefix
+            ))
+            .into());
         }
+        println!("Mining to --mine-to address: {}", addr);
+        addr
+    } else if let Some(addr) = args.mining_address {
+        addr
+    } else {
+        let persist_path = std::path::Path::new(&db_path).join("mining_address");
+        resolve_mining_address(&wallet, &persist_path).map_err(std::io::Error::other)?
     };
 
     let mining_address = address_to_script_pubkey(&mining_addr_str)
