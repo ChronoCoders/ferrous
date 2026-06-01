@@ -1,6 +1,6 @@
 # Ferrous Network
 
-A Rust-built Layer 1 blockchain inspired by Bitcoin's UTXO model — written from scratch with a focus on memory safety, ASIC-resistant PoW, and long-term cryptographic security.
+A Rust-built Layer 1 blockchain inspired by Bitcoin's UTXO model written from scratch with a focus on memory safety, ASIC-resistant PoW, and long-term cryptographic security.
 
 Featuring a custom-built P2P networking stack with automatic partition recovery, persistent RocksDB storage, RandomX proof-of-work, and a post-quantum cryptography roadmap (CRYSTALS-Dilithium, RingCT), Ferrous is an independent chain engineered for high performance and extensibility.
 
