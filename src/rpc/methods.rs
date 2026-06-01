@@ -133,3 +133,21 @@ pub struct GetShamirSharesResponse {
 pub struct ImportSeedResponse {
     pub address_count: u32,
 }
+
+#[derive(serde::Serialize)]
+pub struct MempoolTx {
+    pub txid: String,
+    pub size: usize,
+    pub vsize: usize,
+    pub vin_count: usize,
+    pub vout_count: usize,
+    /// Total output value in frsats.
+    pub output_value: u64,
+}
+
+#[derive(serde::Serialize)]
+pub struct GetRawMempoolResponse {
+    pub count: usize,
+    pub total_size: usize,
+    pub transactions: Vec<MempoolTx>,
+}

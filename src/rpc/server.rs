@@ -267,6 +267,7 @@ impl RpcServer {
             "encryptwallet" => self.encryptwallet(params),
             "importseed" => self.importseed(params),
             "getshamirshares" => self.getshamirshares(params),
+            "getrawmempool" => self.getrawmempool(),
             "stop" => Ok(json!("stopping")),
             _ => return Err((-32601, "Method not found".to_string())),
         };
@@ -862,6 +863,44 @@ impl RpcServer {
         }
 
         let response = ListUnspentResponse { utxos: items };
+        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+    }
+
+    /// Return the current set of unconfirmed transactions held in the mempool.
+    /// Each entry carries enough detail for an explorer to render a pending-tx
+    /// row without a second round-trip: txid, wire size, virtual size, input
+    /// and output counts, and total output value (frsats).
+    fn getrawmempool(&self) -> Result<Value, String> {
+        let txs = self.mempool.get_all_transactions();
+
+        let mut transactions = Vec::with_capacity(txs.len());
+        let mut total_size = 0usize;
+
+        for tx in &txs {
+            let base_size = tx.encode_without_witness().len();
+            let total_tx_size = tx.encode_with_witness().len();
+            // vsize = ceil(weight / 4), weight = base * 3 + total (BIP141).
+            let weight = base_size * 3 + total_tx_size;
+            let vsize = weight.div_ceil(4);
+            let output_value: u64 = tx.outputs.iter().map(|o| o.value).sum();
+
+            total_size += base_size;
+
+            transactions.push(MempoolTx {
+                txid: hex::encode(tx.txid()),
+                size: base_size,
+                vsize,
+                vin_count: tx.inputs.len(),
+                vout_count: tx.outputs.len(),
+                output_value,
+            });
+        }
+
+        let response = GetRawMempoolResponse {
+            count: transactions.len(),
+            total_size,
+            transactions,
+        };
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
     }
 
