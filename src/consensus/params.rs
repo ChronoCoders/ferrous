@@ -44,10 +44,9 @@ impl Network {
                 max_target: crate::consensus::difficulty::TESTNET_MAX_TARGET,
                 difficulty_adjustment: true,
                 allow_min_difficulty_blocks: false,
-                // RandomX calibrated for 40.12 H/s (2 nodes × 20.06 H/s) at 150s.
-                // n_bits = compact(TESTNET_MAX_TARGET) = 0x1F0AE3D6
-                // Genesis nonce 99 found under RandomX epoch 0 (7.9s, 99 hashes).
-                genesis_n_bits: 0x1F0A_E3D6,
+                // RandomX calibrated for 71.5 H/s (seed4: 30.9 + seed1: 40.6) at 150s.
+                // n_bits = compact(TESTNET_MAX_TARGET) = 0x1F061C4F
+                genesis_n_bits: 0x1F06_1C4F,
             },
             Network::Regtest => ChainParams {
                 target_block_time: 1,
