@@ -62,6 +62,39 @@ struct Args {
     mine: bool,
 }
 
+/// Resolves a stable mining address that survives node restarts.
+///
+/// The address and its key live in the wallet; the chosen address string is
+/// cached in `<datadir>/<network>/mining_address` so the same address is reused
+/// on every restart instead of minting a fresh one each boot. The cache is
+/// honoured only while the wallet still holds the matching key — if the wallet
+/// was wiped independently, a new address is generated and re-cached. The cache
+/// file is removed together with the chain data on a testnet reset
+/// (`rm -rf data/*`), which is intended: a fresh chain may use a fresh address.
+fn resolve_mining_address(
+    wallet: &Arc<Mutex<Wallet>>,
+    persist_path: &std::path::Path,
+) -> Result<String, String> {
+    if let Ok(cached) = std::fs::read_to_string(persist_path) {
+        let cached = cached.trim();
+        if !cached.is_empty() && wallet.lock().unwrap().get_private_key(cached).is_some() {
+            println!("Using persisted mining address: {}", cached);
+            return Ok(cached.to_string());
+        }
+    }
+
+    let addr = wallet.lock().unwrap().generate_address()?;
+    std::fs::write(persist_path, &addr).map_err(|e| {
+        format!(
+            "Failed to persist mining address to {}: {}",
+            persist_path.display(),
+            e
+        )
+    })?;
+    println!("Generated new mining address: {}", addr);
+    Ok(addr)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -159,14 +192,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Wallet::load(&args.wallet, network_prefix).map_err(std::io::Error::other)?,
     ));
 
-    // Determine mining address
+    // Determine mining address: explicit flag wins; otherwise reuse a stable
+    // address cached in the datadir so it does not rotate on every restart.
     let mining_addr_str = match args.mining_address {
         Some(addr) => addr,
         None => {
-            let mut w = wallet.lock().unwrap();
-            let addr = w.generate_address().map_err(std::io::Error::other)?;
-            println!("Generated new mining address: {}", addr);
-            addr
+            let persist_path = std::path::Path::new(&db_path).join("mining_address");
+            resolve_mining_address(&wallet, &persist_path).map_err(std::io::Error::other)?
         }
     };
 
