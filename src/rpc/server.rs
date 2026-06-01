@@ -601,7 +601,12 @@ impl RpcServer {
         let txid = tx.txid();
 
         match self.mempool.add_transaction(tx) {
-            Ok(_) => Ok(json!(hex::encode(txid))),
+            Ok(_) => {
+                // Relay to peers so locally-submitted txs propagate (RPC submit
+                // path previously only inserted into the local mempool).
+                let _ = self.relay.announce_transaction(txid);
+                Ok(json!(hex::encode(txid)))
+            }
             Err(e) => Err(format!("Mempool rejected: {}", e)),
         }
     }
@@ -950,10 +955,14 @@ impl RpcServer {
                 .map_err(|e| format!("Transaction creation failed: {}", e))?
         };
 
-        let txid = hex::encode(tx.txid());
+        let txid_raw = tx.txid();
+        let txid = hex::encode(txid_raw);
         self.mempool
             .add_transaction(tx)
             .map_err(|e| format!("Mempool rejected transaction: {}", e))?;
+
+        // Relay to peers so the tx propagates beyond this node's local mempool.
+        let _ = self.relay.announce_transaction(txid_raw);
 
         let response = SendToAddressResponse {
             txid,
