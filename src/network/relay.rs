@@ -362,20 +362,6 @@ impl BlockRelay {
         Ok(())
     }
 
-    /// Announce a single transaction to one specific peer (INV with one TX vector),
-    /// instead of broadcasting to all peers like `announce_transaction`.
-    pub fn announce_transaction_to_peer(&self, peer_id: u64, txid: [u8; 32]) -> Result<(), String> {
-        let inv = InvMessage {
-            inventory: vec![InvVector {
-                inv_type: INV_TX,
-                hash: txid,
-            }],
-        };
-        let magic = self.peer_manager.magic();
-        let msg = NetworkMessage::new(magic, CMD_INV, inv.encode());
-        self.peer_manager.send_to_peer(peer_id, &msg)
-    }
-
     /// Reconcile the local mempool to a freshly handshaked peer: announce every
     /// current mempool transaction so txs created during a disconnect window
     /// propagate on (re)connect rather than waiting to be mined.
