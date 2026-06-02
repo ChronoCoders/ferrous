@@ -1,8 +1,9 @@
 use crate::consensus::chain::ChainState;
 use crate::consensus::transaction::{Transaction, TxOutput};
 use crate::consensus::utxo::OutPoint;
+use crate::primitives::hash::Hash256;
 use crate::script::engine::{validate_p2dl, ScriptContext};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Maximum number of unconfirmed transactions held in memory.
@@ -157,6 +158,16 @@ impl NetworkMempool {
     pub fn get_all_transactions(&self) -> Vec<Transaction> {
         let mempool = self.transactions.lock().unwrap();
         mempool.values().cloned().collect()
+    }
+
+    /// Outpoints (txid, vout) already spent by pending mempool transactions.
+    /// Coin selection must exclude these to avoid building conflicting double-spends.
+    pub fn spent_outpoints(&self) -> HashSet<(Hash256, u32)> {
+        let mempool = self.transactions.lock().unwrap();
+        mempool
+            .values()
+            .flat_map(|tx| tx.inputs.iter().map(|i| (i.prev_txid, i.prev_index)))
+            .collect()
     }
 
     // Clear mempool
