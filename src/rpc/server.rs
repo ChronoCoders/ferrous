@@ -834,8 +834,9 @@ impl RpcServer {
             .wallet
             .lock()
             .map_err(|_| "Lock poisoned".to_string())?;
+        let spent = self.mempool.spent_outpoints();
         let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
-        let sats = wallet.get_balance(&chain)?;
+        let sats = wallet.get_balance(&chain, &spent)?;
         let balance = sats as f64 / 100_000_000f64;
         let response = GetBalanceResponse { balance };
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
@@ -846,8 +847,9 @@ impl RpcServer {
             .wallet
             .lock()
             .map_err(|_| "Lock poisoned".to_string())?;
+        let spent = self.mempool.spent_outpoints();
         let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
-        let utxos = wallet.get_utxos(&chain)?;
+        let utxos = wallet.get_utxos(&chain, &spent)?;
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
         let tip_height = tip.as_ref().map(|t| t.height).unwrap_or(0);
 
@@ -950,8 +952,9 @@ impl RpcServer {
                 .wallet
                 .lock()
                 .map_err(|_| "Lock poisoned".to_string())?;
+            let spent = self.mempool.spent_outpoints();
             let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
-            TransactionBuilder::create_transaction(&mut wallet, &chain, addr, sats, fee)
+            TransactionBuilder::create_transaction(&mut wallet, &chain, addr, sats, fee, &spent)
                 .map_err(|e| format!("Transaction creation failed: {}", e))?
         };
 
@@ -1163,8 +1166,9 @@ impl RpcServer {
             .wallet
             .lock()
             .map_err(|_| "Lock poisoned".to_string())?;
+        let spent = self.mempool.spent_outpoints();
         let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
-        let balance_sats = wallet.get_balance(&chain)?;
+        let balance_sats = wallet.get_balance(&chain, &spent)?;
         let response = GetWalletInfoResponse {
             encrypted: wallet.is_encrypted(),
             has_seed: wallet.has_seed(),
