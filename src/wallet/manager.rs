@@ -1,7 +1,8 @@
 use crate::consensus::chain::ChainState;
+use crate::primitives::hash::Hash256;
 use crate::wallet::address::address_to_script_pubkey;
 use crate::wallet::keys::{KeyStore, PrivateKey};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -100,7 +101,11 @@ impl Wallet {
         false
     }
 
-    pub fn get_utxos(&self, chain: &ChainState) -> Result<Vec<WalletUtxo>, String> {
+    pub fn get_utxos(
+        &self,
+        chain: &ChainState,
+        spent_in_mempool: &HashSet<(Hash256, u32)>,
+    ) -> Result<Vec<WalletUtxo>, String> {
         let mut script_map: HashMap<Vec<u8>, ()> = HashMap::new();
 
         let tip = chain.get_tip().map_err(|e| format!("{:?}", e))?;
@@ -147,13 +152,21 @@ impl Wallet {
             });
         }
 
+        // Exclude UTXOs already spent by pending mempool transactions, else coin
+        // selection re-picks them and the resulting tx conflict-rejects.
+        result.retain(|u| !spent_in_mempool.contains(&(u.txid, u.vout)));
+
         result.sort_by(|a, b| b.value.cmp(&a.value));
 
         Ok(result)
     }
 
-    pub fn get_balance(&self, chain: &ChainState) -> Result<u64, String> {
-        let utxos = self.get_utxos(chain)?;
+    pub fn get_balance(
+        &self,
+        chain: &ChainState,
+        spent_in_mempool: &HashSet<(Hash256, u32)>,
+    ) -> Result<u64, String> {
+        let utxos = self.get_utxos(chain, spent_in_mempool)?;
         let mut total = 0u64;
         for u in utxos {
             total = total

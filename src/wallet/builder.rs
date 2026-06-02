@@ -1,9 +1,11 @@
 use crate::consensus::chain::ChainState;
 use crate::consensus::transaction::{Transaction, TxInput, TxOutput};
+use crate::primitives::hash::Hash256;
 use crate::script::sighash::compute_sighash;
 use crate::wallet::address::address_to_script_pubkey;
 use crate::wallet::dilithium::DilithiumKeypair;
 use crate::wallet::manager::{Wallet, WalletUtxo};
+use std::collections::HashSet;
 
 pub struct TransactionBuilder;
 
@@ -14,6 +16,7 @@ impl TransactionBuilder {
         to_address: &str,
         amount: u64,
         fee: u64,
+        spent_in_mempool: &HashSet<(Hash256, u32)>,
     ) -> Result<Transaction, String> {
         if amount == 0 {
             return Err("Amount must be positive".to_string());
@@ -25,7 +28,7 @@ impl TransactionBuilder {
 
         // get_utxos() returns UTXOs sorted descending by value; select_coins
         // iterates in that order without re-sorting.
-        let utxos = wallet.get_utxos(chain)?;
+        let utxos = wallet.get_utxos(chain, spent_in_mempool)?;
 
         let (selected, change) = select_coins(utxos, total_needed)?;
 
