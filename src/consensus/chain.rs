@@ -630,8 +630,12 @@ impl ChainState {
                 break;
             }
 
-            let window_timestamps: Vec<u64> =
-                prev_headers.iter().rev().map(|h| h.timestamp).collect();
+            let window_timestamps: Vec<u64> = prev_headers
+                .iter()
+                .rev()
+                .filter(|h| h.prev_block_hash != [0u8; 32])
+                .map(|h| h.timestamp)
+                .collect();
             validate_difficulty(
                 Some(&prev_data.block.header),
                 &block.header,
@@ -988,7 +992,7 @@ impl ChainState {
         self.block_store.get_header_by_height(height).ok().flatten()
     }
 
-    /// Timestamps of up to `n` blocks ending at `from`, oldest first.
+    /// Timestamps of up to `n` blocks ending at `from`, oldest first, genesis excluded.
     pub fn recent_timestamps_ending_at(&self, from: &Hash256, n: usize) -> Vec<u64> {
         let mut out = Vec::with_capacity(n);
         let mut curr = *from;
@@ -1000,10 +1004,10 @@ impl ChainState {
             } else {
                 break;
             };
-            out.push(ts);
             if prev == [0u8; 32] {
                 break;
             }
+            out.push(ts);
             curr = prev;
         }
         out.reverse();
