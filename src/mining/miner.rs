@@ -1,6 +1,6 @@
 use crate::consensus::block::BlockHeader;
 use crate::consensus::chain::ChainState;
-use crate::consensus::difficulty::{calculate_next_target, u256_to_compact};
+use crate::consensus::difficulty::{calculate_next_target, u256_to_compact, DIFFICULTY_WINDOW};
 use crate::consensus::merkle::compute_merkle_root;
 use crate::consensus::params::ChainParams;
 use crate::consensus::transaction::{Transaction, TxInput, TxOutput, Witness};
@@ -309,6 +309,74 @@ mod tests {
             Err(e) => panic!("timestamp validation failed: {:?}", e),
         }
     }
+
+    fn sync_style_window(chain: &ChainState, prev: &BlockHeader) -> Vec<u64> {
+        let mut window = vec![*prev];
+        let mut walk_hash = prev.prev_block_hash;
+        while window.len() < DIFFICULTY_WINDOW && walk_hash != [0u8; 32] {
+            match chain.block_store.get_header(&walk_hash) {
+                Ok(Some(ph)) => {
+                    walk_hash = ph.prev_block_hash;
+                    window.push(ph);
+                }
+                _ => break,
+            }
+        }
+        window.iter().rev().map(|h| h.timestamp).collect()
+    }
+
+    #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore)]
+    fn difficulty_window_identical_across_sites() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        time::set_mock_time(Some(now));
+
+        let (chain, _tmp) = single_block_chain(now.saturating_sub(10));
+        let genesis = chain.get_tip().unwrap().unwrap().block.header;
+        let genesis_hash = genesis.hash();
+
+        let chain_window = chain.recent_timestamps_ending_at(&genesis_hash, DIFFICULTY_WINDOW);
+        assert_eq!(chain_window, vec![genesis.timestamp]);
+
+        let sync_window = sync_style_window(&chain, &genesis);
+        assert_eq!(sync_window, chain_window);
+
+        let next_ts = genesis.timestamp + 1;
+        let t1 = calculate_next_target(&genesis, next_ts, &chain.params, &chain_window).unwrap();
+        let t2 = calculate_next_target(&genesis, next_ts, &chain.params, &sync_window).unwrap();
+        assert_eq!(u256_to_compact(&t1), u256_to_compact(&t2));
+
+        let mut chain = chain;
+        let miner = Miner::new(
+            crate::consensus::params::Network::Regtest.params(),
+            vec![0x51],
+        );
+        for i in 0..3 {
+            time::set_mock_time(Some(now + 1 + i as u64));
+            let template = miner
+                .build_template(&chain, Vec::new())
+                .expect("template ok");
+            let (header, txs) = miner.solve_template(template).expect("solve ok");
+            use crate::consensus::block::Block;
+            chain
+                .add_block(Block {
+                    header,
+                    transactions: txs,
+                })
+                .expect("add_block ok");
+        }
+
+        let tip = chain.get_tip().unwrap().unwrap().block.header;
+        let tip_hash = tip.hash();
+        let chain_window = chain.recent_timestamps_ending_at(&tip_hash, DIFFICULTY_WINDOW);
+        assert_eq!(chain_window.len(), 4);
+
+        let sync_window = sync_style_window(&chain, &tip);
+        assert_eq!(sync_window, chain_window);
+    }
 }
 
 impl Miner {
@@ -480,11 +548,12 @@ impl Miner {
 
         let timestamp = next_block_timestamp(chain)?;
 
-        let target = calculate_next_target(&tip.block.header, timestamp, &self.params)
+        let prev_block_hash = tip.block.header.hash();
+        let window = chain.recent_timestamps_ending_at(&prev_block_hash, DIFFICULTY_WINDOW);
+        let target = calculate_next_target(&tip.block.header, timestamp, &self.params, &window)
             .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?;
 
         let n_bits = u256_to_compact(&target);
-        let prev_block_hash = tip.block.header.hash();
 
         let header = BlockHeader {
             version: 1,
