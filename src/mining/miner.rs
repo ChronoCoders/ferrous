@@ -322,7 +322,12 @@ mod tests {
                 _ => break,
             }
         }
-        window.iter().rev().map(|h| h.timestamp).collect()
+        window
+            .iter()
+            .rev()
+            .filter(|h| h.prev_block_hash != [0u8; 32])
+            .map(|h| h.timestamp)
+            .collect()
     }
 
     #[test]
@@ -339,7 +344,7 @@ mod tests {
         let genesis_hash = genesis.hash();
 
         let chain_window = chain.recent_timestamps_ending_at(&genesis_hash, DIFFICULTY_WINDOW);
-        assert_eq!(chain_window, vec![genesis.timestamp]);
+        assert_eq!(chain_window, Vec::<u64>::new());
 
         let sync_window = sync_style_window(&chain, &genesis);
         assert_eq!(sync_window, chain_window);
@@ -372,7 +377,7 @@ mod tests {
         let tip = chain.get_tip().unwrap().unwrap().block.header;
         let tip_hash = tip.hash();
         let chain_window = chain.recent_timestamps_ending_at(&tip_hash, DIFFICULTY_WINDOW);
-        assert_eq!(chain_window.len(), 4);
+        assert_eq!(chain_window.len(), 3);
 
         let sync_window = sync_style_window(&chain, &tip);
         assert_eq!(sync_window, chain_window);
