@@ -410,6 +410,30 @@ impl Miner {
         base * 3 + total
     }
 
+    // Fee for a candidate tx (Σ input UTXO values − Σ output values), or None
+    // if any input is unspendable at `height` (missing UTXO, immature coinbase,
+    // or outputs exceed inputs) — such a tx would fail block validation and
+    // must not be included in the template.
+    fn tx_fee(chain: &ChainState, tx: &Transaction, height: u64) -> Option<u64> {
+        use crate::consensus::utxo::OutPoint;
+        use crate::consensus::validation::COINBASE_MATURITY;
+
+        let mut input_sum: u64 = 0;
+        for input in &tx.inputs {
+            let outpoint = OutPoint {
+                txid: input.prev_txid,
+                vout: input.prev_index,
+            };
+            let utxo = chain.get_utxo(&outpoint).ok().flatten()?;
+            if utxo.coinbase && height < utxo.height.saturating_add(COINBASE_MATURITY) {
+                return None;
+            }
+            input_sum = input_sum.checked_add(utxo.output.value)?;
+        }
+        let output_sum: u64 = tx.outputs.iter().map(|o| o.value).sum();
+        input_sum.checked_sub(output_sum)
+    }
+
     fn build_template_with_script(
         &self,
         chain: &ChainState,
@@ -423,23 +447,33 @@ impl Miner {
         let height = (tip.height + 1) as u32;
 
         let subsidy = crate::consensus::validation::calculate_subsidy(height);
-        let total_fees = 0u64;
 
-        let coinbase = self.create_coinbase_internal(height, subsidy, total_fees, script_pubkey);
+        let coinbase = self.create_coinbase_internal(height, subsidy, 0, script_pubkey);
 
         // Reserve 10 % headroom so the solved block never hits MAX_BLOCK_WEIGHT.
         let weight_budget = MAX_BLOCK_WEIGHT * 9 / 10;
         let mut used_weight = Self::tx_weight(&coinbase);
 
         let mut all_txs = vec![coinbase];
+        let mut total_fees: u64 = 0;
         for tx in transactions {
             let w = Self::tx_weight(&tx);
             if used_weight.saturating_add(w) > weight_budget {
                 break;
             }
+            // Skip txs that would fail validation (stale/missing/immature inputs).
+            let fee = match Self::tx_fee(chain, &tx, height as u64) {
+                Some(f) => f,
+                None => continue,
+            };
+            total_fees = total_fees.saturating_add(fee);
             used_weight += w;
             all_txs.push(tx);
         }
+
+        // Coinbase claims subsidy + collected fees.  The value field is fixed
+        // width, so updating it does not change the weight computed above.
+        all_txs[0].outputs[0].value = subsidy + total_fees;
 
         let txids: Vec<_> = all_txs.iter().map(|tx| tx.txid()).collect();
         let merkle_root = compute_merkle_root(&txids);

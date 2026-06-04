@@ -143,6 +143,9 @@ pub struct MempoolTx {
     pub vout_count: usize,
     /// Total output value in frsats.
     pub output_value: u64,
+    /// Fee in frsats (Σ input UTXO values − Σ outputs); null if any input
+    /// is not found in the UTXO set.
+    pub fee: Option<u64>,
 }
 
 #[derive(serde::Serialize)]
