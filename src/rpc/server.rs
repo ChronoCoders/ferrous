@@ -876,9 +876,12 @@ impl RpcServer {
     /// Return the current set of unconfirmed transactions held in the mempool.
     /// Each entry carries enough detail for an explorer to render a pending-tx
     /// row without a second round-trip: txid, wire size, virtual size, input
-    /// and output counts, and total output value (frsats).
+    /// and output counts, total output value, and fee (frsats).
     fn getrawmempool(&self) -> Result<Value, String> {
+        // Mempool snapshot first (its lock is released inside the call), then
+        // chain.read() — never overlapping, consistent with the fe82288 order.
         let txs = self.mempool.get_all_transactions();
+        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
 
         let mut transactions = Vec::with_capacity(txs.len());
         let mut total_size = 0usize;
@@ -891,6 +894,24 @@ impl RpcServer {
             let vsize = weight.div_ceil(4);
             let output_value: u64 = tx.outputs.iter().map(|o| o.value).sum();
 
+            // fee = Σ input UTXO values − Σ outputs; None if any input UTXO
+            // is missing (e.g. spent by a block since admission).
+            let fee = tx
+                .inputs
+                .iter()
+                .try_fold(0u64, |sum, input| {
+                    let outpoint = crate::consensus::utxo::OutPoint {
+                        txid: input.prev_txid,
+                        vout: input.prev_index,
+                    };
+                    chain
+                        .get_utxo(&outpoint)
+                        .ok()
+                        .flatten()
+                        .and_then(|u| sum.checked_add(u.output.value))
+                })
+                .and_then(|input_sum| input_sum.checked_sub(output_value));
+
             total_size += base_size;
 
             transactions.push(MempoolTx {
@@ -900,6 +921,7 @@ impl RpcServer {
                 vin_count: tx.inputs.len(),
                 vout_count: tx.outputs.len(),
                 output_value,
+                fee,
             });
         }
 
