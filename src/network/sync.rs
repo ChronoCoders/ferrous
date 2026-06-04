@@ -1208,8 +1208,12 @@ impl SyncManager {
                 }
             }
 
-            // Difficulty check (windowed mean, oldest-first).
-            let window_ts: Vec<u64> = ts_window.iter().rev().map(|h| h.timestamp).collect();
+            let window_ts: Vec<u64> = ts_window
+                .iter()
+                .rev()
+                .filter(|h| h.prev_block_hash != [0u8; 32])
+                .map(|h| h.timestamp)
+                .collect();
             validate_difficulty(Some(&prev_header), header, &chain.params, &window_ts)
                 .map_err(|e| format!("Difficulty error: {:?}", e))?;
 

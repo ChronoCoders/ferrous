@@ -85,10 +85,9 @@ pub fn u256_to_compact(target: &U256) -> u32 {
 }
 
 /// `window_timestamps`: up to DIFFICULTY_WINDOW timestamps of the blocks
-/// ending at `prev_header`, in chain order (oldest first). n timestamps span
-/// n intervals through `current_timestamp`, combined as an LWMA (weight i for
-/// the i-th oldest interval, newest weighted highest); fewer than 2 entries
-/// falls back to the single prev→current interval.
+/// ending at `prev_header`, oldest first, genesis excluded by callers.
+/// n timestamps span n intervals through `current_timestamp`, LWMA-weighted;
+/// fewer than 2 entries falls back to the single prev→current interval.
 pub fn calculate_next_target(
     prev_header: &BlockHeader,
     current_timestamp: u64,
