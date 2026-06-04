@@ -1,5 +1,5 @@
 use crate::consensus::block::{Block, BlockData, BlockHeader, U256};
-use crate::consensus::difficulty::{validate_difficulty, DifficultyError};
+use crate::consensus::difficulty::{validate_difficulty, DifficultyError, DIFFICULTY_WINDOW};
 use crate::consensus::params::ChainParams;
 use crate::consensus::utxo::{OutPoint, UtxoEntry, UtxoError};
 use crate::consensus::validation::{
@@ -605,12 +605,10 @@ impl ChainState {
                 .peek(&block.header.prev_block_hash)
                 .ok_or(ChainError::OrphanBlock)?;
 
-            validate_difficulty(Some(&prev_data.block.header), &block.header, &self.params)
-                .map_err(ChainError::InvalidDifficulty)?;
-
+            // Walk back DIFFICULTY_WINDOW headers (newest first, ending at prev).
             let mut prev_headers = Vec::new();
             let mut curr = block.header.prev_block_hash;
-            for _ in 0..11 {
+            for _ in 0..DIFFICULTY_WINDOW {
                 if let Some(d) = self.blocks.peek(&curr) {
                     prev_headers.push(d.block.header);
                     if d.block.header.prev_block_hash == [0u8; 32] {
@@ -631,7 +629,20 @@ impl ChainState {
 
                 break;
             }
-            validate_timestamp(&block.header, &prev_headers).map_err(ChainError::InvalidBlock)?;
+
+            let window_timestamps: Vec<u64> =
+                prev_headers.iter().rev().map(|h| h.timestamp).collect();
+            validate_difficulty(
+                Some(&prev_data.block.header),
+                &block.header,
+                &self.params,
+                &window_timestamps,
+            )
+            .map_err(ChainError::InvalidDifficulty)?;
+
+            // MTP stays an 11-block median.
+            let mtp_headers = &prev_headers[..prev_headers.len().min(11)];
+            validate_timestamp(&block.header, mtp_headers).map_err(ChainError::InvalidBlock)?;
 
             (
                 prev_data.height + 1,
@@ -975,6 +986,28 @@ impl ChainState {
 
     pub fn get_header_at_height(&self, height: u64) -> Option<BlockHeader> {
         self.block_store.get_header_by_height(height).ok().flatten()
+    }
+
+    /// Timestamps of up to `n` blocks ending at `from`, oldest first.
+    pub fn recent_timestamps_ending_at(&self, from: &Hash256, n: usize) -> Vec<u64> {
+        let mut out = Vec::with_capacity(n);
+        let mut curr = *from;
+        for _ in 0..n {
+            let (ts, prev) = if let Some(d) = self.blocks.peek(&curr) {
+                (d.block.header.timestamp, d.block.header.prev_block_hash)
+            } else if let Ok(Some(hdr)) = self.block_store.get_header(&curr) {
+                (hdr.timestamp, hdr.prev_block_hash)
+            } else {
+                break;
+            };
+            out.push(ts);
+            if prev == [0u8; 32] {
+                break;
+            }
+            curr = prev;
+        }
+        out.reverse();
+        out
     }
 
     pub fn get_height_for_hash(&self, hash: &Hash256) -> Option<u64> {
