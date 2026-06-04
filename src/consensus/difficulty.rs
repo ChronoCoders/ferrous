@@ -3,6 +3,11 @@ use crate::consensus::params::ChainParams;
 use num_bigint::BigUint;
 
 pub const MAINNET_TARGET_BLOCK_TIME: u64 = 150;
+
+/// Trailing block intervals averaged for the difficulty adjustment. A single
+/// interval regulates the median (~150/ln2 ≈ 216 s mean for exponential PoW
+/// times); a windowed mean regulates the mean at the 150 s target.
+pub const DIFFICULTY_WINDOW: usize = 20;
 /// Mainnet: RandomX conservative launch target — 10 leading zero bits.
 /// Big-endian: 0x003FFFFF...FFFF (2^246 - 1). Easier than testnet at launch;
 /// the ±1% per-block difficulty algorithm tightens toward the actual hashrate.
@@ -78,10 +83,15 @@ pub fn u256_to_compact(target: &U256) -> u32 {
     (u32::from(exponent) << 24) | (mantissa & 0x00FF_FFFF)
 }
 
+/// `window_timestamps`: up to DIFFICULTY_WINDOW timestamps of the blocks
+/// ending at `prev_header`, in chain order (oldest first). n timestamps span
+/// n intervals through `current_timestamp`; empty falls back to the single
+/// prev→current interval.
 pub fn calculate_next_target(
     prev_header: &BlockHeader,
     current_timestamp: u64,
     params: &ChainParams,
+    window_timestamps: &[u64],
 ) -> Result<U256, DifficultyError> {
     let prev_target = prev_header
         .target()
@@ -102,7 +112,11 @@ pub fn calculate_next_target(
     // Timestamps may legitimately decrease (block only needs to be > MTP, not > prev).
     // Clamp via saturating_sub: a 0 timespan falls below min_timespan and gets clamped
     // to target/4, producing a 1% difficulty increase — correct Bitcoin-like behaviour.
-    let mut actual_timespan = current_timestamp.saturating_sub(prev_header.timestamp);
+    let mut actual_timespan = if window_timestamps.is_empty() {
+        current_timestamp.saturating_sub(prev_header.timestamp)
+    } else {
+        current_timestamp.saturating_sub(window_timestamps[0]) / window_timestamps.len() as u64
+    };
 
     let target = params.target_block_time;
     let min_timespan = target / 4;
@@ -117,7 +131,7 @@ pub fn calculate_next_target(
     let mut new_target =
         multiply_u256_by_factor(&prev_target, actual_timespan, target, &params.max_target)?;
 
-    // Clamp adjustment to match tests: max +4% target, max -2% target
+    // Clamp adjustment to max ±1% per block
     let max_increase = multiply_u256_by_factor(&prev_target, 101, 100, &params.max_target)?;
     if new_target > max_increase {
         new_target = max_increase;
@@ -207,12 +221,14 @@ pub fn validate_difficulty(
     prev_header: Option<&BlockHeader>,
     current_header: &BlockHeader,
     params: &ChainParams,
+    window_timestamps: &[u64],
 ) -> Result<(), DifficultyError> {
     let Some(prev) = prev_header else {
         return Ok(());
     };
 
-    let expected = calculate_next_target(prev, current_header.timestamp, params)?;
+    let expected =
+        calculate_next_target(prev, current_header.timestamp, params, window_timestamps)?;
     let actual = current_header
         .target()
         .map_err(|_| DifficultyError::InvalidTimestamp)?;

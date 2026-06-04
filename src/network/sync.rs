@@ -1,6 +1,6 @@
 use crate::consensus::block::{Block, BlockHeader, U256};
 use crate::consensus::chain::ChainState;
-use crate::consensus::difficulty::validate_difficulty;
+use crate::consensus::difficulty::{validate_difficulty, DIFFICULTY_WINDOW};
 use crate::consensus::transaction::Transaction;
 use crate::consensus::validation::validate_timestamp;
 use crate::network::manager::PeerManager;
@@ -1055,7 +1055,7 @@ impl SyncManager {
         let mut header_map = self.header_height_map.lock().unwrap();
 
         let mut ts_window: VecDeque<crate::consensus::block::BlockHeader> =
-            VecDeque::with_capacity(12);
+            VecDeque::with_capacity(DIFFICULTY_WINDOW + 1);
         let mut cached_prev: Option<(crate::consensus::block::BlockHeader, u32)> = None;
         let mut headers_to_store: Vec<(crate::consensus::block::BlockHeader, u64)> =
             Vec::with_capacity(headers_msg.headers.len());
@@ -1172,29 +1172,31 @@ impl SyncManager {
                 ));
             }
 
-            // Difficulty check
-            validate_difficulty(Some(&prev_header), header, &chain.params)
-                .map_err(|e| format!("Difficulty error: {:?}", e))?;
-
-            // Timestamp check (MTP + future-time guard).
-            {
-                if ts_window.is_empty() {
-                    ts_window.push_back(prev_header);
-                    let mut ts_h = prev_height.saturating_sub(1);
-                    while ts_window.len() < 11 {
-                        match chain.block_store.get_header_by_height(ts_h as u64) {
-                            Ok(Some(ph)) => {
-                                ts_window.push_back(ph);
-                                if ts_h == 0 {
-                                    break;
-                                }
-                                ts_h = ts_h.saturating_sub(1);
-                            }
-                            _ => break,
+            // ts_window: newest-first, ending at prev_header. Walk by prev_block_hash
+            // so the window matches recent_timestamps_ending_at exactly (genesis once,
+            // true fork ancestry — not the canonical height index).
+            if ts_window.is_empty() {
+                ts_window.push_back(prev_header);
+                let mut walk_hash = prev_header.prev_block_hash;
+                while ts_window.len() < DIFFICULTY_WINDOW && walk_hash != [0u8; 32] {
+                    match chain.block_store.get_header(&walk_hash) {
+                        Ok(Some(ph)) => {
+                            walk_hash = ph.prev_block_hash;
+                            ts_window.push_back(ph);
                         }
+                        _ => break,
                     }
                 }
-                let prev_headers_for_ts: Vec<_> = ts_window.iter().cloned().collect();
+            }
+
+            // Difficulty check (windowed mean, oldest-first).
+            let window_ts: Vec<u64> = ts_window.iter().rev().map(|h| h.timestamp).collect();
+            validate_difficulty(Some(&prev_header), header, &chain.params, &window_ts)
+                .map_err(|e| format!("Difficulty error: {:?}", e))?;
+
+            // Timestamp check (MTP over the most recent 11 + future-time guard).
+            {
+                let prev_headers_for_ts: Vec<_> = ts_window.iter().take(11).cloned().collect();
                 validate_timestamp(header, &prev_headers_for_ts)
                     .map_err(|e| format!("Timestamp error: {:?}", e))?;
             }
@@ -1227,7 +1229,7 @@ impl SyncManager {
             current_best_hash = new_hash;
 
             ts_window.push_front(*header);
-            if ts_window.len() > 11 {
+            if ts_window.len() > DIFFICULTY_WINDOW {
                 ts_window.pop_back();
             }
             cached_prev = Some((*header, new_height));
