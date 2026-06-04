@@ -4,6 +4,7 @@ use crate::consensus::difficulty::{calculate_next_target, u256_to_compact};
 use crate::consensus::merkle::compute_merkle_root;
 use crate::consensus::params::ChainParams;
 use crate::consensus::transaction::{Transaction, TxInput, TxOutput, Witness};
+use crate::consensus::validation::MAX_BLOCK_WEIGHT;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
@@ -275,9 +276,17 @@ mod tests {
 
         for i in 0..10 {
             time::set_mock_time(Some(now + i as u64));
-            miner
-                .mine_and_attach(&mut chain, Vec::new())
-                .expect("mine ok");
+            let template = miner
+                .build_template(&chain, Vec::new())
+                .expect("template ok");
+            let (header, txs) = miner.solve_template(template).expect("solve ok");
+            use crate::consensus::block::Block;
+            chain
+                .add_block(Block {
+                    header,
+                    transactions: txs,
+                })
+                .expect("add_block ok");
         }
 
         let tip = chain.get_tip().unwrap().unwrap();
@@ -374,156 +383,6 @@ impl Miner {
         }
     }
 
-    fn mine_block_with_script(
-        &self,
-        chain: &ChainState,
-        transactions: Vec<Transaction>,
-        script_pubkey: Vec<u8>,
-    ) -> Result<(BlockHeader, Vec<Transaction>), MiningError> {
-        let tip = chain
-            .get_tip()
-            .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?
-            .ok_or(MiningError::ChainError("Chain tip not found".to_string()))?;
-        let height = (tip.height + 1) as u32;
-
-        let subsidy = crate::consensus::validation::calculate_subsidy(height);
-        let total_fees = 0u64;
-
-        let coinbase = self.create_coinbase_internal(height, subsidy, total_fees, script_pubkey);
-
-        let mut all_txs = vec![coinbase];
-        all_txs.extend(transactions);
-
-        let txids: Vec<_> = all_txs.iter().map(|tx| tx.txid()).collect();
-        let merkle_root = compute_merkle_root(&txids);
-
-        let timestamp = next_block_timestamp(chain)?;
-
-        let target = calculate_next_target(&tip.block.header, timestamp, &self.params)
-            .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?;
-
-        let n_bits = u256_to_compact(&target);
-
-        let prev_block_hash = tip.block.header.hash();
-
-        let header = BlockHeader {
-            version: 1,
-            prev_block_hash,
-            merkle_root,
-            timestamp,
-            n_bits,
-            nonce: 0,
-        };
-
-        self.stats.active.store(true, Ordering::Relaxed);
-        self.stats.active_hashes.store(0, Ordering::Relaxed);
-        self.stats
-            .active_start_micros
-            .store(now_micros(), Ordering::Relaxed);
-
-        let epoch_key = BlockHeader::epoch_key(height as u64);
-
-        let num_workers = std::env::var("FERROUS_MINER_THREADS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or_else(num_cpus::get);
-        let found = Arc::new(AtomicBool::new(false));
-        let solution_nonce = Arc::new(AtomicU64::new(0));
-        let solution_timestamp = Arc::new(AtomicU64::new(timestamp));
-        let solution_worker = Arc::new(AtomicU64::new(0));
-
-        let nonce_range = u64::MAX / num_workers as u64;
-        let mining_start = std::time::Instant::now();
-
-        (0..num_workers).into_par_iter().for_each(|worker_id| {
-            let mut local_header = header;
-            let start_nonce = worker_id as u64 * nonce_range;
-            let mut current_nonce = start_nonce;
-            let mut iterations = 0u64;
-
-            loop {
-                if found.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                local_header.nonce = current_nonce;
-
-                if local_header
-                    .check_proof_of_work(&epoch_key)
-                    .unwrap_or(false)
-                {
-                    found.store(true, Ordering::Relaxed);
-                    solution_nonce.store(current_nonce, Ordering::Relaxed);
-                    solution_timestamp.store(local_header.timestamp, Ordering::Relaxed);
-                    solution_worker.store(worker_id as u64, Ordering::Relaxed);
-                    break;
-                }
-
-                current_nonce = current_nonce.wrapping_add(1);
-                iterations += 1;
-                self.stats.active_hashes.fetch_add(1, Ordering::Relaxed);
-
-                if iterations.is_multiple_of(50_000) {
-                    std::thread::yield_now();
-                }
-                if iterations.is_multiple_of(200_000) {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-
-                if current_nonce == start_nonce.wrapping_add(nonce_range) {
-                    current_nonce = start_nonce;
-                }
-            }
-        });
-
-        let elapsed_secs = mining_start.elapsed().as_secs_f64();
-        let hashes_tried = self.stats.active_hashes.load(Ordering::Relaxed);
-        let elapsed_micros = (elapsed_secs * 1_000_000.0).round();
-        if elapsed_micros.is_finite() && elapsed_micros > 0.0 {
-            self.stats
-                .total_hashes
-                .fetch_add(hashes_tried, Ordering::Relaxed);
-            self.stats.total_micros.fetch_add(
-                elapsed_micros.min(u64::MAX as f64) as u64,
-                Ordering::Relaxed,
-            );
-        }
-        self.stats.active.store(false, Ordering::Relaxed);
-
-        let final_header = BlockHeader {
-            version: header.version,
-            prev_block_hash: header.prev_block_hash,
-            merkle_root: header.merkle_root,
-            timestamp: solution_timestamp.load(Ordering::Relaxed),
-            n_bits: header.n_bits,
-            nonce: solution_nonce.load(Ordering::Relaxed),
-        };
-
-        if let Some(sender) = &self.event_sender {
-            let event = MiningEvent {
-                height,
-                nonce: solution_nonce.load(Ordering::Relaxed),
-                worker_id: solution_worker.load(Ordering::Relaxed),
-                hash: hex::encode(final_header.hash()),
-                hashes_tried,
-                elapsed_secs,
-            };
-            let _ = sender.send(event);
-        }
-
-        if !final_header
-            .check_proof_of_work(&epoch_key)
-            .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?
-        {
-            return Err(MiningError::ChainError(
-                "PoW verification failed".to_string(),
-            ));
-        }
-
-        Ok((final_header, all_txs))
-    }
-
     /// Build a block template from the current chain tip. Reads chain state and
     /// returns immediately — does NOT run PoW. Callers should release any chain
     /// lock before calling `solve_template`.
@@ -544,6 +403,13 @@ impl Miner {
         self.build_template_with_script(chain, transactions, script_pubkey)
     }
 
+    // Returns the block weight contribution of a single transaction.
+    fn tx_weight(tx: &Transaction) -> u64 {
+        let base = tx.encode_without_witness().len() as u64;
+        let total = tx.encode_with_witness().len() as u64;
+        base * 3 + total
+    }
+
     fn build_template_with_script(
         &self,
         chain: &ChainState,
@@ -561,8 +427,19 @@ impl Miner {
 
         let coinbase = self.create_coinbase_internal(height, subsidy, total_fees, script_pubkey);
 
+        // Reserve 10 % headroom so the solved block never hits MAX_BLOCK_WEIGHT.
+        let weight_budget = MAX_BLOCK_WEIGHT * 9 / 10;
+        let mut used_weight = Self::tx_weight(&coinbase);
+
         let mut all_txs = vec![coinbase];
-        all_txs.extend(transactions);
+        for tx in transactions {
+            let w = Self::tx_weight(&tx);
+            if used_weight.saturating_add(w) > weight_budget {
+                break;
+            }
+            used_weight += w;
+            all_txs.push(tx);
+        }
 
         let txids: Vec<_> = all_txs.iter().map(|tx| tx.txid()).collect();
         let merkle_root = compute_merkle_root(&txids);
@@ -708,59 +585,5 @@ impl Miner {
         }
 
         Ok((final_header, all_txs))
-    }
-
-    pub fn mine_block(
-        &self,
-        chain: &ChainState,
-        transactions: Vec<Transaction>,
-    ) -> Result<(BlockHeader, Vec<Transaction>), MiningError> {
-        self.mine_block_with_script(chain, transactions, self.mining_address.clone())
-    }
-
-    pub fn mine_block_to(
-        &self,
-        chain: &ChainState,
-        transactions: Vec<Transaction>,
-        script_pubkey: Vec<u8>,
-    ) -> Result<(BlockHeader, Vec<Transaction>), MiningError> {
-        self.mine_block_with_script(chain, transactions, script_pubkey)
-    }
-
-    pub fn mine_and_attach(
-        &self,
-        chain: &mut ChainState,
-        transactions: Vec<Transaction>,
-    ) -> Result<BlockHeader, MiningError> {
-        let (header, txs) = self.mine_block(chain, transactions)?;
-
-        use crate::consensus::block::Block;
-        chain
-            .add_block(Block {
-                header,
-                transactions: txs,
-            })
-            .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?;
-
-        Ok(header)
-    }
-
-    pub fn mine_and_attach_to(
-        &self,
-        chain: &mut ChainState,
-        transactions: Vec<Transaction>,
-        script_pubkey: Vec<u8>,
-    ) -> Result<BlockHeader, MiningError> {
-        let (header, txs) = self.mine_block_to(chain, transactions, script_pubkey)?;
-
-        use crate::consensus::block::Block;
-        chain
-            .add_block(Block {
-                header,
-                transactions: txs,
-            })
-            .map_err(|e| MiningError::ChainError(format!("{:?}", e)))?;
-
-        Ok(header)
     }
 }

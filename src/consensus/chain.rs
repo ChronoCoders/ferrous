@@ -8,10 +8,12 @@ use crate::consensus::validation::{
 };
 use crate::primitives::hash::Hash256;
 use crate::script::engine::{validate_p2dl, ScriptContext};
-use crate::storage::{BlockStore, ChainStateStore, ChainTip, Database, UtxoStore};
+use crate::storage::{
+    BlockStore, ChainStateStore, ChainTip, Database, UtxoStore, CF_UNDO, CF_UTXO,
+};
 use log::info;
 use lru::LruCache;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
@@ -238,6 +240,20 @@ impl ChainState {
         Ok(())
     }
 
+    // Compact 36-byte key for a UTXO outpoint (must match UtxoStore's encoding).
+    fn utxo_key(op: &OutPoint) -> Vec<u8> {
+        let mut key = Vec::with_capacity(36);
+        key.extend_from_slice(&op.txid);
+        key.extend_from_slice(&op.vout.to_le_bytes());
+        key
+    }
+
+    // Serialize a UtxoEntry (must match UtxoStore's encoding).
+    fn utxo_val(entry: &UtxoEntry) -> Result<Vec<u8>, ChainError> {
+        bincode::serialize(entry)
+            .map_err(|e| ChainError::DbError(format!("UTXO serialize failed: {}", e)))
+    }
+
     fn reorganize(
         &mut self,
         old_tip: &Hash256,
@@ -341,6 +357,23 @@ impl ChainState {
             new_chain.len()
         );
 
+        // ── Phase 1: collect disconnect data; build UTXO overlay ─────────────
+        //
+        // The overlay tracks the post-disconnect UTXO state in memory so that
+        // reconnect validation can see the correct view without touching the DB.
+        // None  = outpoint deleted (was created by an old block being disconnected)
+        // Some  = outpoint exists (was restored from undo data)
+        let mut overlay: HashMap<OutPoint, Option<UtxoEntry>> = HashMap::new();
+
+        struct DisconnectEntry {
+            block_hash: Hash256,
+            block: Block,
+            undo_data: Vec<(OutPoint, UtxoEntry)>,
+            created_outpoints: Vec<OutPoint>,
+        }
+
+        let mut disconnect_entries: Vec<DisconnectEntry> = Vec::with_capacity(old_chain.len());
+
         for block_hash in &old_chain {
             let block = if let Some(d) = self.blocks.peek(block_hash) {
                 d.block.clone()
@@ -351,18 +384,7 @@ impl ChainState {
                     .ok_or(ChainError::BlockNotFound)?
             };
 
-            let mut created_outpoints = Vec::new();
-            for tx in &block.transactions {
-                let txid = tx.txid();
-                for (vout, _) in tx.outputs.iter().enumerate() {
-                    created_outpoints.push(OutPoint {
-                        txid,
-                        vout: vout as u32,
-                    });
-                }
-            }
-
-            let restored_entries = self
+            let undo_data = self
                 .utxo_store
                 .get_undo_data(block_hash)
                 .map_err(ChainError::DbError)?
@@ -373,14 +395,43 @@ impl ChainState {
                     ))
                 })?;
 
-            self.utxo_store
-                .revert_block(&created_outpoints, &restored_entries)
-                .map_err(ChainError::DbError)?;
+            // Remove UTXOs created by this old block from the overlay view.
+            let mut created_outpoints = Vec::new();
+            for tx in &block.transactions {
+                let txid = tx.txid();
+                for (vout, _) in tx.outputs.iter().enumerate() {
+                    let op = OutPoint {
+                        txid,
+                        vout: vout as u32,
+                    };
+                    overlay.insert(op, None);
+                    created_outpoints.push(op);
+                }
+            }
+            // Restore UTXOs that were spent by this old block.
+            for (op, entry) in &undo_data {
+                overlay.insert(*op, Some(entry.clone()));
+            }
 
-            self.utxo_store
-                .delete_undo_data(block_hash)
-                .map_err(ChainError::DbError)?;
+            disconnect_entries.push(DisconnectEntry {
+                block_hash: *block_hash,
+                block,
+                undo_data,
+                created_outpoints,
+            });
         }
+
+        // ── Phase 2: validate reconnect blocks against the overlay (no DB writes) ──
+
+        struct ReconnectEntry {
+            block_hash: Hash256,
+            height: u64,
+            created: Vec<(OutPoint, UtxoEntry)>,
+            spent: Vec<OutPoint>,
+            undo_data: Vec<(OutPoint, UtxoEntry)>,
+        }
+
+        let mut reconnect_entries: Vec<ReconnectEntry> = Vec::with_capacity(new_chain.len());
 
         for hash in new_chain.iter().rev() {
             let (block, height) = if let Some(d) = self.blocks.peek(hash) {
@@ -401,54 +452,103 @@ impl ChainState {
                 (b, meta.height)
             };
 
-            let bh = block.hash();
-            let (created_utxos, spent_utxos, spent_entries, fees) =
-                self.apply_block_to_utxo(&block, height)?;
+            let (created, spent, undo, fees) =
+                self.apply_block_to_utxo_sim(&block, height, &overlay)?;
 
             validate_coinbase_reward(&block.transactions[0], fees, height as u32)
                 .map_err(ChainError::InvalidBlock)?;
 
-            self.utxo_store
-                .apply_block(&created_utxos, &spent_utxos)
-                .map_err(ChainError::DbError)?;
-            self.utxo_store
-                .store_undo_data(&bh, &spent_entries)
-                .map_err(ChainError::DbError)?;
+            // Advance the overlay with this block's changes.
+            for op in &spent {
+                overlay.insert(*op, None);
+            }
+            for (op, entry) in &created {
+                overlay.insert(*op, Some(entry.clone()));
+            }
 
-            // Reconnected blocks become part of the canonical chain: update
-            // the height index so height-based lookups return the correct hash.
-            // (These blocks were originally stored via store_block_no_index when
-            // they arrived as side-chain candidates.)
-            self.block_store
-                .update_height_index(height, hash)
+            reconnect_entries.push(ReconnectEntry {
+                block_hash: *hash,
+                height,
+                created,
+                spent,
+                undo_data: undo,
+            });
+        }
+
+        // ── Phase 3: all validation passed — commit all changes atomically ───
+
+        let mut batch = self.db.batch();
+
+        for entry in &disconnect_entries {
+            // Delete UTXOs that were created by each old block.
+            for op in &entry.created_outpoints {
+                batch
+                    .delete(CF_UTXO, &Self::utxo_key(op))
+                    .map_err(ChainError::DbError)?;
+            }
+            // Restore UTXOs that were spent by each old block.
+            for (op, utxo_entry) in &entry.undo_data {
+                batch
+                    .put(CF_UTXO, &Self::utxo_key(op), &Self::utxo_val(utxo_entry)?)
+                    .map_err(ChainError::DbError)?;
+            }
+            // Remove the undo record for this old block.
+            batch
+                .delete(CF_UNDO, &entry.block_hash)
                 .map_err(ChainError::DbError)?;
         }
 
-        // Collect non-coinbase transactions from the disconnected blocks whose
-        // inputs are still unspent on the new chain.  These are re-queued into
-        // the mempool by the caller so they can be re-mined.
+        for entry in &reconnect_entries {
+            // Remove UTXOs spent by each new block.
+            for op in &entry.spent {
+                batch
+                    .delete(CF_UTXO, &Self::utxo_key(op))
+                    .map_err(ChainError::DbError)?;
+            }
+            // Create UTXOs produced by each new block.
+            for (op, utxo_entry) in &entry.created {
+                batch
+                    .put(CF_UTXO, &Self::utxo_key(op), &Self::utxo_val(utxo_entry)?)
+                    .map_err(ChainError::DbError)?;
+            }
+            // Store the undo record for each new block.
+            let undo_bytes = bincode::serialize(&entry.undo_data)
+                .map_err(|e| ChainError::DbError(format!("undo serialize: {}", e)))?;
+            batch
+                .put(CF_UNDO, &entry.block_hash, &undo_bytes)
+                .map_err(ChainError::DbError)?;
+        }
+
+        batch.commit().map_err(ChainError::DbError)?;
+
+        // Update the canonical height index after the batch commits.
+        // This is idempotent and can be repaired by recover_from_storage on restart.
+        for entry in &reconnect_entries {
+            self.block_store
+                .update_height_index(entry.height, &entry.block_hash)
+                .map_err(ChainError::DbError)?;
+        }
+
+        // Collect non-coinbase transactions from disconnected blocks whose
+        // inputs are still unspent on the new chain.
         let mut requeued: Vec<crate::consensus::transaction::Transaction> = Vec::new();
-        for block_hash in &old_chain {
-            let block = if let Some(d) = self.blocks.peek(block_hash) {
-                d.block.clone()
-            } else {
-                match self.block_store.get_block(block_hash) {
-                    Ok(Some(b)) => b,
-                    _ => continue,
-                }
-            };
-            for (tx_idx, tx) in block.transactions.iter().enumerate() {
+        for entry in &disconnect_entries {
+            for (tx_idx, tx) in entry.block.transactions.iter().enumerate() {
                 if tx_idx == 0 {
-                    continue; // skip coinbase
+                    continue;
                 }
-                let all_inputs_valid = tx.inputs.iter().all(|input| {
-                    let outpoint = OutPoint {
+                let all_valid = tx.inputs.iter().all(|input| {
+                    let op = OutPoint {
                         txid: input.prev_txid,
                         vout: input.prev_index,
                     };
-                    self.utxo_store.has_utxo(&outpoint).unwrap_or(false)
+                    match overlay.get(&op) {
+                        Some(Some(_)) => true,
+                        Some(None) => false,
+                        None => self.utxo_store.has_utxo(&op).unwrap_or(false),
+                    }
                 });
-                if all_inputs_valid {
+                if all_valid {
                     requeued.push(tx.clone());
                 }
             }
@@ -463,11 +563,15 @@ impl ChainState {
     ) -> Result<Vec<crate::consensus::transaction::Transaction>, ChainError> {
         let block_hash = block.hash();
 
+        // Skip only if the block is already stored in the DB (canonical or side-chain).
+        // A block that is in the LRU cache but NOT in block_store was put there
+        // during a previous add_block call that later failed (e.g. a failed reorg).
+        // That block must still reach the should_update_tip comparison so the reorg
+        // can be retried.
         if self
             .block_store
             .has_block(&block_hash)
             .map_err(ChainError::DbError)?
-            || self.blocks.peek(&block_hash).is_some()
         {
             return Ok(Vec::new());
         }
@@ -619,11 +723,16 @@ impl ChainState {
         Ok(Vec::new())
     }
 
-    fn apply_block_to_utxo(
-        &self,
+    // Core UTXO application logic, parameterised over the UTXO lookup source.
+    // Used by both the normal (DB-backed) and the reorg-simulation (overlay-backed) paths.
+    fn apply_block_to_utxo_inner<F>(
         block: &Block,
         height: u64,
-    ) -> Result<ApplyBlockToUtxoResult, ChainError> {
+        mut get_utxo: F,
+    ) -> Result<ApplyBlockToUtxoResult, ChainError>
+    where
+        F: FnMut(&OutPoint) -> Result<Option<UtxoEntry>, ChainError>,
+    {
         let mut created = Vec::new();
         let mut spent = Vec::new();
         let mut spent_entries = Vec::new();
@@ -648,10 +757,7 @@ impl ChainState {
                         return Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent));
                     }
 
-                    let utxo_entry = self
-                        .utxo_store
-                        .get_utxo(&outpoint)
-                        .map_err(ChainError::DbError)?
+                    let utxo_entry = get_utxo(&outpoint)?
                         .ok_or(ChainError::UtxoError(UtxoError::UtxoNotFound))?;
 
                     if utxo_entry.coinbase
@@ -711,6 +817,34 @@ impl ChainState {
         }
 
         Ok((created, spent, spent_entries, block_fees))
+    }
+
+    fn apply_block_to_utxo(
+        &self,
+        block: &Block,
+        height: u64,
+    ) -> Result<ApplyBlockToUtxoResult, ChainError> {
+        let utxo = &self.utxo_store;
+        Self::apply_block_to_utxo_inner(block, height, |op| {
+            utxo.get_utxo(op).map_err(ChainError::DbError)
+        })
+    }
+
+    // Validates a block's UTXO changes against an in-memory overlay that reflects
+    // the post-disconnect state, without writing anything to the DB.  Used by
+    // the atomic reorg to validate all reconnect blocks before committing.
+    fn apply_block_to_utxo_sim(
+        &self,
+        block: &Block,
+        height: u64,
+        overlay: &HashMap<OutPoint, Option<UtxoEntry>>,
+    ) -> Result<ApplyBlockToUtxoResult, ChainError> {
+        let utxo = &self.utxo_store;
+        Self::apply_block_to_utxo_inner(block, height, |op| match overlay.get(op) {
+            Some(Some(entry)) => Ok(Some(entry.clone())),
+            Some(None) => Ok(None),
+            None => utxo.get_utxo(op).map_err(ChainError::DbError),
+        })
     }
 
     pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<Option<UtxoEntry>, String> {
