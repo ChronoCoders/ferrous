@@ -885,6 +885,25 @@ impl SyncManager {
     // -----------------------------------------------------------------------
 
     pub fn handle_headers(&self, peer_id: u64, headers_msg: &HeadersMessage) -> Result<(), String> {
+        let result = self.handle_headers_inner(peer_id, headers_msg);
+        if result.is_err() {
+            // A failed headers batch must not leave the SyncManager wedged in
+            // DownloadingHeaders: is_syncing() would stay true forever, INVs and
+            // start_sync would no-op, and the node would silently solo-mine a fork.
+            let mut state = self.sync_state.lock().unwrap();
+            if matches!(*state, SyncState::DownloadingHeaders { .. }) {
+                log::warn!("SyncManager: headers error from peer {} — resetting sync state to Idle for retry", peer_id);
+                *state = SyncState::Idle;
+            }
+        }
+        result
+    }
+
+    fn handle_headers_inner(
+        &self,
+        peer_id: u64,
+        headers_msg: &HeadersMessage,
+    ) -> Result<(), String> {
         log::debug!(
             "SyncManager: Received {} headers from peer {}",
             headers_msg.headers.len(),
