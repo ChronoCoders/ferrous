@@ -4,10 +4,11 @@ use num_bigint::BigUint;
 
 pub const MAINNET_TARGET_BLOCK_TIME: u64 = 150;
 
-/// Trailing block intervals averaged for the difficulty adjustment. A single
-/// interval regulates the median (~150/ln2 ≈ 216 s mean for exponential PoW
-/// times); a windowed mean regulates the mean at the 150 s target.
-pub const DIFFICULTY_WINDOW: usize = 20;
+/// Trailing block intervals for the LWMA difficulty adjustment (Monero-style).
+/// A single interval (or unweighted mean) regulates the median (~150/ln2 ≈ 216 s
+/// mean for exponential PoW times); linearly weighting recent intervals makes
+/// the controller mean-seeking at the 150 s target.
+pub const DIFFICULTY_WINDOW: usize = 45;
 /// Mainnet: RandomX conservative launch target — 10 leading zero bits.
 /// Big-endian: 0x003FFFFF...FFFF (2^246 - 1). Easier than testnet at launch;
 /// the ±1% per-block difficulty algorithm tightens toward the actual hashrate.
@@ -85,8 +86,9 @@ pub fn u256_to_compact(target: &U256) -> u32 {
 
 /// `window_timestamps`: up to DIFFICULTY_WINDOW timestamps of the blocks
 /// ending at `prev_header`, in chain order (oldest first). n timestamps span
-/// n intervals through `current_timestamp`; empty falls back to the single
-/// prev→current interval.
+/// n intervals through `current_timestamp`, combined as an LWMA (weight i for
+/// the i-th oldest interval, newest weighted highest); fewer than 2 entries
+/// falls back to the single prev→current interval.
 pub fn calculate_next_target(
     prev_header: &BlockHeader,
     current_timestamp: u64,
@@ -110,12 +112,25 @@ pub fn calculate_next_target(
     }
 
     // Timestamps may legitimately decrease (block only needs to be > MTP, not > prev).
-    // Clamp via saturating_sub: a 0 timespan falls below min_timespan and gets clamped
-    // to target/4, producing a 1% difficulty increase — correct Bitcoin-like behaviour.
-    let mut actual_timespan = if window_timestamps.is_empty() {
+    // Per-interval saturating_sub: a backward step contributes a 0 interval; an
+    // all-0 LWMA falls below min_timespan and gets clamped to target/4, producing
+    // a 1% difficulty increase — correct Bitcoin-like behaviour.
+    let mut actual_timespan = if window_timestamps.len() < 2 {
         current_timestamp.saturating_sub(prev_header.timestamp)
     } else {
-        current_timestamp.saturating_sub(window_timestamps[0]) / window_timestamps.len() as u64
+        let n = window_timestamps.len() as u128;
+        let mut weighted_sum: u128 = 0;
+        let mut prev_ts = window_timestamps[0];
+        for (i, &ts) in window_timestamps[1..]
+            .iter()
+            .chain(std::iter::once(&current_timestamp))
+            .enumerate()
+        {
+            weighted_sum += (i as u128 + 1) * ts.saturating_sub(prev_ts) as u128;
+            prev_ts = ts;
+        }
+        let weighted_count = n * (n + 1) / 2;
+        (weighted_sum / weighted_count) as u64
     };
 
     let target = params.target_block_time;
