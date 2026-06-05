@@ -9,7 +9,7 @@ fn main() {
     use std::time::Instant;
 
     // Must match create_genesis_block exactly.
-    let genesis_n_bits: u32 = 0x1F10_CDD9;
+    let genesis_n_bits: u32 = 0x1F05_D34E;
 
     let coinbase = Transaction {
         version: 1,
