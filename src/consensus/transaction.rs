@@ -360,7 +360,7 @@ impl Transaction {
     }
 }
 
-pub const TX_VERSION_V2: u32 = 2;
+pub const TX_VERSION_V2: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PedersenCommitment(pub CompressedRistretto);
@@ -384,6 +384,8 @@ pub struct TxOutputV2 {
     pub commitment: PedersenCommitment,
     pub range_proof: RangeProof,
     pub script_pubkey: Vec<u8>,
+    pub encrypted_amount: Vec<u8>,
+    pub ephemeral_pubkey: [u8; 32],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -391,7 +393,7 @@ pub struct TransactionV2 {
     pub version: u32,
     pub inputs: Vec<TxInputV2>,
     pub outputs: Vec<TxOutputV2>,
-    pub fee_commitment: PedersenCommitment,
+    pub fee: u64,
     pub locktime: u32,
 }
 
@@ -471,6 +473,8 @@ impl Encode for TxOutputV2 {
         let mut out = self.commitment.encode();
         out.extend_from_slice(&self.script_pubkey.encode());
         out.extend_from_slice(&self.range_proof.encode());
+        out.extend_from_slice(&self.encrypted_amount.encode());
+        out.extend_from_slice(&self.ephemeral_pubkey);
         out
     }
 
@@ -478,6 +482,8 @@ impl Encode for TxOutputV2 {
         self.commitment.encoded_size()
             + self.script_pubkey.encoded_size()
             + self.range_proof.encoded_size()
+            + self.encrypted_amount.encoded_size()
+            + 32
     }
 }
 
@@ -486,13 +492,17 @@ impl Decode for TxOutputV2 {
         let (commitment, c1) = PedersenCommitment::decode(bytes)?;
         let (script_pubkey, c2) = Vec::<u8>::decode(&bytes[c1..])?;
         let (range_proof, c3) = RangeProof::decode(&bytes[c1 + c2..])?;
+        let (encrypted_amount, c4) = Vec::<u8>::decode(&bytes[c1 + c2 + c3..])?;
+        let (ephemeral_pubkey, c5) = <[u8; 32]>::decode(&bytes[c1 + c2 + c3 + c4..])?;
         Ok((
             TxOutputV2 {
                 commitment,
                 range_proof,
                 script_pubkey,
+                encrypted_amount,
+                ephemeral_pubkey,
             },
-            c1 + c2 + c3,
+            c1 + c2 + c3 + c4 + c5,
         ))
     }
 }
@@ -512,7 +522,7 @@ impl Encode for TransactionV2 {
             out.extend_from_slice(&output.encode());
         }
 
-        out.extend_from_slice(&self.fee_commitment.encode());
+        out.extend_from_slice(&self.fee.encode());
         out.extend_from_slice(&self.locktime.encode());
         out
     }
@@ -527,7 +537,7 @@ impl Encode for TransactionV2 {
         for output in &self.outputs {
             size += output.encoded_size();
         }
-        size += self.fee_commitment.encoded_size();
+        size += 8;
         size += 4;
         size
     }
@@ -572,7 +582,7 @@ impl Decode for TransactionV2 {
             outputs.push(output);
         }
 
-        let (fee_commitment, c4) = PedersenCommitment::decode(&bytes[offset..])?;
+        let (fee, c4) = u64::decode(&bytes[offset..])?;
         offset += c4;
 
         let (locktime, c5) = u32::decode(&bytes[offset..])?;
@@ -583,7 +593,7 @@ impl Decode for TransactionV2 {
                 version,
                 inputs,
                 outputs,
-                fee_commitment,
+                fee,
                 locktime,
             },
             offset,

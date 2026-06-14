@@ -128,6 +128,8 @@ fn hash_outputs_v2(tx: &TransactionV2) -> Hash256 {
         data.extend_from_slice(output.commitment.0.as_bytes());
         data.extend_from_slice(&output.script_pubkey.encode());
         data.extend_from_slice(&output.range_proof.0.encode());
+        data.extend_from_slice(&output.encrypted_amount.encode());
+        data.extend_from_slice(&output.ephemeral_pubkey);
     }
     sha256d(&data)
 }
@@ -148,7 +150,7 @@ pub fn compute_sighash_v2(
     message.extend_from_slice(&hash_sequences_v2(tx));
     message.extend_from_slice(&sha256d(spent_script_pubkey));
     message.extend_from_slice(&hash_outputs_v2(tx));
-    message.extend_from_slice(tx.fee_commitment.0.as_bytes());
+    message.extend_from_slice(&tx.fee.encode());
     message.extend_from_slice(&(input_index as u32).encode());
     message.push(SIGHASH_ALL);
 
