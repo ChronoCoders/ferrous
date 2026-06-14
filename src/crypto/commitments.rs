@@ -71,35 +71,6 @@ pub fn verify_balance(
     sum_in == sum_out + fee_point
 }
 
-pub fn verify_balance_committed(
-    inputs: &[PedersenCommitment],
-    outputs: &[PedersenCommitment],
-    fee_commitment: &PedersenCommitment,
-) -> bool {
-    let mut sum_in = RistrettoPoint::identity();
-    for c in inputs {
-        match c.0.decompress() {
-            Some(p) => sum_in += p,
-            None => return false,
-        }
-    }
-
-    let mut sum_out = RistrettoPoint::identity();
-    for c in outputs {
-        match c.0.decompress() {
-            Some(p) => sum_out += p,
-            None => return false,
-        }
-    }
-
-    let fee_point = match fee_commitment.0.decompress() {
-        Some(p) => p,
-        None => return false,
-    };
-
-    sum_in == sum_out + fee_point
-}
-
 pub fn generate_range_proof(
     value: u64,
     blinding: &BlindingFactor,

@@ -5,7 +5,7 @@ use crate::consensus::chain::ChainState;
 use crate::consensus::merkle::{compute_merkle_root, compute_witness_merkle_root};
 use crate::consensus::transaction::{BlindingFactor, Transaction, TransactionV2, MAX_MONEY};
 use crate::consensus::utxo::OutPoint;
-use crate::crypto::commitments::{commit, verify_balance_committed, verify_range_proof};
+use crate::crypto::commitments::{commit, verify_balance, verify_range_proof};
 use crate::primitives::hash::sha256d;
 use crate::script::engine::verify_p2dl_signature;
 use crate::script::sighash::compute_sighash_v2;
@@ -148,7 +148,7 @@ pub fn validate_transaction_v2(
     }
 
     let output_commitments: Vec<_> = tx.outputs.iter().map(|o| o.commitment.clone()).collect();
-    if !verify_balance_committed(&input_commitments, &output_commitments, &tx.fee_commitment) {
+    if !verify_balance(&input_commitments, &output_commitments, tx.fee) {
         return Err(ValidationError::V2BalanceInvalid);
     }
 
