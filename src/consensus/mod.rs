@@ -6,3 +6,6 @@ pub mod params;
 pub mod transaction;
 pub mod utxo;
 pub mod validation;
+
+#[cfg(test)]
+mod transaction_v2_tests;

@@ -257,7 +257,21 @@ pub fn validate_p2dl(
     script_pubkey: &[u8],
     context: &ScriptContext,
 ) -> Result<bool, ScriptError> {
-    // Verify scriptPubKey format
+    let sighash = compute_sighash(
+        context.transaction,
+        context.input_index,
+        context.spent_outputs,
+    )
+    .map_err(|_| ScriptError::ExecutionFailed)?;
+
+    verify_p2dl_signature(script_sig, script_pubkey, &sighash)
+}
+
+pub fn verify_p2dl_signature(
+    script_sig: &[u8],
+    script_pubkey: &[u8],
+    sighash: &[u8],
+) -> Result<bool, ScriptError> {
     if script_pubkey.len() != 36
         || script_pubkey[0] != 0xaa
         || script_pubkey[1] != 0x20
@@ -268,7 +282,6 @@ pub fn validate_p2dl(
     }
     let script_hash: [u8; 32] = script_pubkey[2..34].try_into().unwrap();
 
-    // Parse scriptSig: sig then pubkey, both prefixed with OP_PUSHDATA2
     let (sig_bytes, pc) = parse_pushdata2(script_sig, 0)?;
     let (pubkey_bytes, _) = parse_pushdata2(script_sig, pc)?;
 
@@ -279,21 +292,12 @@ pub fn validate_p2dl(
         return Err(ScriptError::InvalidPubkey);
     }
 
-    // Verify pubkey hash matches script commitment
     let computed_hash: [u8; 32] = blake3::hash(pubkey_bytes).into();
     if computed_hash != script_hash {
         return Ok(false);
     }
 
-    // Compute sighash and verify Dilithium signature
-    let sighash = compute_sighash(
-        context.transaction,
-        context.input_index,
-        context.spent_outputs,
-    )
-    .map_err(|_| ScriptError::ExecutionFailed)?;
-
-    match dilithium::verify(pubkey_bytes, &sighash, sig_bytes) {
+    match dilithium::verify(pubkey_bytes, sighash, sig_bytes) {
         Ok(()) => Ok(true),
         Err(_) => Ok(false),
     }

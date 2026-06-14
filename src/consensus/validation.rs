@@ -1,9 +1,14 @@
 use std::collections::HashSet;
 
 use crate::consensus::block::BlockHeader;
+use crate::consensus::chain::ChainState;
 use crate::consensus::merkle::{compute_merkle_root, compute_witness_merkle_root};
-use crate::consensus::transaction::{Transaction, MAX_MONEY};
+use crate::consensus::transaction::{BlindingFactor, Transaction, TransactionV2, MAX_MONEY};
+use crate::consensus::utxo::OutPoint;
+use crate::crypto::commitments::{commit, verify_balance_committed, verify_range_proof};
 use crate::primitives::hash::sha256d;
+use crate::script::engine::verify_p2dl_signature;
+use crate::script::sighash::compute_sighash_v2;
 
 pub const MAX_BLOCK_WEIGHT: u64 = 40_000_000;
 pub const COINBASE_MATURITY: u64 = 100;
@@ -30,6 +35,10 @@ pub enum ValidationError {
     MissingHeightCommitment,
     InvalidHeightCommitment,
     WrongHeightCommitment,
+    V2InputNotFound,
+    V2SignatureInvalid,
+    V2RangeProofInvalid,
+    V2BalanceInvalid,
 }
 
 /// Validate block structure and consensus rules
@@ -101,6 +110,49 @@ fn is_coinbase(tx: &Transaction) -> bool {
     tx.inputs.len() == 1
         && tx.inputs[0].prev_txid == [0u8; 32]
         && tx.inputs[0].prev_index == 0xFFFF_FFFF
+}
+
+pub fn validate_transaction_v2(
+    tx: &TransactionV2,
+    chain: &ChainState,
+) -> Result<(), ValidationError> {
+    tx.check_structure()
+        .map_err(|_| ValidationError::TransactionStructureInvalid)?;
+
+    let mut input_commitments = Vec::with_capacity(tx.inputs.len());
+    for (i, input) in tx.inputs.iter().enumerate() {
+        let outpoint = OutPoint {
+            txid: input.prev_txid,
+            vout: input.prev_index,
+        };
+        let entry = chain
+            .get_utxo(&outpoint)
+            .map_err(|_| ValidationError::V2InputNotFound)?
+            .ok_or(ValidationError::V2InputNotFound)?;
+        let spent = &entry.output;
+
+        let sighash = compute_sighash_v2(tx, i, &spent.script_pubkey)
+            .map_err(|_| ValidationError::V2SignatureInvalid)?;
+        let valid = verify_p2dl_signature(&input.script_sig, &spent.script_pubkey, &sighash)
+            .map_err(|_| ValidationError::V2SignatureInvalid)?;
+        if !valid {
+            return Err(ValidationError::V2SignatureInvalid);
+        }
+
+        input_commitments.push(commit(spent.value, &BlindingFactor([0u8; 32])));
+    }
+
+    for output in &tx.outputs {
+        verify_range_proof(&output.commitment, &output.range_proof)
+            .map_err(|_| ValidationError::V2RangeProofInvalid)?;
+    }
+
+    let output_commitments: Vec<_> = tx.outputs.iter().map(|o| o.commitment.clone()).collect();
+    if !verify_balance_committed(&input_commitments, &output_commitments, &tx.fee_commitment) {
+        return Err(ValidationError::V2BalanceInvalid);
+    }
+
+    Ok(())
 }
 
 fn calculate_block_weight(transactions: &[Transaction]) -> u64 {
