@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod consensus;
+pub mod crypto;
 pub mod dashboard;
 pub mod mining;
 pub mod network;

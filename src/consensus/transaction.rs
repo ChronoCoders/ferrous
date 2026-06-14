@@ -1,6 +1,7 @@
 use crate::primitives::hash::{sha256d, Hash256};
 use crate::primitives::serialize::{Decode, DecodeError, Encode};
 use crate::primitives::varint::{decode as decode_varint, encode as encode_varint, VarIntError};
+use curve25519_dalek_ng::ristretto::CompressedRistretto;
 use serde::{Deserialize, Serialize};
 
 /// Maximum number of satoshis that can ever exist in the system.
@@ -339,6 +340,250 @@ impl Transaction {
             }
         }
 
+        Ok(())
+    }
+}
+
+pub const TX_VERSION_V2: u32 = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PedersenCommitment(pub CompressedRistretto);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RangeProof(pub Vec<u8>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlindingFactor(pub [u8; 32]);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxInputV2 {
+    pub prev_txid: Hash256,
+    pub prev_index: u32,
+    pub script_sig: Vec<u8>,
+    pub sequence: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxOutputV2 {
+    pub commitment: PedersenCommitment,
+    pub range_proof: RangeProof,
+    pub script_pubkey: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionV2 {
+    pub version: u32,
+    pub inputs: Vec<TxInputV2>,
+    pub outputs: Vec<TxOutputV2>,
+    pub fee_commitment: PedersenCommitment,
+    pub locktime: u32,
+}
+
+impl Encode for PedersenCommitment {
+    fn encode(&self) -> Vec<u8> {
+        self.0.as_bytes().to_vec()
+    }
+
+    fn encoded_size(&self) -> usize {
+        32
+    }
+}
+
+impl Decode for PedersenCommitment {
+    fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
+        if bytes.len() < 32 {
+            return Err(DecodeError::UnexpectedEof);
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes[..32]);
+        Ok((PedersenCommitment(CompressedRistretto(arr)), 32))
+    }
+}
+
+impl Encode for RangeProof {
+    fn encode(&self) -> Vec<u8> {
+        self.0.encode()
+    }
+
+    fn encoded_size(&self) -> usize {
+        self.0.encoded_size()
+    }
+}
+
+impl Decode for RangeProof {
+    fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let (data, consumed) = Vec::<u8>::decode(bytes)?;
+        Ok((RangeProof(data), consumed))
+    }
+}
+
+impl Encode for TxInputV2 {
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.prev_txid);
+        out.extend_from_slice(&self.prev_index.encode());
+        out.extend_from_slice(&self.script_sig.encode());
+        out.extend_from_slice(&self.sequence.encode());
+        out
+    }
+
+    fn encoded_size(&self) -> usize {
+        32 + 4 + self.script_sig.encoded_size() + 4
+    }
+}
+
+impl Decode for TxInputV2 {
+    fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let (prev_txid, c1) = <[u8; 32]>::decode(bytes)?;
+        let (prev_index, c2) = u32::decode(&bytes[c1..])?;
+        let (script_sig, c3) = Vec::<u8>::decode(&bytes[c1 + c2..])?;
+        let (sequence, c4) = u32::decode(&bytes[c1 + c2 + c3..])?;
+        Ok((
+            TxInputV2 {
+                prev_txid,
+                prev_index,
+                script_sig,
+                sequence,
+            },
+            c1 + c2 + c3 + c4,
+        ))
+    }
+}
+
+impl Encode for TxOutputV2 {
+    fn encode(&self) -> Vec<u8> {
+        let mut out = self.commitment.encode();
+        out.extend_from_slice(&self.script_pubkey.encode());
+        out.extend_from_slice(&self.range_proof.encode());
+        out
+    }
+
+    fn encoded_size(&self) -> usize {
+        self.commitment.encoded_size()
+            + self.script_pubkey.encoded_size()
+            + self.range_proof.encoded_size()
+    }
+}
+
+impl Decode for TxOutputV2 {
+    fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let (commitment, c1) = PedersenCommitment::decode(bytes)?;
+        let (script_pubkey, c2) = Vec::<u8>::decode(&bytes[c1..])?;
+        let (range_proof, c3) = RangeProof::decode(&bytes[c1 + c2..])?;
+        Ok((
+            TxOutputV2 {
+                commitment,
+                range_proof,
+                script_pubkey,
+            },
+            c1 + c2 + c3,
+        ))
+    }
+}
+
+impl Encode for TransactionV2 {
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.version.encode());
+
+        out.extend_from_slice(&encode_varint(self.inputs.len() as u64));
+        for input in &self.inputs {
+            out.extend_from_slice(&input.encode());
+        }
+
+        out.extend_from_slice(&encode_varint(self.outputs.len() as u64));
+        for output in &self.outputs {
+            out.extend_from_slice(&output.encode());
+        }
+
+        out.extend_from_slice(&self.fee_commitment.encode());
+        out.extend_from_slice(&self.locktime.encode());
+        out
+    }
+
+    fn encoded_size(&self) -> usize {
+        let mut size = 4;
+        size += encode_varint(self.inputs.len() as u64).len();
+        for input in &self.inputs {
+            size += input.encoded_size();
+        }
+        size += encode_varint(self.outputs.len() as u64).len();
+        for output in &self.outputs {
+            size += output.encoded_size();
+        }
+        size += self.fee_commitment.encoded_size();
+        size += 4;
+        size
+    }
+}
+
+impl Decode for TransactionV2 {
+    fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let (version, c1) = u32::decode(bytes)?;
+        if version != TX_VERSION_V2 {
+            return Err(DecodeError::InvalidData);
+        }
+
+        let (input_count_u64, c2) = decode_varint(&bytes[c1..]).map_err(map_varint_error)?;
+        let input_count: usize = input_count_u64
+            .try_into()
+            .map_err(|_| DecodeError::Overflow)?;
+
+        let mut offset = c1 + c2;
+        let mut inputs = Vec::with_capacity(input_count);
+        for _ in 0..input_count {
+            let (input, consumed) = TxInputV2::decode(&bytes[offset..])?;
+            offset += consumed;
+            inputs.push(input);
+        }
+
+        let (output_count_u64, c3) = decode_varint(&bytes[offset..]).map_err(map_varint_error)?;
+        let output_count: usize = output_count_u64
+            .try_into()
+            .map_err(|_| DecodeError::Overflow)?;
+        offset += c3;
+
+        let mut outputs = Vec::with_capacity(output_count);
+        for _ in 0..output_count {
+            let (output, consumed) = TxOutputV2::decode(&bytes[offset..])?;
+            offset += consumed;
+            outputs.push(output);
+        }
+
+        let (fee_commitment, c4) = PedersenCommitment::decode(&bytes[offset..])?;
+        offset += c4;
+
+        let (locktime, c5) = u32::decode(&bytes[offset..])?;
+        offset += c5;
+
+        Ok((
+            TransactionV2 {
+                version,
+                inputs,
+                outputs,
+                fee_commitment,
+                locktime,
+            },
+            offset,
+        ))
+    }
+}
+
+impl TransactionV2 {
+    pub fn txid(&self) -> Hash256 {
+        sha256d(&self.encode())
+    }
+
+    pub fn check_structure(&self) -> Result<(), TxError> {
+        if self.version != TX_VERSION_V2 {
+            return Err(TxError::InvalidVersion);
+        }
+        if self.inputs.is_empty() {
+            return Err(TxError::NoInputs);
+        }
+        if self.outputs.is_empty() {
+            return Err(TxError::NoOutputs);
+        }
         Ok(())
     }
 }
