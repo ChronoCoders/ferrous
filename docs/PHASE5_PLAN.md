@@ -99,6 +99,43 @@ Hide **amounts**; sender and recipient remain visible. Smallest self-contained p
 - Spend authorization still Dilithium; **no ring yet** — input still names its real predecessor.
 - **Deliverable:** confidential-amount transactions verified end-to-end; reviewer + audit-of-glue.
 
+### 5a status (2026-06-14)
+
+Types, commitment scheme, range proofs, `validate_transaction_v2`, wire format, and tests
+landed in `7c3618a` (4 tests + 65 prior = 69 pass). v2 is **not wired** into block validation,
+mempool, UTXO storage, or the network decode path — it is referenced only within its own module.
+rust-reviewed on `7c3618a`: the crypto plumbing (generator threading, commit/prove/verify
+consistency, range-proof binding, sighash field coverage, wire round-trip) is correct; the items
+below were raised as **hard prerequisites before 5b wires any v2 path into consensus**. The v1
+decode unbounded-allocation DoS (shared latent pattern) was fixed separately — `MAX_TX_INPUTS` /
+`MAX_TX_OUTPUTS` / `MAX_WITNESS_ITEMS` caps (1000) now bound every attacker-controlled count in
+`Transaction::decode`, `Witness::decode`, and `TransactionV2::decode`.
+
+## 5b Prerequisites (must resolve before wiring v2 into consensus)
+
+- **BLOCKING-1 — `fee_commitment` is unsound.** `validate_transaction_v2` checks
+  `Σ in == Σ out + fee_commitment` where `fee_commitment` is an arbitrary attacker-supplied
+  Ristretto point with no range proof and no proof its blinding (H) component is zero. With
+  inputs committed at blinding 0, the equation is satisfiable for any output values — the fee's
+  value-generator coefficient is whatever the attacker picks (including negative ⇒ inflation).
+  Fix: use a **public `fee: u64` ⇒ `fee·G`** (zero blinding), summed into the coinbase exactly as
+  v1. `verify_balance(.., fee: u64)` already implements this correctly; `verify_balance_committed`
+  with an unconstrained `fee_commitment` must not be carried into consensus. A full CT design
+  requires an explicit excess / commitment-to-zero kernel and a range-proofed fee.
+- **BLOCKING-2 — input-blinding-zero excess undefined.** Because 5a spends public v1 UTXOs
+  (blinding 0), the only place the output blinding sum can be absorbed is the fee term. 5b must
+  define where the output blinding sum lives (a real CT excess/kernel, or a change-output
+  construction) and **prove it commits to zero** in the value generator.
+- **N1/N2 — batch range-proof verification + cached gens.** `validate_transaction_v2` verifies
+  range proofs one-by-one and rebuilds `BulletproofGens::new(64,1)` on every call. Before consensus
+  exposure: use Bulletproofs **batched/aggregated** verification (the range proof is ~73% of v2
+  verify cost per the benchmark) and cache the generators in a `OnceLock` (as `h_generator` does).
+  Also bound output count / total proof bytes per tx.
+- **N7 — unambiguous v1/v2 discriminator.** A v1 `Transaction` with `version == 2` and a
+  `TransactionV2` both lead with a `version = 2` `u32`. They are safe today only because they decode
+  on separate Rust paths; before any shared decode path (mempool/network/block) introduce a
+  distinct discriminator (distinct version number or explicit type tag).
+
 ## Stage 5b — Sender Privacy (CLSAG + key images)
 
 - **CLSAG ring signatures**, ring size 11, decoys via gamma distribution over output age.

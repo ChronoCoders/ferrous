@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 /// Maximum number of satoshis that can ever exist in the system.
 pub const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 
+const MAX_TX_INPUTS: usize = 1000;
+const MAX_TX_OUTPUTS: usize = 1000;
+const MAX_WITNESS_ITEMS: usize = 1000;
+
 /// Errors that can occur when validating basic transaction structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxError {
@@ -149,6 +153,9 @@ impl Decode for Witness {
     fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
         let (count_u64, c1) = decode_varint(bytes).map_err(map_varint_error)?;
         let count: usize = count_u64.try_into().map_err(|_| DecodeError::Overflow)?;
+        if count > MAX_WITNESS_ITEMS {
+            return Err(DecodeError::InvalidData);
+        }
 
         let mut offset = c1;
         let mut items = Vec::with_capacity(count);
@@ -196,6 +203,9 @@ impl Decode for Transaction {
         let input_count: usize = input_count_u64
             .try_into()
             .map_err(|_| DecodeError::Overflow)?;
+        if input_count > MAX_TX_INPUTS {
+            return Err(DecodeError::InvalidData);
+        }
 
         let mut offset = c1 + c2;
 
@@ -210,6 +220,9 @@ impl Decode for Transaction {
         let output_count: usize = output_count_u64
             .try_into()
             .map_err(|_| DecodeError::Overflow)?;
+        if output_count > MAX_TX_OUTPUTS {
+            return Err(DecodeError::InvalidData);
+        }
 
         offset += c3;
 
@@ -231,6 +244,9 @@ impl Decode for Transaction {
         let witness_count: usize = witness_count_u64
             .try_into()
             .map_err(|_| DecodeError::Overflow)?;
+        if witness_count > MAX_TX_INPUTS {
+            return Err(DecodeError::InvalidData);
+        }
         offset += cw;
 
         let mut witnesses = Vec::with_capacity(witness_count);
@@ -528,6 +544,9 @@ impl Decode for TransactionV2 {
         let input_count: usize = input_count_u64
             .try_into()
             .map_err(|_| DecodeError::Overflow)?;
+        if input_count > MAX_TX_INPUTS {
+            return Err(DecodeError::InvalidData);
+        }
 
         let mut offset = c1 + c2;
         let mut inputs = Vec::with_capacity(input_count);
@@ -541,6 +560,9 @@ impl Decode for TransactionV2 {
         let output_count: usize = output_count_u64
             .try_into()
             .map_err(|_| DecodeError::Overflow)?;
+        if output_count > MAX_TX_OUTPUTS {
+            return Err(DecodeError::InvalidData);
+        }
         offset += c3;
 
         let mut outputs = Vec::with_capacity(output_count);
