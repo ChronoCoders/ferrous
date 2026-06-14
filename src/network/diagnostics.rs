@@ -91,7 +91,7 @@ impl NetworkDiagnostics {
         }
 
         // Penalty for no outbound connections
-        if summary.outbound_peers == 0 {
+        if summary.outbound_peers == 0 && summary.total_peers >= 2 {
             score = score.saturating_sub(40);
         }
 
