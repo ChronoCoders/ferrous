@@ -32,6 +32,53 @@ A v2 tx (11-member ring + BP range proof + Dilithium sig) is ~**8–15 KB**. At
 a benchmark (`examples/`) measuring per-tx verify time, and a recalibrated block/mempool
 policy. **Must complete before building 5a.** (CLAUDE.md flags this as a hard prerequisite.)
 
+### Results (DONE 2026-06-13, `examples/verify_bench.rs`, commit `53c39c5`)
+
+Benchmark is dev-deps-only (`curve25519-dalek` 4, `curve25519-dalek-ng` 4 +
+`bulletproofs` 4 + `merlin` 3) — it does **not** ship in the node binary. No consensus
+code touched. Measured on seed4 (Vultr 1 vCPU, single-thread, RandomX miner paused so
+timings aren't skewed by core contention). v1, Ristretto, and Bulletproofs figures are
+real measurements; CLSAG is an estimate built from the measured size-2 multiexp primitive
+(no CLSAG impl exists yet).
+
+| Measurement | seed4 (1 vCPU) |
+|---|---|
+| v1 raw Dilithium verify | 0.338 ms |
+| v1 tx verify (1 input) | 0.352 ms → 2 844 tx/s |
+| v1 tx verify (10 input) | 3.61 ms → 277 tx/s |
+| v1 tx weight (1in/2out) | 21 641 units → 1 848 tx/block, 0.65 s/block |
+| Ristretto255 scalar mul (var-base) | 0.0525 ms |
+| Ristretto multiexp (size 2) | 0.0626 ms |
+| BP range proof verify (m=1) | 2.73 ms |
+| BP range proof verify (m=2, aggregated) | 4.77 ms |
+| CLSAG estimate (ring N=11) | 1.39 ms |
+| **v2 tx verify (1in/2out, est.)** | **6.50 ms → 154 tx/s** |
+| v2 tx verify (2in/2out, est.) | 7.89 ms → 127 tx/s |
+
+Cost composition of the 6.50 ms v2 tx: **range proof 4.77 ms (73%)**, CLSAG 1.39 ms (21%),
+Dilithium 0.34 ms (5%). v2 is **~18× slower to verify than v1** (154 vs 2 844 tx/s) — the
+headline DoS/throughput shift.
+
+### Policy decision: keep `MAX_BLOCK_WEIGHT = 40M` for the v2 launch
+
+At 40M with v2 tx ≈ 8–15 KB (weight = 4×size), a block holds ~650–1 220 v2 tx and verifies
+in **4–8 s** on the 1-vCPU reference node — ~3–5% of the 150 s interval, leaving ~19–35×
+realtime headroom for IBD. **Size is the binding constraint, not verification.** The
+verification ceiling at a 15 s/block budget (10% of interval) is ~2 308 tx ≈ **113M weight
+units**, far above 40M — so no weight increase is warranted, and 40M must **not** exceed
+~113M on this hardware without the optimizations below.
+
+Three levers to fix before/with 5a:
+1. **Witness discount (decision pending)** — if ring sigs + range proofs ride in the witness
+   (weight 1× not 4×), the same 40M admits ~3 250 v2 tx/block but block-verify rises to ~21 s
+   (still < interval, less IBD headroom). This discount choice directly sets the real cap and
+   must be decided when the v2 wire format is fixed in 5a.
+2. **Batch range-proof verification** — the range proof is 73% of per-tx cost; Bulletproofs
+   verifies a whole block's proofs together far cheaper than per-tx. Highest-value validation
+   optimization; implement for block validation.
+3. **Parallel verify** — figures are single-thread/1-vCPU; rayon over inputs/txs + the planned
+   4-vCPU mainnet nodes ≈ 4× the ceiling.
+
 ---
 
 ## Stage 5a — Confidential Amounts
