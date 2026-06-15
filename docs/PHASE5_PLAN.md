@@ -135,14 +135,17 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
   `TransactionV2` both lead with a `version = 2` `u32`. They are safe today only because they decode
   on separate Rust paths; before any shared decode path (mempool/network/block) introduce a
   distinct discriminator (distinct version number or explicit type tag).
-- **BLOCKING (before v2 mempool/relay) — exact-value send leaks the amount.** `build_v2_transaction`
-  (Step 3) forces the payment-output blinding to 0 when there is no change (exact-value send), so the
-  output blinding sum stays 0 with v1 inputs at blinding 0. That makes the commitment `amount·G`, from
-  which the amount is trivially recoverable (compute `k·G` for candidate `k`). The balance check still
-  holds but confidentiality is lost for any send that consumes its inputs exactly. This is BLOCKING-2
-  territory: implement a real CT excess/kernel, or require a mandatory zero-value (randomly blinded)
-  balancing output, so the output blinding sum can be non-trivial while still summing to zero. Must be
-  resolved before any v2 path is relayed.
+- **DONE — exact-value send no longer leaks the amount.** `build_v2_transaction` previously forced the
+  payment-output blinding to 0 when there was no change (exact-value send), making the commitment
+  `amount·G` (amount trivially recoverable by computing `k·G` for candidate `k`). Resolved: the builder
+  now **always emits a change output** (zero-value when the inputs cover the spend exactly), and the
+  exact-value path derives the balancing scalar from `OsRng` (`random_balancing_scalar`) rather than
+  zero — the payment blinding is set to its negation, so `x_payment` is always random/non-zero, the
+  zero-value change output carries the balancing scalar, and `Σ x_out = 0` still holds with v1 inputs at
+  blinding 0. The payment commitment is therefore never `amount·G` (test
+  `test_v2_exact_value_send_blinding_nonzero`). NOTE: a full CT excess/kernel is still the long-term
+  model (a zero-value balancing output is a stopgap that leaks the presence of an exact-value send via
+  output count); the kernel work remains BLOCKING-2 below.
 - **Pre-mainnet — `decrypt_amount` is unauthenticated alone (document as invariant).** The amount
   ciphertext is XOR over a BLAKE3 keystream with no MAC, so `decrypt_amount` returns a `(value,
   blinding)` for any 40-byte input. Authentication is delegated entirely to the commitment-opening
