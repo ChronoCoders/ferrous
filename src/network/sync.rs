@@ -722,24 +722,6 @@ impl SyncManager {
     // Legacy notification — kept for API compatibility.
     pub fn block_received(&self, _hash: [u8; 32]) {}
 
-    #[allow(dead_code)]
-    fn select_best_peer(&self) -> Option<u64> {
-        let peers = self.peer_manager.get_connected_peers();
-        let mut best_peer: Option<u64> = None;
-        let mut best_height: u32 = 0;
-        for peer_id in peers {
-            let h = self
-                .peer_manager
-                .get_peer_start_height(peer_id)
-                .unwrap_or(0);
-            if best_peer.is_none() || h > best_height {
-                best_peer = Some(peer_id);
-                best_height = h;
-            }
-        }
-        best_peer
-    }
-
     pub fn start_sync(&self, peer_id: u64) -> Result<(), String> {
         log::debug!("SyncManager: Starting sync check with peer {}", peer_id);
 

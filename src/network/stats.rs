@@ -24,7 +24,6 @@ struct NetworkStatsData {
     blocks_received: u64,
     blocks_sent: u64,
     transactions_received: u64,
-    transactions_sent: u64,
 
     // Error stats
     invalid_messages: u64,
@@ -54,7 +53,6 @@ impl NetworkStats {
                 blocks_received: 0,
                 blocks_sent: 0,
                 transactions_received: 0,
-                transactions_sent: 0,
                 invalid_messages: 0,
                 rate_limited: 0,
                 banned_peers: 0,
@@ -113,12 +111,6 @@ impl NetworkStats {
         stats.transactions_received += 1;
     }
 
-    #[allow(dead_code)]
-    pub fn record_transaction_sent(&self) {
-        let mut stats = self.stats.lock().unwrap();
-        stats.transactions_sent += 1;
-    }
-
     pub fn record_invalid_message(&self) {
         let mut stats = self.stats.lock().unwrap();
         stats.invalid_messages += 1;
@@ -164,25 +156,29 @@ impl NetworkStats {
     pub fn log_periodic_summary(&self) {
         let snapshot = self.get_snapshot();
 
-        println!("=== Network Statistics ===");
-        println!("Uptime: {} seconds", snapshot.uptime_secs);
-        println!("Connections: {} active", snapshot.current_connections);
-        println!(
+        log::info!("=== Network Statistics ===");
+        log::info!("Uptime: {} seconds", snapshot.uptime_secs);
+        log::info!("Connections: {} active", snapshot.current_connections);
+        log::info!(
             "Messages: {} sent, {} received",
-            snapshot.messages_sent, snapshot.messages_received
+            snapshot.messages_sent,
+            snapshot.messages_received
         );
-        println!(
+        log::info!(
             "Bandwidth: {:.2} KB/s in, {:.2} KB/s out",
             snapshot.avg_recv_rate / 1024.0,
             snapshot.avg_send_rate / 1024.0
         );
-        println!(
+        log::info!(
             "Blocks: {} received, {} sent",
-            snapshot.blocks_received, snapshot.blocks_sent
+            snapshot.blocks_received,
+            snapshot.blocks_sent
         );
-        println!(
+        log::info!(
             "Errors: {} invalid, {} rate limited, {} banned",
-            snapshot.invalid_messages, snapshot.rate_limited, snapshot.banned_peers
+            snapshot.invalid_messages,
+            snapshot.rate_limited,
+            snapshot.banned_peers
         );
     }
 }

@@ -33,6 +33,17 @@ pub struct PeerInfo {
     pub inbound: bool,
 }
 
+#[derive(Clone, Copy)]
+struct DispatchCtx<'a> {
+    peers: &'a Arc<Mutex<HashMap<u64, Peer>>>,
+    relay: &'a Arc<Mutex<Option<Arc<BlockRelay>>>>,
+    sync: &'a Arc<Mutex<Option<Arc<SyncManager>>>>,
+    discovery: &'a Arc<Mutex<Option<Arc<PeerDiscovery>>>>,
+    keepalive: &'a Arc<Mutex<Option<Arc<KeepaliveManager>>>>,
+    stats: &'a Arc<Mutex<Option<Arc<NetworkStats>>>>,
+    recovery: &'a Arc<Mutex<Option<Arc<RecoveryManager>>>>,
+}
+
 pub struct PeerManager {
     peers: Arc<Mutex<HashMap<u64, Peer>>>,
     next_peer_id: Arc<Mutex<u64>>,
@@ -641,19 +652,17 @@ impl PeerManager {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn dispatch_message(
-        id: u64,
-        payload: &MessagePayload,
-        magic: [u8; 4],
-        peers: &Arc<Mutex<HashMap<u64, Peer>>>,
-        relay: &Arc<Mutex<Option<Arc<BlockRelay>>>>,
-        sync: &Arc<Mutex<Option<Arc<SyncManager>>>>,
-        discovery: &Arc<Mutex<Option<Arc<PeerDiscovery>>>>,
-        keepalive: &Arc<Mutex<Option<Arc<KeepaliveManager>>>>,
-        stats: &Arc<Mutex<Option<Arc<NetworkStats>>>>,
-        recovery: &Arc<Mutex<Option<Arc<RecoveryManager>>>>,
-    ) {
+    fn dispatch_message(id: u64, payload: &MessagePayload, magic: [u8; 4], ctx: DispatchCtx) {
+        let DispatchCtx {
+            peers,
+            relay,
+            sync,
+            discovery,
+            keepalive,
+            stats,
+            recovery,
+        } = ctx;
+
         // Handle Ping/Pong directly here
         match payload {
             MessagePayload::Ping(ping) => {
@@ -1157,23 +1166,19 @@ impl PeerManager {
                                                             // Continue processing
                                                             drop(peers); // Drop again for dispatch
 
-                                                            // ... Dispatch logic ...
-                                                            // Need to indent existing dispatch logic or extract it
-                                                            // To avoid massive indentation, I'll use a helper or block
-                                                            // The existing code has dispatch logic following.
-                                                            // I need to wrap it.
-
                                                             Self::dispatch_message(
                                                                 id,
                                                                 &payload,
                                                                 magic,
-                                                                &peers_clone,
-                                                                &relay_clone,
-                                                                &sync_clone,
-                                                                &discovery_clone,
-                                                                &keepalive_clone,
-                                                                &stats_clone,
-                                                                &recovery_clone,
+                                                                DispatchCtx {
+                                                                    peers: &peers_clone,
+                                                                    relay: &relay_clone,
+                                                                    sync: &sync_clone,
+                                                                    discovery: &discovery_clone,
+                                                                    keepalive: &keepalive_clone,
+                                                                    stats: &stats_clone,
+                                                                    recovery: &recovery_clone,
+                                                                },
                                                             );
                                                         }
                                                     }

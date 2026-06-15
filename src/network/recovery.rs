@@ -96,14 +96,14 @@ impl RecoveryManager {
                 // Check for partition
                 if manager.check_partition() {
                     if let Err(e) = manager.recover() {
-                        eprintln!("Recovery failed: {}", e);
+                        log::error!("Recovery failed: {}", e);
                     }
                 } else {
                     let peer_count = manager.peer_manager.active_peer_count();
                     if peer_count > 0 {
                         if let Ok(mut state) = manager.state.lock() {
                             if state.partition_detected {
-                                println!("Network recovered - {} peers connected", peer_count);
+                                log::info!("Network recovered - {} peers connected", peer_count);
                                 state.partition_detected = false;
                                 state.recovery_attempts = 0;
                             }
@@ -180,7 +180,7 @@ impl RecoveryManager {
             // First detection
             state.partition_detected = true;
             state.recovery_attempts = 0;
-            println!("Network partition detected - initiating recovery");
+            log::warn!("Network partition detected - initiating recovery");
         }
 
         state.recovery_attempts += 1;
@@ -208,7 +208,7 @@ impl RecoveryManager {
     }
 
     fn reconnect_to_known_peers(&self) -> Result<(), String> {
-        println!("Stage 1: Reconnecting to known peers");
+        log::info!("Stage 1: Reconnecting to known peers");
 
         // Get best addresses (previously successful)
         let addrs = self
@@ -225,7 +225,7 @@ impl RecoveryManager {
     }
 
     fn reconnect_to_seeds(&self) -> Result<(), String> {
-        println!("Stage 2: Reconnecting to seed nodes");
+        log::info!("Stage 2: Reconnecting to seed nodes");
 
         for seed in &self.configured_seeds {
             let _ = self.peer_manager.connect_to_peer(*seed);
@@ -240,7 +240,7 @@ impl RecoveryManager {
             .lock()
             .map_err(|e| format!("Poisoned mutex: {}", e))?
             .recovery_attempts;
-        println!("Stage 3: Aggressive reconnection attempt {}", attempts);
+        log::warn!("Stage 3: Aggressive reconnection attempt {}", attempts);
 
         // Disconnect all peers
         self.force_reconnect();
@@ -260,7 +260,7 @@ impl RecoveryManager {
     }
 
     fn full_network_reset(&self) -> Result<(), String> {
-        println!("Stage 4: Full network reset");
+        log::warn!("Stage 4: Full network reset");
 
         // Disconnect everything
         self.force_reconnect();
@@ -297,7 +297,7 @@ impl RecoveryManager {
     }
 
     pub fn force_reconnect(&self) {
-        println!("Force reconnecting all peers");
+        log::warn!("Force reconnecting all peers");
 
         // Get all peer IDs
         let peer_ids = self.peer_manager.get_connected_peers();
