@@ -12,8 +12,6 @@ pub struct KeepaliveManager {
 
 struct PingState {
     last_ping_sent: Instant,
-    #[allow(dead_code)] // Field is read but not used in logic yet (future use for latency calc)
-    last_pong_received: Instant,
     pending_nonce: Option<u64>,
     missed_pongs: u32,
 }
@@ -41,7 +39,6 @@ impl KeepaliveManager {
 
                     let ping_state = state.entry(peer_id).or_insert(PingState {
                         last_ping_sent: Instant::now(),
-                        last_pong_received: Instant::now(),
                         pending_nonce: None,
                         missed_pongs: 0,
                     });
@@ -52,7 +49,7 @@ impl KeepaliveManager {
                         ping_state.missed_pongs += 1;
 
                         if ping_state.missed_pongs >= 3 {
-                            println!("Peer {} missed 3 pongs, disconnecting", peer_id);
+                            log::warn!("Peer {} missed 3 pongs, disconnecting", peer_id);
                             drop(state); // Drop lock before calling into peer_manager to avoid potential deadlocks
                             let _ = peer_manager.disconnect_peer(peer_id);
                             continue;
@@ -77,7 +74,7 @@ impl KeepaliveManager {
                     let msg = crate::network::message::NetworkMessage::new(magic, "ping", payload);
 
                     if let Err(e) = peer_manager.send_to_peer(peer_id, &msg) {
-                        println!("Failed to send ping to peer {}: {}", peer_id, e);
+                        log::warn!("Failed to send ping to peer {}: {}", peer_id, e);
                     }
                 }
             }
@@ -90,7 +87,6 @@ impl KeepaliveManager {
         if let Some(ping_state) = state.get_mut(&peer_id) {
             // Verify nonce matches
             if ping_state.pending_nonce == Some(nonce) {
-                ping_state.last_pong_received = Instant::now();
                 ping_state.pending_nonce = None;
                 ping_state.missed_pongs = 0;
                 // Calculate latency here if needed: Instant::now() - ping_state.last_ping_sent

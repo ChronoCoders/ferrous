@@ -53,7 +53,7 @@ impl NetworkListener {
                                     on_peer_clone(conn);
                                 }
                                 Err(e) => {
-                                    eprintln!("Failed to create peer connection: {}", e);
+                                    log::error!("Failed to create peer connection: {}", e);
                                 }
                             }
                             // Decrement count when peer disconnects (handled by on_peer returning)
@@ -62,7 +62,7 @@ impl NetworkListener {
                         });
                     }
                     Err(e) => {
-                        eprintln!("Error accepting connection: {}", e);
+                        log::error!("Error accepting connection: {}", e);
                     }
                 }
             }
