@@ -732,10 +732,7 @@ impl RpcServer {
                     .write()
                     .map_err(|_| "Lock poisoned".to_string())?;
                 chain
-                    .add_block(Block {
-                        header,
-                        transactions: txs,
-                    })
+                    .add_block(Block::from_v1(header, txs))
                     .map_err(|e| format!("add_block failed: {:?}", e))?;
             }
             last_hash = header.hash();
@@ -800,10 +797,7 @@ impl RpcServer {
                     .write()
                     .map_err(|_| "Chain lock failed".to_string())?;
                 chain
-                    .add_block(Block {
-                        header,
-                        transactions: txs,
-                    })
+                    .add_block(Block::from_v1(header, txs))
                     .map_err(|e| format!("add_block failed: {:?}", e))?;
             }
             last_hash = header.hash();
@@ -1039,6 +1033,7 @@ impl RpcServer {
 
         drop(chain);
 
+        let v1_txs = block.v1_transactions();
         let network_prefix = self.network_prefix;
         let size = block.header.encoded_size()
             + varint::encode(block.transactions.len() as u64).len()
@@ -1050,8 +1045,7 @@ impl RpcServer {
         let n_tx = block.transactions.len();
 
         // Derive miner address from coinbase tx output 0 script_pubkey.
-        let miner = block
-            .transactions
+        let miner = v1_txs
             .first()
             .and_then(|tx| tx.outputs.first())
             .and_then(|out| script_pubkey_to_address(&out.script_pubkey, network_prefix));
@@ -1064,8 +1058,7 @@ impl RpcServer {
 
         let transactions = if verbose {
             Some(
-                block
-                    .transactions
+                v1_txs
                     .iter()
                     .enumerate()
                     .map(|(idx, tx)| {

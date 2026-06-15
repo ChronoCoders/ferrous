@@ -71,12 +71,12 @@ impl BlockStore {
     ) -> Result<(), String> {
         let block_hash = block.header.hash();
 
-        let block_bytes = bincode::serialize(block).map_err(|e| e.to_string())?;
+        use crate::primitives::serialize::Encode;
+        let block_bytes = block.encode();
 
         let mut batch = self.db.batch();
         batch.put(CF_BLOCKS, &block_hash, &block_bytes)?;
 
-        use crate::primitives::serialize::Encode;
         let header_bytes = block.header.encode();
         batch.put(CF_HEADERS, &block_hash, &header_bytes)?;
 
@@ -102,12 +102,12 @@ impl BlockStore {
         cumulative_work: U256,
     ) -> Result<(), String> {
         let block_hash = block.header.hash();
-        let block_bytes = bincode::serialize(block).map_err(|e| e.to_string())?;
+        use crate::primitives::serialize::Encode;
+        let block_bytes = block.encode();
 
         let mut batch = self.db.batch();
         batch.put(CF_BLOCKS, &block_hash, &block_bytes)?;
 
-        use crate::primitives::serialize::Encode;
         let header_bytes = block.header.encode();
         batch.put(CF_HEADERS, &block_hash, &header_bytes)?;
 
@@ -168,7 +168,8 @@ impl BlockStore {
 
         match bytes {
             Some(b) => {
-                let block = bincode::deserialize(&b).map_err(|e| e.to_string())?;
+                use crate::primitives::serialize::Decode;
+                let (block, _) = Block::decode(&b).map_err(|e| format!("{:?}", e))?;
                 Ok(Some(block))
             }
             None => Ok(None),

@@ -1,5 +1,6 @@
 use crate::consensus::transaction::{Transaction, TxOutput};
 use crate::primitives::hash::Hash256;
+use crate::primitives::serialize::{Decode, DecodeError, Encode};
 use crate::script::engine::{validate_p2dl, ScriptContext};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -15,6 +16,54 @@ pub struct UtxoEntry {
     pub output: TxOutput,
     pub coinbase: bool,
     pub height: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UtxoEntryV2 {
+    pub commitment: [u8; 32],
+    pub script_pubkey: Vec<u8>,
+    pub encrypted_amount: Vec<u8>,
+    pub ephemeral_pubkey: [u8; 32],
+    pub coinbase: bool,
+    pub height: u32,
+}
+
+impl Encode for UtxoEntryV2 {
+    fn encode(&self) -> Vec<u8> {
+        let mut out = self.commitment.to_vec();
+        out.extend_from_slice(&self.script_pubkey.encode());
+        out.extend_from_slice(&self.encrypted_amount.encode());
+        out.extend_from_slice(&self.ephemeral_pubkey);
+        out.push(self.coinbase as u8);
+        out.extend_from_slice(&self.height.encode());
+        out
+    }
+
+    fn encoded_size(&self) -> usize {
+        32 + self.script_pubkey.encoded_size() + self.encrypted_amount.encoded_size() + 32 + 1 + 4
+    }
+}
+
+impl Decode for UtxoEntryV2 {
+    fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let (commitment, c1) = <[u8; 32]>::decode(bytes)?;
+        let (script_pubkey, c2) = Vec::<u8>::decode(&bytes[c1..])?;
+        let (encrypted_amount, c3) = Vec::<u8>::decode(&bytes[c1 + c2..])?;
+        let (ephemeral_pubkey, c4) = <[u8; 32]>::decode(&bytes[c1 + c2 + c3..])?;
+        let (cb_byte, c5) = u8::decode(&bytes[c1 + c2 + c3 + c4..])?;
+        let (height, c6) = u32::decode(&bytes[c1 + c2 + c3 + c4 + c5..])?;
+        Ok((
+            UtxoEntryV2 {
+                commitment,
+                script_pubkey,
+                encrypted_amount,
+                ephemeral_pubkey,
+                coinbase: cb_byte != 0,
+                height,
+            },
+            c1 + c2 + c3 + c4 + c5 + c6,
+        ))
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -414,10 +414,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Phase 3: commit with write lock — brief (~add_block duration).
                 let result = {
                     let mut chain_guard = chain_mine.write().unwrap();
-                    chain_guard.add_block(Block {
-                        header,
-                        transactions: txs.clone(),
-                    })
+                    chain_guard.add_block(Block::from_v1(header, txs.clone()))
                 };
                 // Write lock is now released.
 

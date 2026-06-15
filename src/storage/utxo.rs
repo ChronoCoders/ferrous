@@ -1,6 +1,7 @@
-use crate::consensus::utxo::{OutPoint, UtxoEntry};
+use crate::consensus::utxo::{OutPoint, UtxoEntry, UtxoEntryV2};
 use crate::primitives::hash::Hash256;
-use crate::storage::{Database, CF_UNDO, CF_UTXO};
+use crate::primitives::serialize::{Decode, Encode};
+use crate::storage::{Database, CF_UNDO, CF_UTXO, CF_UTXO_V2};
 use std::sync::Arc;
 
 /// UTXO set storage interface
@@ -164,5 +165,69 @@ impl UtxoStore {
     /// Deserialize UTXO entry
     fn deserialize_entry(bytes: &[u8]) -> Result<UtxoEntry, String> {
         bincode::deserialize(bytes).map_err(|e| format!("Failed to deserialize UtxoEntry: {}", e))
+    }
+}
+
+pub struct UtxoStoreV2 {
+    db: Arc<Database>,
+}
+
+impl UtxoStoreV2 {
+    pub fn new(db: Arc<Database>) -> Self {
+        Self { db }
+    }
+
+    pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<Option<UtxoEntryV2>, String> {
+        let key = Self::outpoint_key(outpoint);
+        match self.db.get(CF_UTXO_V2, &key)? {
+            Some(b) => {
+                let (entry, _) = UtxoEntryV2::decode(&b)
+                    .map_err(|e| format!("Failed to deserialize UtxoEntryV2: {:?}", e))?;
+                Ok(Some(entry))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn put_utxo(&self, outpoint: &OutPoint, entry: &UtxoEntryV2) -> Result<(), String> {
+        let key = Self::outpoint_key(outpoint);
+        self.db.put(CF_UTXO_V2, &key, &entry.encode())
+    }
+
+    pub fn apply_block(
+        &self,
+        created: &[(OutPoint, UtxoEntryV2)],
+        spent: &[OutPoint],
+    ) -> Result<(), String> {
+        let mut batch = self.db.batch();
+        for (outpoint, entry) in created {
+            batch.put(CF_UTXO_V2, &Self::outpoint_key(outpoint), &entry.encode())?;
+        }
+        for outpoint in spent {
+            batch.delete(CF_UTXO_V2, &Self::outpoint_key(outpoint))?;
+        }
+        batch.commit()
+    }
+
+    pub fn revert_block(
+        &self,
+        created: &[OutPoint],
+        restored: &[(OutPoint, UtxoEntryV2)],
+    ) -> Result<(), String> {
+        let mut batch = self.db.batch();
+        for outpoint in created {
+            batch.delete(CF_UTXO_V2, &Self::outpoint_key(outpoint))?;
+        }
+        for (outpoint, entry) in restored {
+            batch.put(CF_UTXO_V2, &Self::outpoint_key(outpoint), &entry.encode())?;
+        }
+        batch.commit()
+    }
+
+    fn outpoint_key(outpoint: &OutPoint) -> Vec<u8> {
+        let mut key = Vec::with_capacity(36);
+        key.extend_from_slice(&outpoint.txid);
+        key.extend_from_slice(&outpoint.vout.to_le_bytes());
+        key
     }
 }
