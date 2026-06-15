@@ -1,16 +1,17 @@
-use crate::consensus::chain::ChainState;
+use crate::consensus::block::{Block, BlockHeader};
+use crate::consensus::chain::{ChainError, ChainState};
 use crate::consensus::merkle::compute_merkle_root;
 use crate::consensus::params::Network;
 use crate::consensus::transaction::{
     BlindingFactor, RangeProof, Transaction, TransactionV2, TxInput, TxInputV2, TxKind, TxOutput,
     TxOutputV2, TX_VERSION_V2,
 };
-use crate::consensus::utxo::{OutPoint, UtxoEntryV2};
+use crate::consensus::utxo::{OutPoint, UtxoEntryV2, UtxoError};
 use crate::consensus::validation::validate_transaction_v2;
 use crate::crypto::commitments::{
     commit, generate_range_proof, verify_balance, verify_range_proof,
 };
-use crate::primitives::serialize::{Decode, Encode};
+use crate::primitives::serialize::{Decode, DecodeError, Encode};
 use crate::script::sighash::compute_sighash_v2;
 use crate::wallet::dilithium::DilithiumKeypair;
 use curve25519_dalek_ng::scalar::Scalar;
@@ -294,4 +295,98 @@ fn test_mixed_block() {
             TxKind::V2(x) => x.check_structure().unwrap(),
         }
     }
+}
+
+#[test]
+fn test_v2_intrablock_double_spend_rejected() {
+    let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+
+    let kp = DilithiumKeypair::generate();
+    let pubkey = kp.verifying_key_bytes();
+    let script_pubkey = p2dl_script(&pubkey);
+
+    let v_in = 1000u64;
+    let fee = 100u64;
+    let v_out = v_in - fee;
+    let blind = BlindingFactor([5u8; 32]);
+
+    let c_in = commit(v_in, &blind);
+    let in_op = OutPoint {
+        txid: [9u8; 32],
+        vout: 0,
+    };
+    let in_entry = UtxoEntryV2 {
+        commitment: *c_in.0.as_bytes(),
+        script_pubkey: script_pubkey.clone(),
+        encrypted_amount: vec![],
+        ephemeral_pubkey: [0u8; 32],
+        coinbase: false,
+        height: 0,
+    };
+    chain.utxo_store_v2.put_utxo(&in_op, &in_entry).unwrap();
+
+    let c_out = commit(v_out, &blind);
+    let proof = generate_range_proof(v_out, &blind).unwrap();
+
+    let mut tx = TransactionV2 {
+        version: TX_VERSION_V2,
+        inputs: vec![TxInputV2 {
+            prev_txid: in_op.txid,
+            prev_index: in_op.vout,
+            script_sig: vec![],
+            sequence: 0xFFFF_FFFF,
+        }],
+        outputs: vec![TxOutputV2 {
+            commitment: c_out.clone(),
+            range_proof: proof,
+            script_pubkey: script_pubkey.clone(),
+            encrypted_amount: vec![],
+            ephemeral_pubkey: [0u8; 32],
+        }],
+        fee,
+        locktime: 0,
+    };
+
+    let sighash = compute_sighash_v2(&tx, 0, &script_pubkey).unwrap();
+    let sig = kp.sign(&sighash);
+    let mut script_sig = Vec::new();
+    push_data(&mut script_sig, &sig);
+    push_data(&mut script_sig, &pubkey);
+    tx.inputs[0].script_sig = script_sig;
+
+    validate_transaction_v2(&tx, &chain).unwrap();
+
+    let header = BlockHeader {
+        version: 1,
+        prev_block_hash: [0u8; 32],
+        merkle_root: [0u8; 32],
+        timestamp: 0,
+        n_bits: 0,
+        nonce: 0,
+    };
+    let block = Block {
+        header,
+        transactions: vec![TxKind::V2(tx.clone()), TxKind::V2(tx)],
+    };
+
+    let res = chain.collect_v2_utxo_changes(&block, 1);
+    assert!(matches!(
+        res,
+        Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent))
+    ));
+}
+
+#[test]
+fn test_encrypted_amount_decode_cap() {
+    let out = TxOutputV2 {
+        commitment: commit(1, &BlindingFactor([1u8; 32])),
+        range_proof: RangeProof(vec![1, 2, 3]),
+        script_pubkey: vec![0xaa],
+        encrypted_amount: vec![0u8; 81],
+        ephemeral_pubkey: [0u8; 32],
+    };
+
+    let enc = out.encode();
+    let res = TxOutputV2::decode(&enc);
+    assert!(matches!(res, Err(DecodeError::InvalidData)));
 }
