@@ -720,3 +720,65 @@ fn test_v2_reorg_unblocked() {
     let restored = chain.utxo_store_v2.get_utxo(&in_op).unwrap();
     assert_eq!(restored, Some(in_entry));
 }
+
+#[test]
+fn test_block_message_v2_roundtrip() {
+    use crate::network::protocol::BlockMessage;
+
+    let v1 = TxKind::V1(Transaction {
+        version: 1,
+        inputs: vec![TxInput {
+            prev_txid: [1u8; 32],
+            prev_index: 0,
+            script_sig: vec![],
+            sequence: 0xFFFF_FFFF,
+        }],
+        outputs: vec![TxOutput {
+            value: 50,
+            script_pubkey: vec![0x51],
+        }],
+        witnesses: vec![],
+        locktime: 0,
+    });
+
+    let v2 = TxKind::V2(TransactionV2 {
+        version: TX_VERSION_V2,
+        inputs: vec![TxInputV2 {
+            prev_txid: [2u8; 32],
+            prev_index: 1,
+            script_sig: vec![7, 8, 9],
+            sequence: 0xFFFF_FFFF,
+        }],
+        outputs: vec![TxOutputV2 {
+            commitment: commit(500, &BlindingFactor([3u8; 32])),
+            range_proof: RangeProof(vec![1, 2, 3, 4]),
+            script_pubkey: vec![0xaa, 0x20],
+            encrypted_amount: vec![9, 9, 9],
+            ephemeral_pubkey: [4u8; 32],
+        }],
+        fee: 7,
+        locktime: 0,
+    });
+
+    let msg = BlockMessage {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: [5u8; 32],
+            merkle_root: [6u8; 32],
+            timestamp: 123,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![v1, v2],
+    };
+
+    let encoded = msg.encode();
+    assert_eq!(encoded.len(), msg.encoded_size());
+
+    let (decoded, consumed) = BlockMessage::decode(&encoded).unwrap();
+    assert_eq!(consumed, encoded.len());
+    assert_eq!(decoded.transactions.len(), 2);
+    assert_eq!(decoded, msg);
+    assert!(matches!(decoded.transactions[0], TxKind::V1(_)));
+    assert!(matches!(decoded.transactions[1], TxKind::V2(_)));
+}

@@ -137,13 +137,15 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
   requires `version == 3`. Version 3 is exclusively v2, 1–2 exclusively v1. The shared decode paths
   introduced in Step 4 (mempool `add_transaction`, RPC `sendrawtransaction`, P2P `TxMessage`) all
   dispatch through `TxKind::decode`, so the discriminator is unambiguous.
-- **BLOCKING (before any v2 tx is mined/relayed) — `BlockMessage` is still v1-only.** Step 4 wired v2
-  through mempool → TX relay (INV/GETDATA/TX) → miner template → block validation → reorg, but the P2P
-  `BlockMessage` still carries `Vec<Transaction>` and relay serves `Block::v1_transactions()`. A
-  locally-mined block containing a v2 tx therefore cannot propagate (peers reject on merkle mismatch).
-  Safe only while v2 is not activated (miner template + `BlockMessage` are v1-only, so no v2 tx ever
-  enters a relayed block). Before v2 activation, `BlockMessage` must carry `Vec<TxKind>` (encode/decode
-  via `TxKind`, v1 bytes unchanged) and relay/sync must stop filtering through `v1_transactions()`.
+- **DONE — `BlockMessage` carries `Vec<TxKind>` (block-level v2 propagation).** `BlockMessage.transactions`
+  changed from `Vec<Transaction>` to `Vec<TxKind>`; `BlockMessage::encode` serializes each `TxKind`
+  (v1 bytes byte-identical) and `decode` routes through `TxKind::decode` (version 3 ⇒ v2). `relay`
+  `handle_getdata`/`handle_block`/orphan-store now build `Block` directly from `BlockMessage.transactions`
+  (no `v1_transactions()` filtering), so a block containing v2 txs propagates intact over INV→GETDATA→BLOCK.
+  v1-only blocks are unchanged on the wire (`test_block_message_v2_roundtrip` pins the mixed-tx decode-offset
+  invariant). The remaining gate before v2 *activation* is the miner template / mempool selection deciding
+  to mine v2 txs into blocks (already wired in Step 4) plus the consensus BLOCKING-1/BLOCKING-2 fee/excess
+  items above.
 - **Pre-mainnet — `add_block` v1+v2 apply is not a single atomic batch.** The non-reorg apply path does
   separate RocksDB commits (`utxo_store.apply_block`, `store_undo_data`, `utxo_store_v2.apply_block`,
   `utxo_store_v2.store_undo_data`, `store_block`, `set_tip`); a crash between them can leave the v1 and

@@ -143,7 +143,7 @@ impl BlockRelay {
                             .get_block(&inv_vec.hash)
                             .map(|b| BlockMessage {
                                 header: b.header,
-                                transactions: b.v1_transactions(),
+                                transactions: b.transactions.clone(),
                             })
                             .or_else(|| {
                                 chain
@@ -153,7 +153,7 @@ impl BlockRelay {
                                     .flatten()
                                     .map(|b| BlockMessage {
                                         header: b.header,
-                                        transactions: b.v1_transactions(),
+                                        transactions: b.transactions.clone(),
                                     })
                             });
                         if let Some(block_msg) = block_opt {
@@ -211,10 +211,10 @@ impl BlockRelay {
             let sync_guard = self.peer_manager.sync_manager();
             let sync_lock = sync_guard.lock().unwrap();
             sync_lock.as_ref().and_then(|sync| {
-                sync.receive_block_for_sync(Block::from_v1(
-                    block.header,
-                    block.transactions.clone(),
-                ))
+                sync.receive_block_for_sync(Block {
+                    header: block.header,
+                    transactions: block.transactions.clone(),
+                })
             })
         };
 
@@ -266,7 +266,10 @@ impl BlockRelay {
             return Ok(());
         }
 
-        match chain.add_block(Block::from_v1(block.header, block.transactions.clone())) {
+        match chain.add_block(Block {
+            header: block.header,
+            transactions: block.transactions.clone(),
+        }) {
             Ok(requeued_txs) => {
                 log::info!(
                     "Relay: block {} added to chain successfully",
@@ -299,9 +302,7 @@ impl BlockRelay {
                     if !syncing {
                         self.announce_block(block_hash)?;
                     }
-                    let confirmed: Vec<TxKind> =
-                        block.transactions.iter().cloned().map(TxKind::V1).collect();
-                    self.mempool.remove_block_transactions(&confirmed);
+                    self.mempool.remove_block_transactions(&block.transactions);
                     self.mempool.purge_stale();
                     // Re-add transactions from disconnected blocks so they can be re-mined.
                     for tx in requeued_txs {
@@ -323,10 +324,10 @@ impl BlockRelay {
                     // Store the orphan so it can be applied once its parent arrives.
                     sync.store_orphan(
                         block_hash,
-                        crate::consensus::block::Block::from_v1(
-                            block.header,
-                            block.transactions.clone(),
-                        ),
+                        crate::consensus::block::Block {
+                            header: block.header,
+                            transactions: block.transactions.clone(),
+                        },
                     );
                     if !sync.is_syncing() {
                         let _ = sync.request_headers_force(peer_id);
