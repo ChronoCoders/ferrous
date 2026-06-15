@@ -22,12 +22,12 @@ pub fn randomx_pow_hash(input: &[u8], epoch_key: &[u8]) -> [u8; 32] {
     use std::cell::RefCell;
 
     thread_local! {
-        static VM: RefCell<Option<(Vec<u8>, RandomXVM)>> = RefCell::new(None);
+        static VM: RefCell<Option<(Vec<u8>, RandomXVM)>> = const { RefCell::new(None) };
     }
 
     VM.with(|cell| {
         let mut slot = cell.borrow_mut();
-        let needs_init = slot.as_ref().map_or(true, |(k, _)| k != epoch_key);
+        let needs_init = slot.as_ref().is_none_or(|(k, _)| k != epoch_key);
         if needs_init {
             let flags = RandomXFlag::get_recommended_flags();
             let cache = RandomXCache::new(flags, epoch_key).expect("RandomX cache init");
