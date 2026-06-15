@@ -135,17 +135,18 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
   `TransactionV2` both lead with a `version = 2` `u32`. They are safe today only because they decode
   on separate Rust paths; before any shared decode path (mempool/network/block) introduce a
   distinct discriminator (distinct version number or explicit type tag).
-- **BLOCKING — intra-block v2 double-spend guard missing in `collect_v2_utxo_changes`.** Two v2
-  transactions spending the same outpoint within a single block both pass the `get_utxo().is_none()`
+- **DONE (`42bf89d`) — intra-block v2 double-spend guard added in `collect_v2_utxo_changes`.** Two v2
+  transactions spending the same outpoint within a single block both passed the `get_utxo().is_none()`
   DB check (the outpoint stays unspent in the DB until the end-of-block commit) and the
-  `UtxoStoreV2::apply_block` delete is idempotent, so the double-spend is silently accepted. Latent
-  today only because no production path emits a v2 block (miner template and `BlockMessage` are
-  V1-only). Must add a `HashSet<OutPoint>` per-block guard mirroring the v1 path (audit fix #39)
-  before any v2 mining/relay step.
-- **Pre-mainnet — `MAX_ENCRYPTED_AMOUNT = 80` is a validation bound only, not a decode bound.** It is
-  enforced in `check_structure` (reached via `validate_block`/`validate_transaction_v2`), and the
-  decode path is currently protected only by the global 32 MiB `Vec<u8>` cap + EOF check. Add a
-  decode-level cap consistent with `MAX_TX_INPUTS`/`MAX_TX_OUTPUTS` for defense-in-depth.
+  `UtxoStoreV2::apply_block` delete is idempotent, so the double-spend was silently accepted. Resolved
+  in `42bf89d`: a block-level `HashSet<OutPoint>` (`spent_in_block`) checked before the CF_UTXO_V2
+  lookup now rejects duplicates with `UtxoError::UtxoAlreadySpent` (test
+  `test_v2_intrablock_double_spend_rejected`).
+- **DONE (`42bf89d`) — `MAX_ENCRYPTED_AMOUNT = 80` now enforced at decode, not only validation.** It
+  was enforced only in `check_structure` (reached via `validate_block`/`validate_transaction_v2`),
+  with the decode path protected only by the global 32 MiB `Vec<u8>` cap + EOF check. Resolved in
+  `42bf89d`: `TxOutputV2::decode` rejects `encrypted_amount.len() > MAX_ENCRYPTED_AMOUNT` with
+  `DecodeError::InvalidData` (test `test_encrypted_amount_decode_cap`).
 - **BLOCKING (pre-mainnet) — v1 has no block-level cross-tx double-spend guard.** `seen_outpoints` in
   `apply_block_to_utxo_inner` is per-tx; two v1 txs in the same block spending the same UTXO are both
   accepted (each tx's `get_utxo` succeeds against the not-yet-mutated DB, and `UtxoStore::apply_block`
