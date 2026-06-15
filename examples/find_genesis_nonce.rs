@@ -57,7 +57,7 @@ fn main() {
         header.nonce = header.nonce.wrapping_add(1);
         checked += 1;
 
-        if checked % 100 == 0 {
+        if checked.is_multiple_of(100) {
             let elapsed = start.elapsed().as_secs_f64();
             print!(
                 "\r  nonce={} checked={} elapsed={:.0}s rate={:.2} H/s    ",
