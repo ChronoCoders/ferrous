@@ -819,6 +819,7 @@ impl ChainState {
         let mut spent = Vec::new();
         let mut spent_entries = Vec::new();
         let mut block_fees: u64 = 0;
+        let mut spent_in_block: HashSet<OutPoint> = HashSet::new();
 
         for (tx_idx, txkind) in block.transactions.iter().enumerate() {
             let tx = match txkind {
@@ -831,7 +832,6 @@ impl ChainState {
             if !is_coinbase {
                 let mut spent_outputs = Vec::with_capacity(tx.inputs.len());
                 let mut input_sum: u64 = 0;
-                let mut seen_outpoints: HashSet<OutPoint> = HashSet::with_capacity(tx.inputs.len());
 
                 for input in &tx.inputs {
                     let outpoint = OutPoint {
@@ -839,7 +839,7 @@ impl ChainState {
                         vout: input.prev_index,
                     };
 
-                    if !seen_outpoints.insert(outpoint) {
+                    if !spent_in_block.insert(outpoint) {
                         return Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent));
                     }
 
@@ -905,7 +905,7 @@ impl ChainState {
         Ok((created, spent, spent_entries, block_fees))
     }
 
-    fn apply_block_to_utxo(
+    pub(crate) fn apply_block_to_utxo(
         &self,
         block: &Block,
         height: u64,

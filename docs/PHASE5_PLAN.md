@@ -147,11 +147,14 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
   with the decode path protected only by the global 32 MiB `Vec<u8>` cap + EOF check. Resolved in
   `42bf89d`: `TxOutputV2::decode` rejects `encrypted_amount.len() > MAX_ENCRYPTED_AMOUNT` with
   `DecodeError::InvalidData` (test `test_encrypted_amount_decode_cap`).
-- **BLOCKING (pre-mainnet) — v1 has no block-level cross-tx double-spend guard.** `seen_outpoints` in
-  `apply_block_to_utxo_inner` is per-tx; two v1 txs in the same block spending the same UTXO are both
-  accepted (each tx's `get_utxo` succeeds against the not-yet-mutated DB, and `UtxoStore::apply_block`
-  batches an idempotent delete per outpoint). Add a block-level `HashSet<OutPoint>` guard mirroring
-  the new v2 guard before mainnet. The reorg-sim path (`apply_block_to_utxo_sim`) has the same gap.
+- **DONE — v1 block-level cross-tx double-spend guard added.** Previously `seen_outpoints` in
+  `apply_block_to_utxo_inner` was per-tx, so two v1 txs in the same block spending the same UTXO were
+  both accepted (each tx's `get_utxo` succeeded against the not-yet-mutated DB, and
+  `UtxoStore::apply_block` batches an idempotent delete per outpoint). Resolved: a block-level
+  `HashSet<OutPoint>` (`spent_in_block`) declared once before the tx loop in
+  `apply_block_to_utxo_inner` — shared by the live `apply_block_to_utxo` and reorg-sim
+  `apply_block_to_utxo_sim` paths — rejects duplicates with `UtxoError::UtxoAlreadySpent` before the
+  UTXO lookup; the redundant per-tx set was removed (test `test_v1_intrablock_double_spend_rejected`).
 
 ## Stage 5b — Sender Privacy (CLSAG + key images)
 
