@@ -6,13 +6,13 @@ use crate::consensus::transaction::{
     BlindingFactor, RangeProof, Transaction, TransactionV2, TxInput, TxInputV2, TxKind, TxOutput,
     TxOutputV2, TX_VERSION_V2,
 };
-use crate::consensus::utxo::{OutPoint, UtxoEntryV2, UtxoError};
+use crate::consensus::utxo::{OutPoint, UtxoEntry, UtxoEntryV2, UtxoError};
 use crate::consensus::validation::validate_transaction_v2;
 use crate::crypto::commitments::{
     commit, generate_range_proof, verify_balance, verify_range_proof,
 };
 use crate::primitives::serialize::{Decode, DecodeError, Encode};
-use crate::script::sighash::compute_sighash_v2;
+use crate::script::sighash::{compute_sighash, compute_sighash_v2};
 use crate::wallet::dilithium::DilithiumKeypair;
 use curve25519_dalek_ng::scalar::Scalar;
 
@@ -389,4 +389,95 @@ fn test_encrypted_amount_decode_cap() {
     let enc = out.encode();
     let res = TxOutputV2::decode(&enc);
     assert!(matches!(res, Err(DecodeError::InvalidData)));
+}
+
+#[test]
+fn test_v1_intrablock_double_spend_rejected() {
+    let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+
+    let kp = DilithiumKeypair::generate();
+    let pubkey = kp.verifying_key_bytes();
+    let script_pubkey = p2dl_script(&pubkey);
+
+    let utxo_output = TxOutput {
+        value: 1000,
+        script_pubkey: script_pubkey.clone(),
+    };
+    let in_op = OutPoint {
+        txid: [7u8; 32],
+        vout: 0,
+    };
+    chain
+        .utxo_store
+        .put_utxo(
+            &in_op,
+            &UtxoEntry {
+                output: utxo_output.clone(),
+                coinbase: false,
+                height: 0,
+            },
+        )
+        .unwrap();
+
+    let mut spend = Transaction {
+        version: 1,
+        inputs: vec![TxInput {
+            prev_txid: in_op.txid,
+            prev_index: in_op.vout,
+            script_sig: vec![],
+            sequence: 0xFFFF_FFFF,
+        }],
+        outputs: vec![TxOutput {
+            value: 900,
+            script_pubkey: script_pubkey.clone(),
+        }],
+        witnesses: vec![],
+        locktime: 0,
+    };
+
+    let sighash = compute_sighash(&spend, 0, std::slice::from_ref(&utxo_output)).unwrap();
+    let sig = kp.sign(&sighash);
+    let mut script_sig = Vec::new();
+    push_data(&mut script_sig, &sig);
+    push_data(&mut script_sig, &pubkey);
+    spend.inputs[0].script_sig = script_sig;
+
+    let coinbase = Transaction {
+        version: 1,
+        inputs: vec![TxInput {
+            prev_txid: [0u8; 32],
+            prev_index: 0xFFFF_FFFF,
+            script_sig: vec![0x01, 0x01],
+            sequence: 0xFFFF_FFFF,
+        }],
+        outputs: vec![TxOutput {
+            value: 50,
+            script_pubkey: vec![0x51],
+        }],
+        witnesses: vec![],
+        locktime: 0,
+    };
+
+    let header = BlockHeader {
+        version: 1,
+        prev_block_hash: [0u8; 32],
+        merkle_root: [0u8; 32],
+        timestamp: 0,
+        n_bits: 0,
+        nonce: 0,
+    };
+    let block = Block {
+        header,
+        transactions: vec![
+            TxKind::V1(coinbase),
+            TxKind::V1(spend.clone()),
+            TxKind::V1(spend),
+        ],
+    };
+
+    let res = chain.apply_block_to_utxo(&block, 1);
+    assert!(matches!(
+        res,
+        Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent))
+    ));
 }
