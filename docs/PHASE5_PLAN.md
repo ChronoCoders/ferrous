@@ -135,6 +135,17 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
   `TransactionV2` both lead with a `version = 2` `u32`. They are safe today only because they decode
   on separate Rust paths; before any shared decode path (mempool/network/block) introduce a
   distinct discriminator (distinct version number or explicit type tag).
+- **BLOCKING — intra-block v2 double-spend guard missing in `collect_v2_utxo_changes`.** Two v2
+  transactions spending the same outpoint within a single block both pass the `get_utxo().is_none()`
+  DB check (the outpoint stays unspent in the DB until the end-of-block commit) and the
+  `UtxoStoreV2::apply_block` delete is idempotent, so the double-spend is silently accepted. Latent
+  today only because no production path emits a v2 block (miner template and `BlockMessage` are
+  V1-only). Must add a `HashSet<OutPoint>` per-block guard mirroring the v1 path (audit fix #39)
+  before any v2 mining/relay step.
+- **Pre-mainnet — `MAX_ENCRYPTED_AMOUNT = 80` is a validation bound only, not a decode bound.** It is
+  enforced in `check_structure` (reached via `validate_block`/`validate_transaction_v2`), and the
+  decode path is currently protected only by the global 32 MiB `Vec<u8>` cap + EOF check. Add a
+  decode-level cap consistent with `MAX_TX_INPUTS`/`MAX_TX_OUTPUTS` for defense-in-depth.
 
 ## Stage 5b — Sender Privacy (CLSAG + key images)
 
