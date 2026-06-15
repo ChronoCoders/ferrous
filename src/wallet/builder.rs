@@ -13,6 +13,8 @@ use crate::wallet::keys::{derive_blinding, derive_view_key};
 use crate::wallet::manager::{Wallet, WalletUtxo};
 use curve25519_dalek_ng::ristretto::RistrettoPoint;
 use curve25519_dalek_ng::scalar::Scalar;
+use rand::rngs::OsRng;
+use rand::RngCore;
 use std::collections::HashSet;
 
 pub struct TransactionBuilder;
@@ -129,7 +131,7 @@ impl TransactionBuilder {
         let pay_blind = if change > 0 {
             derive_blinding(&seed, &pay_op)
         } else {
-            BlindingFactor([0u8; 32])
+            BlindingFactor((-random_balancing_scalar()).to_bytes())
         };
 
         let to_script = address_to_script_pubkey(to_address)?;
@@ -138,33 +140,31 @@ impl TransactionBuilder {
             .map_err(|e| format!("Range proof (payment): {:?}", e))?;
         let (pay_enc, pay_eph) = encrypt_amount(amount, &pay_blind, recipient_view_pubkey);
 
-        let mut outputs = Vec::new();
-        outputs.push(TxOutputV2 {
-            commitment: pay_commitment,
-            range_proof: pay_proof,
-            script_pubkey: to_script,
-            encrypted_amount: pay_enc,
-            ephemeral_pubkey: pay_eph,
-        });
+        let change_blind = BlindingFactor((-Scalar::from_bytes_mod_order(pay_blind.0)).to_bytes());
+        let change_address = wallet.get_or_create_change_address()?;
+        let change_script = address_to_script_pubkey(&change_address)?;
+        let change_commitment = commit(change, &change_blind);
+        let change_proof = generate_range_proof(change, &change_blind)
+            .map_err(|e| format!("Range proof (change): {:?}", e))?;
+        let (_, own_view_pubkey) = derive_view_key(&seed);
+        let (change_enc, change_eph) = encrypt_amount(change, &change_blind, &own_view_pubkey);
 
-        if change > 0 {
-            let change_blind =
-                BlindingFactor((-Scalar::from_bytes_mod_order(pay_blind.0)).to_bytes());
-            let change_address = wallet.get_or_create_change_address()?;
-            let change_script = address_to_script_pubkey(&change_address)?;
-            let change_commitment = commit(change, &change_blind);
-            let change_proof = generate_range_proof(change, &change_blind)
-                .map_err(|e| format!("Range proof (change): {:?}", e))?;
-            let (_, own_view_pubkey) = derive_view_key(&seed);
-            let (change_enc, change_eph) = encrypt_amount(change, &change_blind, &own_view_pubkey);
-            outputs.push(TxOutputV2 {
+        let outputs = vec![
+            TxOutputV2 {
+                commitment: pay_commitment,
+                range_proof: pay_proof,
+                script_pubkey: to_script,
+                encrypted_amount: pay_enc,
+                ephemeral_pubkey: pay_eph,
+            },
+            TxOutputV2 {
                 commitment: change_commitment,
                 range_proof: change_proof,
                 script_pubkey: change_script,
                 encrypted_amount: change_enc,
                 ephemeral_pubkey: change_eph,
-            });
-        }
+            },
+        ];
 
         let mut tx = TransactionV2 {
             version: TX_VERSION_V2,
@@ -203,6 +203,12 @@ fn select_coins(
 
     let change = total - total_needed;
     Ok((selected, change))
+}
+
+fn random_balancing_scalar() -> Scalar {
+    let mut wide = [0u8; 64];
+    OsRng.fill_bytes(&mut wide);
+    Scalar::from_bytes_mod_order_wide(&wide)
 }
 
 /// Push `data` onto a script using the minimal valid push opcode.
@@ -362,6 +368,69 @@ mod tests {
         assert_eq!(tx.inputs.len(), 1);
         assert_eq!(tx.outputs.len(), 2, "payment + change");
         assert!(!tx.inputs[0].script_sig.is_empty(), "input must be signed");
+
+        let input_commitments = vec![commit(utxo_value, &BlindingFactor([0u8; 32]))];
+        let output_commitments: Vec<_> = tx.outputs.iter().map(|o| o.commitment.clone()).collect();
+        assert!(verify_balance(&input_commitments, &output_commitments, fee));
+    }
+
+    #[test]
+    fn test_v2_exact_value_send_blinding_nonzero() {
+        let dir = TempDir::new().unwrap();
+        let wallet_path = dir.path().join("wallet.dat");
+        let mut wallet = Wallet::load(&wallet_path, 0x6f).unwrap();
+        wallet.set_seed([0x11u8; 32]).unwrap();
+        let addr = wallet.generate_address().unwrap();
+        let script = address_to_script_pubkey(&addr).unwrap();
+
+        let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+        let amount = 400_000u64;
+        let fee = 1_000u64;
+        let utxo_value = amount + fee;
+        let in_op = OutPoint {
+            txid: [4u8; 32],
+            vout: 0,
+        };
+        chain
+            .utxo_store
+            .put_utxo(
+                &in_op,
+                &UtxoEntry {
+                    output: TxOutput {
+                        value: utxo_value,
+                        script_pubkey: script.clone(),
+                    },
+                    coinbase: false,
+                    height: 0,
+                },
+            )
+            .unwrap();
+
+        let (_, recipient_view_pubkey) = derive_view_key(&[0x22u8; 64]);
+        let spent = HashSet::new();
+
+        let tx = TransactionBuilder::build_v2_transaction(
+            &mut wallet,
+            &chain,
+            &addr,
+            &recipient_view_pubkey,
+            amount,
+            fee,
+            &spent,
+        )
+        .unwrap();
+
+        assert_eq!(
+            tx.outputs.len(),
+            2,
+            "exact-value send must still emit a change output"
+        );
+
+        let naive = commit(amount, &BlindingFactor([0u8; 32]));
+        assert_ne!(
+            tx.outputs[0].commitment, naive,
+            "payment commitment must not equal value·G — blinding must be non-zero"
+        );
 
         let input_commitments = vec![commit(utxo_value, &BlindingFactor([0u8; 32]))];
         let output_commitments: Vec<_> = tx.outputs.iter().map(|o| o.commitment.clone()).collect();
