@@ -49,6 +49,10 @@ impl Wallet {
         self.keystore.seed_entropy()
     }
 
+    pub fn bip39_seed(&self) -> Option<[u8; 64]> {
+        self.keystore.bip39_seed()
+    }
+
     pub fn is_encrypted(&self) -> bool {
         self.keystore.is_encrypted()
     }
