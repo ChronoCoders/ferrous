@@ -8,7 +8,7 @@ fn main() {
     use std::time::Instant;
 
     thread_local! {
-        static VM: RefCell<Option<RandomXVM>> = RefCell::new(None);
+        static VM: RefCell<Option<RandomXVM>> = const { RefCell::new(None) };
     }
 
     let epoch_key = [0u8; 32];
