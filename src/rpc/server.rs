@@ -592,15 +592,21 @@ impl RpcServer {
 
         let raw = hex::decode(hex_str).map_err(|_| "Invalid hex".to_string())?;
 
-        let (tx, _) = crate::consensus::transaction::Transaction::decode(&raw)
+        let (txk, _) = crate::consensus::transaction::TxKind::decode(&raw)
             .map_err(|_| "Failed to decode transaction".to_string())?;
 
-        tx.check_structure()
-            .map_err(|e| format!("Invalid transaction: {:?}", e))?;
+        match &txk {
+            crate::consensus::transaction::TxKind::V1(tx) => tx
+                .check_structure()
+                .map_err(|e| format!("Invalid transaction: {:?}", e))?,
+            crate::consensus::transaction::TxKind::V2(tx) => tx
+                .check_structure()
+                .map_err(|e| format!("Invalid transaction: {:?}", e))?,
+        }
 
-        let txid = tx.txid();
+        let txid = txk.txid();
 
-        match self.mempool.add_transaction(tx) {
+        match self.mempool.add_transaction(txk) {
             Ok(_) => {
                 // Relay to peers so locally-submitted txs propagate (RPC submit
                 // path previously only inserted into the local mempool).
@@ -732,7 +738,10 @@ impl RpcServer {
                     .write()
                     .map_err(|_| "Lock poisoned".to_string())?;
                 chain
-                    .add_block(Block::from_v1(header, txs))
+                    .add_block(Block {
+                        header,
+                        transactions: txs,
+                    })
                     .map_err(|e| format!("add_block failed: {:?}", e))?;
             }
             last_hash = header.hash();
@@ -797,7 +806,10 @@ impl RpcServer {
                     .write()
                     .map_err(|_| "Chain lock failed".to_string())?;
                 chain
-                    .add_block(Block::from_v1(header, txs))
+                    .add_block(Block {
+                        header,
+                        transactions: txs,
+                    })
                     .map_err(|e| format!("add_block failed: {:?}", e))?;
             }
             last_hash = header.hash();
@@ -881,30 +893,44 @@ impl RpcServer {
         let mut total_size = 0usize;
 
         for tx in &txs {
-            let base_size = tx.encode_without_witness().len();
-            let total_tx_size = tx.encode_with_witness().len();
+            let (base_size, total_tx_size, vin_count, vout_count, output_value, fee) = match tx {
+                crate::consensus::transaction::TxKind::V1(v1) => {
+                    let base = v1.encode_without_witness().len();
+                    let total = v1.encode_with_witness().len();
+                    let out_val: u64 = v1.outputs.iter().map(|o| o.value).sum();
+                    let fee = v1
+                        .inputs
+                        .iter()
+                        .try_fold(0u64, |sum, input| {
+                            let outpoint = crate::consensus::utxo::OutPoint {
+                                txid: input.prev_txid,
+                                vout: input.prev_index,
+                            };
+                            chain
+                                .get_utxo(&outpoint)
+                                .ok()
+                                .flatten()
+                                .and_then(|u| sum.checked_add(u.output.value))
+                        })
+                        .and_then(|input_sum| input_sum.checked_sub(out_val));
+                    (base, total, v1.inputs.len(), v1.outputs.len(), out_val, fee)
+                }
+                crate::consensus::transaction::TxKind::V2(v2) => {
+                    let size = v2.encode().len();
+                    (
+                        size,
+                        size,
+                        v2.inputs.len(),
+                        v2.outputs.len(),
+                        0u64,
+                        Some(v2.fee),
+                    )
+                }
+            };
+
             // vsize = ceil(weight / 4), weight = base * 3 + total (BIP141).
             let weight = base_size * 3 + total_tx_size;
             let vsize = weight.div_ceil(4);
-            let output_value: u64 = tx.outputs.iter().map(|o| o.value).sum();
-
-            // fee = Σ input UTXO values − Σ outputs; None if any input UTXO
-            // is missing (e.g. spent by a block since admission).
-            let fee = tx
-                .inputs
-                .iter()
-                .try_fold(0u64, |sum, input| {
-                    let outpoint = crate::consensus::utxo::OutPoint {
-                        txid: input.prev_txid,
-                        vout: input.prev_index,
-                    };
-                    chain
-                        .get_utxo(&outpoint)
-                        .ok()
-                        .flatten()
-                        .and_then(|u| sum.checked_add(u.output.value))
-                })
-                .and_then(|input_sum| input_sum.checked_sub(output_value));
 
             total_size += base_size;
 
@@ -912,8 +938,8 @@ impl RpcServer {
                 txid: hex::encode(tx.txid()),
                 size: base_size,
                 vsize,
-                vin_count: tx.inputs.len(),
-                vout_count: tx.outputs.len(),
+                vin_count,
+                vout_count,
                 output_value,
                 fee,
             });
@@ -977,7 +1003,7 @@ impl RpcServer {
         let txid_raw = tx.txid();
         let txid = hex::encode(txid_raw);
         self.mempool
-            .add_transaction(tx)
+            .add_transaction(crate::consensus::transaction::TxKind::V1(tx))
             .map_err(|e| format!("Mempool rejected transaction: {}", e))?;
 
         // Relay to peers so the tx propagates beyond this node's local mempool.
