@@ -21,8 +21,6 @@ pub const MAX_TOTAL_MEMORY: usize = 500 * 1024 * 1024; // 500 MB
 #[derive(Debug, Clone)]
 struct ConnectionAttempt {
     timestamp: Instant,
-    #[allow(dead_code)] // Will be used for analytics later
-    successful: bool,
 }
 
 #[derive(Debug)]
@@ -128,7 +126,6 @@ impl DosProtection {
             .or_default()
             .push(ConnectionAttempt {
                 timestamp: Instant::now(),
-                successful: true,
             });
 
         // Clear failed attempt cooldown
@@ -145,7 +142,6 @@ impl DosProtection {
             .or_default()
             .push(ConnectionAttempt {
                 timestamp: Instant::now(),
-                successful: false,
             });
 
         self.failed_attempts.insert(ip, Instant::now());

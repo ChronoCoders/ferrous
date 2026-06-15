@@ -41,13 +41,6 @@ impl RateLimiter {
             }
         }
     }
-
-    // Get current rate
-    #[allow(dead_code)]
-    pub fn current_rate(&mut self) -> usize {
-        self.cleanup_old();
-        self.timestamps.len()
-    }
 }
 
 #[cfg(test)]
