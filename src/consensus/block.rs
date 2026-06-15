@@ -1,9 +1,12 @@
 use crate::consensus::merkle::compute_merkle_root;
-use crate::consensus::transaction::{Transaction, TxInput, TxOutput, Witness};
+use crate::consensus::transaction::{Transaction, TxInput, TxKind, TxOutput, Witness};
 use crate::primitives::hash::{sha256d, Hash256};
 use crate::primitives::serialize::{Decode, DecodeError, Encode};
+use crate::primitives::varint::{decode as decode_varint, encode as encode_varint};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+
+const MAX_BLOCK_TX: usize = 100_000;
 
 /// 256-bit unsigned integer used for difficulty targets and hash comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,10 +82,10 @@ pub struct BlockHeader {
     pub nonce: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub header: BlockHeader,
-    pub transactions: Vec<Transaction>,
+    pub transactions: Vec<TxKind>,
 }
 
 impl Block {
@@ -91,15 +94,80 @@ impl Block {
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
-        bincode::serialize(self).map_err(|e| e.to_string())
+        Ok(self.encode())
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
-        bincode::deserialize(bytes).map_err(|_| DecodeError::InvalidData)
+        let (block, _) = Block::decode(bytes)?;
+        Ok(block)
+    }
+
+    pub fn from_v1(header: BlockHeader, transactions: Vec<Transaction>) -> Self {
+        Block {
+            header,
+            transactions: transactions.into_iter().map(TxKind::V1).collect(),
+        }
+    }
+
+    pub fn v1_transactions(&self) -> Vec<Transaction> {
+        self.transactions
+            .iter()
+            .filter_map(|t| match t {
+                TxKind::V1(tx) => Some(tx.clone()),
+                TxKind::V2(_) => None,
+            })
+            .collect()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Encode for Block {
+    fn encode(&self) -> Vec<u8> {
+        let mut out = self.header.encode();
+        out.extend_from_slice(&encode_varint(self.transactions.len() as u64));
+        for tx in &self.transactions {
+            out.extend_from_slice(&tx.encode());
+        }
+        out
+    }
+
+    fn encoded_size(&self) -> usize {
+        let mut size = self.header.encoded_size();
+        size += encode_varint(self.transactions.len() as u64).len();
+        for tx in &self.transactions {
+            size += tx.encoded_size();
+        }
+        size
+    }
+}
+
+impl Decode for Block {
+    fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let (header, c0) = BlockHeader::decode(bytes)?;
+        let (count_u64, c1) = decode_varint(&bytes[c0..]).map_err(|_| DecodeError::InvalidData)?;
+        let count: usize = count_u64.try_into().map_err(|_| DecodeError::Overflow)?;
+        if count > MAX_BLOCK_TX {
+            return Err(DecodeError::InvalidData);
+        }
+
+        let mut offset = c0 + c1;
+        let mut transactions = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (tx, consumed) = TxKind::decode(&bytes[offset..])?;
+            offset += consumed;
+            transactions.push(tx);
+        }
+
+        Ok((
+            Block {
+                header,
+                transactions,
+            },
+            offset,
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct BlockData {
     pub block: Block,
     pub height: u64,
@@ -306,8 +374,8 @@ pub fn create_genesis_block(genesis_n_bits: u32) -> Block {
     let known_nonce: Option<u64> = match genesis_n_bits {
         0x1F0A_EC33 => Some(172),
         0x1F05_D34E => Some(3432),
-        0x1F10_CDD9 => Some(515), // testnet RandomX genesis (epoch 0, 26 H/s recal)
-        0x207f_ffff => Some(0),   // regtest trivial — nonce 0 always works
+        0x1F10_CDD9 => Some(515),
+        0x207f_ffff => Some(0), // regtest trivial — nonce 0 always works
         _ => None,
     };
 
@@ -329,6 +397,6 @@ pub fn create_genesis_block(genesis_n_bits: u32) -> Block {
 
     Block {
         header,
-        transactions: vec![coinbase],
+        transactions: vec![TxKind::V1(coinbase)],
     }
 }

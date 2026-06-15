@@ -9,6 +9,6 @@ pub use blocks::BlockStore;
 pub use chain_state::{ChainStateStore, ChainTip};
 pub use db::{
     Database, DatabaseBatch, CF_BLOCKS, CF_BLOCK_INDEX, CF_BLOCK_META, CF_CHAIN_STATE, CF_HEADERS,
-    CF_UNDO, CF_UTXO,
+    CF_UNDO, CF_UTXO, CF_UTXO_V2,
 };
-pub use utxo::UtxoStore;
+pub use utxo::{UtxoStore, UtxoStoreV2};

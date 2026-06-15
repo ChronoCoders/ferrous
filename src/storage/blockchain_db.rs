@@ -32,7 +32,8 @@ impl BlockchainDB {
     }
 
     pub fn put_block(&self, hash: &Hash256, block: &Block) -> Result<(), String> {
-        let bytes = bincode::serialize(block).map_err(|e| e.to_string())?;
+        use crate::primitives::serialize::Encode;
+        let bytes = block.encode();
         self.db.put(CF_BLOCKS, hash, &bytes)
     }
 

@@ -175,10 +175,7 @@ mod tests {
         .unwrap();
 
         use crate::consensus::block::Block;
-        let block = Block {
-            header: genesis,
-            transactions: vec![tx],
-        };
+        let block = Block::from_v1(genesis, vec![tx]);
         chain.add_block(block).unwrap();
 
         (chain, temp_dir)
@@ -263,10 +260,7 @@ mod tests {
         .unwrap();
 
         use crate::consensus::block::Block;
-        let block = Block {
-            header: genesis,
-            transactions: vec![tx],
-        };
+        let block = Block::from_v1(genesis, vec![tx]);
         chain.add_block(block).unwrap();
 
         let miner = Miner::new(
@@ -282,10 +276,7 @@ mod tests {
             let (header, txs) = miner.solve_template(template).expect("solve ok");
             use crate::consensus::block::Block;
             chain
-                .add_block(Block {
-                    header,
-                    transactions: txs,
-                })
+                .add_block(Block::from_v1(header, txs))
                 .expect("add_block ok");
         }
 
@@ -367,10 +358,7 @@ mod tests {
             let (header, txs) = miner.solve_template(template).expect("solve ok");
             use crate::consensus::block::Block;
             chain
-                .add_block(Block {
-                    header,
-                    transactions: txs,
-                })
+                .add_block(Block::from_v1(header, txs))
                 .expect("add_block ok");
         }
 

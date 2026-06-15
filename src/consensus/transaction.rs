@@ -10,6 +10,7 @@ pub const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 const MAX_TX_INPUTS: usize = 1000;
 const MAX_TX_OUTPUTS: usize = 1000;
 const MAX_WITNESS_ITEMS: usize = 1000;
+const MAX_ENCRYPTED_AMOUNT: usize = 80;
 
 /// Errors that can occur when validating basic transaction structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -616,6 +617,80 @@ impl TransactionV2 {
         if self.outputs.is_empty() {
             return Err(TxError::NoOutputs);
         }
+        for output in &self.outputs {
+            if output.encrypted_amount.len() > MAX_ENCRYPTED_AMOUNT {
+                return Err(TxError::ValueTooLarge);
+            }
+        }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TxKind {
+    V1(Transaction),
+    V2(TransactionV2),
+}
+
+impl TxKind {
+    pub fn txid(&self) -> Hash256 {
+        match self {
+            TxKind::V1(tx) => tx.txid(),
+            TxKind::V2(tx) => tx.txid(),
+        }
+    }
+
+    pub fn weight(&self) -> u64 {
+        match self {
+            TxKind::V1(tx) => {
+                let base = tx.encode_without_witness().len() as u64;
+                let total = tx.encode_with_witness().len() as u64;
+                base * 3 + total
+            }
+            TxKind::V2(tx) => {
+                let total = tx.encode().len() as u64;
+                total * 3 + total
+            }
+        }
+    }
+
+    pub fn is_coinbase(&self) -> bool {
+        match self {
+            TxKind::V1(tx) => {
+                tx.inputs.len() == 1
+                    && tx.inputs[0].prev_txid == [0u8; 32]
+                    && tx.inputs[0].prev_index == 0xFFFF_FFFF
+            }
+            TxKind::V2(_) => false,
+        }
+    }
+}
+
+impl Encode for TxKind {
+    fn encode(&self) -> Vec<u8> {
+        match self {
+            TxKind::V1(tx) => tx.encode(),
+            TxKind::V2(tx) => tx.encode(),
+        }
+    }
+
+    fn encoded_size(&self) -> usize {
+        match self {
+            TxKind::V1(tx) => tx.encoded_size(),
+            TxKind::V2(tx) => tx.encoded_size(),
+        }
+    }
+}
+
+impl Decode for TxKind {
+    fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
+        let (version, _) = u32::decode(bytes)?;
+        if version == TX_VERSION_V2 {
+            let (tx, consumed) = TransactionV2::decode(bytes)?;
+            Ok((TxKind::V2(tx), consumed))
+        } else {
+            let (tx, consumed) = Transaction::decode(bytes)?;
+            Ok((TxKind::V1(tx), consumed))
+        }
     }
 }

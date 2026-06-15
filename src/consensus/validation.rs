@@ -3,12 +3,15 @@ use std::collections::HashSet;
 use crate::consensus::block::BlockHeader;
 use crate::consensus::chain::ChainState;
 use crate::consensus::merkle::{compute_merkle_root, compute_witness_merkle_root};
-use crate::consensus::transaction::{BlindingFactor, Transaction, TransactionV2, MAX_MONEY};
+use crate::consensus::transaction::{
+    PedersenCommitment, Transaction, TransactionV2, TxKind, MAX_MONEY,
+};
 use crate::consensus::utxo::OutPoint;
-use crate::crypto::commitments::{commit, verify_balance, verify_range_proof};
+use crate::crypto::commitments::{verify_balance, verify_range_proof};
 use crate::primitives::hash::sha256d;
 use crate::script::engine::verify_p2dl_signature;
 use crate::script::sighash::compute_sighash_v2;
+use curve25519_dalek_ng::ristretto::CompressedRistretto;
 
 pub const MAX_BLOCK_WEIGHT: u64 = 40_000_000;
 pub const COINBASE_MATURITY: u64 = 100;
@@ -44,7 +47,7 @@ pub enum ValidationError {
 /// Validate block structure and consensus rules
 pub fn validate_block(
     header: &BlockHeader,
-    transactions: &[Transaction],
+    transactions: &[TxKind],
     height: u32,
 ) -> Result<(), ValidationError> {
     // 1. Must have at least one transaction
@@ -53,12 +56,13 @@ pub fn validate_block(
     }
 
     // 2. First tx must be coinbase, rest must not be
-    if !is_coinbase(&transactions[0]) {
-        return Err(ValidationError::NoCoinbase);
-    }
+    let coinbase = match &transactions[0] {
+        TxKind::V1(tx) if transactions[0].is_coinbase() => tx,
+        _ => return Err(ValidationError::NoCoinbase),
+    };
 
     for tx in &transactions[1..] {
-        if is_coinbase(tx) {
+        if tx.is_coinbase() {
             return Err(ValidationError::MultipleCoinbases);
         }
     }
@@ -88,12 +92,25 @@ pub fn validate_block(
 
     // 6. Validate all transaction structures
     for tx in transactions {
-        tx.check_structure()
-            .map_err(|_| ValidationError::TransactionStructureInvalid)?;
+        match tx {
+            TxKind::V1(t) => t
+                .check_structure()
+                .map_err(|_| ValidationError::TransactionStructureInvalid)?,
+            TxKind::V2(t) => t
+                .check_structure()
+                .map_err(|_| ValidationError::TransactionStructureInvalid)?,
+        }
     }
 
     // Verify witness commitment
-    validate_witness_commitment(&transactions[0], transactions)?;
+    let v1_txs: Vec<Transaction> = transactions
+        .iter()
+        .filter_map(|t| match t {
+            TxKind::V1(tx) => Some(tx.clone()),
+            TxKind::V2(_) => None,
+        })
+        .collect();
+    validate_witness_commitment(coinbase, &v1_txs)?;
 
     // 7. Check for duplicate transactions
     let mut seen_txids = HashSet::new();
@@ -104,12 +121,6 @@ pub fn validate_block(
     }
 
     Ok(())
-}
-
-fn is_coinbase(tx: &Transaction) -> bool {
-    tx.inputs.len() == 1
-        && tx.inputs[0].prev_txid == [0u8; 32]
-        && tx.inputs[0].prev_index == 0xFFFF_FFFF
 }
 
 pub fn validate_transaction_v2(
@@ -126,20 +137,19 @@ pub fn validate_transaction_v2(
             vout: input.prev_index,
         };
         let entry = chain
-            .get_utxo(&outpoint)
+            .get_utxo_v2(&outpoint)
             .map_err(|_| ValidationError::V2InputNotFound)?
             .ok_or(ValidationError::V2InputNotFound)?;
-        let spent = &entry.output;
 
-        let sighash = compute_sighash_v2(tx, i, &spent.script_pubkey)
+        let sighash = compute_sighash_v2(tx, i, &entry.script_pubkey)
             .map_err(|_| ValidationError::V2SignatureInvalid)?;
-        let valid = verify_p2dl_signature(&input.script_sig, &spent.script_pubkey, &sighash)
+        let valid = verify_p2dl_signature(&input.script_sig, &entry.script_pubkey, &sighash)
             .map_err(|_| ValidationError::V2SignatureInvalid)?;
         if !valid {
             return Err(ValidationError::V2SignatureInvalid);
         }
 
-        input_commitments.push(commit(spent.value, &BlindingFactor([0u8; 32])));
+        input_commitments.push(PedersenCommitment(CompressedRistretto(entry.commitment)));
     }
 
     for output in &tx.outputs {
@@ -155,18 +165,8 @@ pub fn validate_transaction_v2(
     Ok(())
 }
 
-fn calculate_block_weight(transactions: &[Transaction]) -> u64 {
-    let mut weight = 0u64;
-
-    for tx in transactions {
-        let base_size = tx.encode_without_witness().len() as u64;
-        let total_size = tx.encode_with_witness().len() as u64;
-
-        // Weight = base_size * 3 + total_size
-        weight += base_size * 3 + total_size;
-    }
-
-    weight
+fn calculate_block_weight(transactions: &[TxKind]) -> u64 {
+    transactions.iter().map(|tx| tx.weight()).sum()
 }
 
 /// Validate coinbase reward

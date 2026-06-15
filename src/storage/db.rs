@@ -7,6 +7,7 @@ pub const CF_BLOCKS: &str = "blocks";
 pub const CF_BLOCK_INDEX: &str = "block_index";
 pub const CF_HEADERS: &str = "headers";
 pub const CF_UTXO: &str = "utxo";
+pub const CF_UTXO_V2: &str = "utxo_v2";
 pub const CF_CHAIN_STATE: &str = "chain_state";
 pub const CF_UNDO: &str = "undo";
 pub const CF_BLOCK_META: &str = "block_meta";
@@ -33,6 +34,7 @@ impl Database {
             CF_HEADERS,
             CF_BLOCK_META,
             CF_UTXO,
+            CF_UTXO_V2,
             CF_CHAIN_STATE,
             CF_UNDO,
         ];

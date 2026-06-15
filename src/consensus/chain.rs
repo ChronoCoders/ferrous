@@ -1,15 +1,16 @@
 use crate::consensus::block::{Block, BlockData, BlockHeader, U256};
 use crate::consensus::difficulty::{validate_difficulty, DifficultyError, DIFFICULTY_WINDOW};
 use crate::consensus::params::ChainParams;
-use crate::consensus::utxo::{OutPoint, UtxoEntry, UtxoError};
+use crate::consensus::transaction::TxKind;
+use crate::consensus::utxo::{OutPoint, UtxoEntry, UtxoEntryV2, UtxoError};
 use crate::consensus::validation::{
     validate_block, validate_coinbase_height, validate_coinbase_reward, validate_timestamp,
-    ValidationError, COINBASE_MATURITY,
+    validate_transaction_v2, ValidationError, COINBASE_MATURITY,
 };
 use crate::primitives::hash::Hash256;
 use crate::script::engine::{validate_p2dl, ScriptContext};
 use crate::storage::{
-    BlockStore, ChainStateStore, ChainTip, Database, UtxoStore, CF_UNDO, CF_UTXO,
+    BlockStore, ChainStateStore, ChainTip, Database, UtxoStore, UtxoStoreV2, CF_UNDO, CF_UTXO,
 };
 use log::info;
 use lru::LruCache;
@@ -58,6 +59,7 @@ pub struct ChainState {
     pub db: Arc<Database>,
     pub block_store: Arc<BlockStore>,
     pub utxo_store: Arc<UtxoStore>,
+    pub utxo_store_v2: Arc<UtxoStoreV2>,
     pub state_store: Arc<ChainStateStore>,
 
     // In-memory LRU cache (block hash -> BlockData); keeps the most recently
@@ -75,6 +77,12 @@ type ApplyBlockToUtxoResult = (
     u64,
 );
 
+struct V2UtxoChanges {
+    created: Vec<(OutPoint, UtxoEntryV2)>,
+    spent: Vec<OutPoint>,
+    fees: u64,
+}
+
 impl ChainState {
     /// Create new chain state with persistent storage
     pub fn new<P: AsRef<Path>>(params: ChainParams, db_path: P) -> Result<Self, String> {
@@ -84,6 +92,7 @@ impl ChainState {
         // Create stores
         let block_store = Arc::new(BlockStore::new(Arc::clone(&db)));
         let utxo_store = Arc::new(UtxoStore::new(Arc::clone(&db)));
+        let utxo_store_v2 = Arc::new(UtxoStoreV2::new(Arc::clone(&db)));
         let state_store = Arc::new(ChainStateStore::new(Arc::clone(&db)));
 
         const BLOCK_CACHE_SIZE: usize = 2048;
@@ -92,6 +101,7 @@ impl ChainState {
             db,
             block_store,
             utxo_store,
+            utxo_store_v2,
             state_store,
             blocks: LruCache::new(NonZeroUsize::new(BLOCK_CACHE_SIZE).unwrap()),
             tip: None,
@@ -395,11 +405,25 @@ impl ChainState {
                     ))
                 })?;
 
+            if block
+                .transactions
+                .iter()
+                .any(|t| matches!(t, TxKind::V2(_)))
+            {
+                return Err(ChainError::DbError(
+                    "reorg across v2 transactions not supported".to_string(),
+                ));
+            }
+
             // Remove UTXOs created by this old block from the overlay view.
             let mut created_outpoints = Vec::new();
-            for tx in &block.transactions {
+            for txkind in &block.transactions {
+                let tx = match txkind {
+                    TxKind::V1(t) => t,
+                    TxKind::V2(_) => continue,
+                };
                 let txid = tx.txid();
-                for (vout, _) in tx.outputs.iter().enumerate() {
+                for vout in 0..tx.outputs.len() {
                     let op = OutPoint {
                         txid,
                         vout: vout as u32,
@@ -452,10 +476,24 @@ impl ChainState {
                 (b, meta.height)
             };
 
+            if block
+                .transactions
+                .iter()
+                .any(|t| matches!(t, TxKind::V2(_)))
+            {
+                return Err(ChainError::DbError(
+                    "reorg across v2 transactions not supported".to_string(),
+                ));
+            }
+
             let (created, spent, undo, fees) =
                 self.apply_block_to_utxo_sim(&block, height, &overlay)?;
 
-            validate_coinbase_reward(&block.transactions[0], fees, height as u32)
+            let coinbase = match &block.transactions[0] {
+                TxKind::V1(t) => t,
+                TxKind::V2(_) => return Err(ChainError::InvalidBlock(ValidationError::NoCoinbase)),
+            };
+            validate_coinbase_reward(coinbase, fees, height as u32)
                 .map_err(ChainError::InvalidBlock)?;
 
             // Advance the overlay with this block's changes.
@@ -533,10 +571,14 @@ impl ChainState {
         // inputs are still unspent on the new chain.
         let mut requeued: Vec<crate::consensus::transaction::Transaction> = Vec::new();
         for entry in &disconnect_entries {
-            for (tx_idx, tx) in entry.block.transactions.iter().enumerate() {
+            for (tx_idx, txkind) in entry.block.transactions.iter().enumerate() {
                 if tx_idx == 0 {
                     continue;
                 }
+                let tx = match txkind {
+                    TxKind::V1(t) => t,
+                    TxKind::V2(_) => continue,
+                };
                 let all_valid = tx.inputs.iter().all(|input| {
                     let op = OutPoint {
                         txid: input.prev_txid,
@@ -658,8 +700,11 @@ impl ChainState {
             .map_err(ChainError::InvalidBlock)?;
 
         if height > 0 {
-            validate_coinbase_height(&block.transactions[0], height as u32)
-                .map_err(ChainError::InvalidBlock)?;
+            let coinbase = match &block.transactions[0] {
+                TxKind::V1(t) => t,
+                TxKind::V2(_) => return Err(ChainError::InvalidBlock(ValidationError::NoCoinbase)),
+            };
+            validate_coinbase_height(coinbase, height as u32).map_err(ChainError::InvalidBlock)?;
         }
 
         self.blocks.put(
@@ -697,10 +742,26 @@ impl ChainState {
             };
 
             if !did_reorg {
-                let (created_utxos, spent_utxos, spent_entries, block_fees) =
+                let (created_utxos, spent_utxos, spent_entries, v1_fees) =
                     self.apply_block_to_utxo(&block, height)?;
 
-                validate_coinbase_reward(&block.transactions[0], block_fees, height as u32)
+                let V2UtxoChanges {
+                    created: v2_created,
+                    spent: v2_spent,
+                    fees: v2_fees,
+                } = self.collect_v2_utxo_changes(&block, height)?;
+
+                let block_fees = v1_fees
+                    .checked_add(v2_fees)
+                    .ok_or(ChainError::UtxoError(UtxoError::ValueOverflow))?;
+
+                let coinbase = match &block.transactions[0] {
+                    TxKind::V1(t) => t,
+                    TxKind::V2(_) => {
+                        return Err(ChainError::InvalidBlock(ValidationError::NoCoinbase))
+                    }
+                };
+                validate_coinbase_reward(coinbase, block_fees, height as u32)
                     .map_err(ChainError::InvalidBlock)?;
 
                 self.utxo_store
@@ -709,6 +770,12 @@ impl ChainState {
                 self.utxo_store
                     .store_undo_data(&block_hash, &spent_entries)
                     .map_err(ChainError::DbError)?;
+
+                if !v2_created.is_empty() || !v2_spent.is_empty() {
+                    self.utxo_store_v2
+                        .apply_block(&v2_created, &v2_spent)
+                        .map_err(ChainError::DbError)?;
+                }
             }
 
             self.block_store
@@ -753,7 +820,11 @@ impl ChainState {
         let mut spent_entries = Vec::new();
         let mut block_fees: u64 = 0;
 
-        for (tx_idx, tx) in block.transactions.iter().enumerate() {
+        for (tx_idx, txkind) in block.transactions.iter().enumerate() {
+            let tx = match txkind {
+                TxKind::V1(t) => t,
+                TxKind::V2(_) => continue,
+            };
             let txid = tx.txid();
             let is_coinbase = tx_idx == 0;
 
@@ -864,6 +935,73 @@ impl ChainState {
 
     pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<Option<UtxoEntry>, String> {
         self.utxo_store.get_utxo(outpoint)
+    }
+
+    pub fn get_utxo_v2(&self, outpoint: &OutPoint) -> Result<Option<UtxoEntryV2>, String> {
+        self.utxo_store_v2.get_utxo(outpoint)
+    }
+
+    fn collect_v2_utxo_changes(
+        &self,
+        block: &Block,
+        height: u64,
+    ) -> Result<V2UtxoChanges, ChainError> {
+        let mut created = Vec::new();
+        let mut spent = Vec::new();
+        let mut fees: u64 = 0;
+
+        for txkind in &block.transactions {
+            let tx = match txkind {
+                TxKind::V2(t) => t,
+                TxKind::V1(_) => continue,
+            };
+
+            validate_transaction_v2(tx, self).map_err(ChainError::InvalidBlock)?;
+
+            let txid = tx.txid();
+
+            for input in &tx.inputs {
+                let op = OutPoint {
+                    txid: input.prev_txid,
+                    vout: input.prev_index,
+                };
+                if self
+                    .utxo_store_v2
+                    .get_utxo(&op)
+                    .map_err(ChainError::DbError)?
+                    .is_none()
+                {
+                    return Err(ChainError::UtxoError(UtxoError::UtxoNotFound));
+                }
+                spent.push(op);
+            }
+
+            for (vout, output) in tx.outputs.iter().enumerate() {
+                let op = OutPoint {
+                    txid,
+                    vout: vout as u32,
+                };
+                let entry = UtxoEntryV2 {
+                    commitment: *output.commitment.0.as_bytes(),
+                    script_pubkey: output.script_pubkey.clone(),
+                    encrypted_amount: output.encrypted_amount.clone(),
+                    ephemeral_pubkey: output.ephemeral_pubkey,
+                    coinbase: false,
+                    height: height as u32,
+                };
+                created.push((op, entry));
+            }
+
+            fees = fees
+                .checked_add(tx.fee)
+                .ok_or(ChainError::UtxoError(UtxoError::ValueOverflow))?;
+        }
+
+        Ok(V2UtxoChanges {
+            created,
+            spent,
+            fees,
+        })
     }
 
     pub fn get_block(&self, hash: &Hash256) -> Option<&Block> {
