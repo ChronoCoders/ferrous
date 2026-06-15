@@ -77,7 +77,7 @@ type ApplyBlockToUtxoResult = (
     u64,
 );
 
-struct V2UtxoChanges {
+pub(crate) struct V2UtxoChanges {
     created: Vec<(OutPoint, UtxoEntryV2)>,
     spent: Vec<OutPoint>,
     fees: u64,
@@ -941,7 +941,7 @@ impl ChainState {
         self.utxo_store_v2.get_utxo(outpoint)
     }
 
-    fn collect_v2_utxo_changes(
+    pub(crate) fn collect_v2_utxo_changes(
         &self,
         block: &Block,
         height: u64,
@@ -949,6 +949,7 @@ impl ChainState {
         let mut created = Vec::new();
         let mut spent = Vec::new();
         let mut fees: u64 = 0;
+        let mut spent_in_block: HashSet<OutPoint> = HashSet::new();
 
         for txkind in &block.transactions {
             let tx = match txkind {
@@ -965,6 +966,9 @@ impl ChainState {
                     txid: input.prev_txid,
                     vout: input.prev_index,
                 };
+                if !spent_in_block.insert(op) {
+                    return Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent));
+                }
                 if self
                     .utxo_store_v2
                     .get_utxo(&op)

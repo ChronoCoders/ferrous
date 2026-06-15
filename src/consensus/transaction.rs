@@ -494,6 +494,9 @@ impl Decode for TxOutputV2 {
         let (script_pubkey, c2) = Vec::<u8>::decode(&bytes[c1..])?;
         let (range_proof, c3) = RangeProof::decode(&bytes[c1 + c2..])?;
         let (encrypted_amount, c4) = Vec::<u8>::decode(&bytes[c1 + c2 + c3..])?;
+        if encrypted_amount.len() > MAX_ENCRYPTED_AMOUNT {
+            return Err(DecodeError::InvalidData);
+        }
         let (ephemeral_pubkey, c5) = <[u8; 32]>::decode(&bytes[c1 + c2 + c3 + c4..])?;
         Ok((
             TxOutputV2 {
