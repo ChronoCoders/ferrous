@@ -1,5 +1,5 @@
 use crate::consensus::block::BlockHeader;
-use crate::consensus::transaction::{Transaction, TxKind};
+use crate::consensus::transaction::TxKind;
 use crate::primitives::serialize::{Decode, DecodeError, Encode};
 use crate::primitives::varint::{decode as decode_varint, encode as encode_varint, VarIntError};
 use std::net::SocketAddr;
@@ -346,7 +346,7 @@ impl Decode for GetDataMessage {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockMessage {
     pub header: BlockHeader,
-    pub transactions: Vec<Transaction>,
+    pub transactions: Vec<TxKind>,
 }
 
 impl Encode for BlockMessage {
@@ -387,7 +387,7 @@ impl Decode for BlockMessage {
         let mut transactions = Vec::with_capacity(count);
 
         for _ in 0..count {
-            let (tx, consumed) = Transaction::decode(&bytes[offset..])?;
+            let (tx, consumed) = TxKind::decode(&bytes[offset..])?;
             offset += consumed;
             transactions.push(tx);
         }
