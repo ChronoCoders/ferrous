@@ -1,5 +1,5 @@
 use crate::consensus::chain::{ChainError, ChainState};
-use crate::consensus::transaction::Transaction;
+use crate::consensus::transaction::TxKind;
 use crate::network::manager::PeerManager;
 use crate::network::mempool::NetworkMempool;
 use crate::network::message::{NetworkMessage, CMD_BLOCK, CMD_GETDATA, CMD_INV, CMD_TX};
@@ -229,13 +229,13 @@ impl BlockRelay {
                     height
                 );
                 self.mempool
-                    .remove_block_transactions(&applied.v1_transactions());
+                    .remove_block_transactions(&applied.transactions);
             }
             if !applied_pairs.is_empty() {
                 self.mempool.purge_stale();
                 // Re-add transactions from disconnected blocks so they can be re-mined.
                 for tx in requeued_txs {
-                    let _ = self.mempool.add_transaction(tx);
+                    let _ = self.mempool.add_transaction(TxKind::V1(tx));
                 }
             }
             // Update peer height from the last applied block.  The height comes directly
@@ -299,11 +299,13 @@ impl BlockRelay {
                     if !syncing {
                         self.announce_block(block_hash)?;
                     }
-                    self.mempool.remove_block_transactions(&block.transactions);
+                    let confirmed: Vec<TxKind> =
+                        block.transactions.iter().cloned().map(TxKind::V1).collect();
+                    self.mempool.remove_block_transactions(&confirmed);
                     self.mempool.purge_stale();
                     // Re-add transactions from disconnected blocks so they can be re-mined.
                     for tx in requeued_txs {
-                        let _ = self.mempool.add_transaction(tx);
+                        let _ = self.mempool.add_transaction(TxKind::V1(tx));
                     }
                 }
                 Ok(())
@@ -397,7 +399,7 @@ impl BlockRelay {
     }
 
     // Handle received transaction
-    pub fn handle_transaction(&self, _peer_id: u64, tx: &Transaction) -> Result<(), String> {
+    pub fn handle_transaction(&self, _peer_id: u64, tx: &TxKind) -> Result<(), String> {
         match self.mempool.add_transaction(tx.clone()) {
             Ok(true) => {
                 let txid = tx.txid();

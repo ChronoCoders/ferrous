@@ -667,6 +667,21 @@ impl TxKind {
             TxKind::V2(_) => false,
         }
     }
+
+    pub fn input_outpoints(&self) -> Vec<(Hash256, u32)> {
+        match self {
+            TxKind::V1(tx) => tx
+                .inputs
+                .iter()
+                .map(|i| (i.prev_txid, i.prev_index))
+                .collect(),
+            TxKind::V2(tx) => tx
+                .inputs
+                .iter()
+                .map(|i| (i.prev_txid, i.prev_index))
+                .collect(),
+        }
+    }
 }
 
 impl Encode for TxKind {

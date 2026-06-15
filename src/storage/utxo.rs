@@ -1,7 +1,7 @@
 use crate::consensus::utxo::{OutPoint, UtxoEntry, UtxoEntryV2};
 use crate::primitives::hash::Hash256;
 use crate::primitives::serialize::{Decode, Encode};
-use crate::storage::{Database, CF_UNDO, CF_UTXO, CF_UTXO_V2};
+use crate::storage::{Database, CF_UNDO, CF_UNDO_V2, CF_UTXO, CF_UTXO_V2};
 use std::sync::Arc;
 
 /// UTXO set storage interface
@@ -222,6 +222,30 @@ impl UtxoStoreV2 {
             batch.put(CF_UTXO_V2, &Self::outpoint_key(outpoint), &entry.encode())?;
         }
         batch.commit()
+    }
+
+    pub fn store_undo_data(
+        &self,
+        block_hash: &Hash256,
+        spent_entries: &[(OutPoint, UtxoEntryV2)],
+    ) -> Result<(), String> {
+        let value = bincode::serialize(spent_entries)
+            .map_err(|e| format!("Failed to serialize v2 undo data: {}", e))?;
+        self.db.put(CF_UNDO_V2, block_hash, &value)
+    }
+
+    pub fn get_undo_data(
+        &self,
+        block_hash: &Hash256,
+    ) -> Result<Option<Vec<(OutPoint, UtxoEntryV2)>>, String> {
+        match self.db.get(CF_UNDO_V2, block_hash)? {
+            Some(bytes) => {
+                let entries: Vec<(OutPoint, UtxoEntryV2)> = bincode::deserialize(&bytes)
+                    .map_err(|e| format!("Failed to deserialize v2 undo data: {}", e))?;
+                Ok(Some(entries))
+            }
+            None => Ok(None),
+        }
     }
 
     fn outpoint_key(outpoint: &OutPoint) -> Vec<u8> {

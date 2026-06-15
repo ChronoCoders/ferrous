@@ -18,7 +18,7 @@ pub struct UtxoEntry {
     pub height: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UtxoEntryV2 {
     pub commitment: [u8; 32],
     pub script_pubkey: Vec<u8>,

@@ -3,7 +3,8 @@ use crate::consensus::chain::ChainState;
 use crate::consensus::difficulty::{calculate_next_target, u256_to_compact, DIFFICULTY_WINDOW};
 use crate::consensus::merkle::compute_merkle_root;
 use crate::consensus::params::ChainParams;
-use crate::consensus::transaction::{Transaction, TxInput, TxOutput, Witness};
+use crate::consensus::transaction::{Transaction, TxInput, TxKind, TxOutput, Witness};
+use crate::consensus::utxo::OutPoint;
 use crate::consensus::validation::MAX_BLOCK_WEIGHT;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -19,7 +20,7 @@ const MAX_FUTURE_OFFSET: u64 = 7200;
 #[derive(Clone)]
 pub struct BlockTemplate {
     pub header: BlockHeader,
-    pub transactions: Vec<Transaction>,
+    pub transactions: Vec<TxKind>,
     pub height: u32,
 }
 
@@ -276,7 +277,10 @@ mod tests {
             let (header, txs) = miner.solve_template(template).expect("solve ok");
             use crate::consensus::block::Block;
             chain
-                .add_block(Block::from_v1(header, txs))
+                .add_block(Block {
+                    header,
+                    transactions: txs,
+                })
                 .expect("add_block ok");
         }
 
@@ -358,7 +362,10 @@ mod tests {
             let (header, txs) = miner.solve_template(template).expect("solve ok");
             use crate::consensus::block::Block;
             chain
-                .add_block(Block::from_v1(header, txs))
+                .add_block(Block {
+                    header,
+                    transactions: txs,
+                })
                 .expect("add_block ok");
         }
 
@@ -450,7 +457,7 @@ impl Miner {
     pub fn build_template(
         &self,
         chain: &ChainState,
-        transactions: Vec<Transaction>,
+        transactions: Vec<TxKind>,
     ) -> Result<BlockTemplate, MiningError> {
         self.build_template_with_script(chain, transactions, self.mining_address.clone())
     }
@@ -458,17 +465,10 @@ impl Miner {
     pub fn build_template_to(
         &self,
         chain: &ChainState,
-        transactions: Vec<Transaction>,
+        transactions: Vec<TxKind>,
         script_pubkey: Vec<u8>,
     ) -> Result<BlockTemplate, MiningError> {
         self.build_template_with_script(chain, transactions, script_pubkey)
-    }
-
-    // Returns the block weight contribution of a single transaction.
-    fn tx_weight(tx: &Transaction) -> u64 {
-        let base = tx.encode_without_witness().len() as u64;
-        let total = tx.encode_with_witness().len() as u64;
-        base * 3 + total
     }
 
     // Fee for a candidate tx (Σ input UTXO values − Σ output values), or None
@@ -498,7 +498,7 @@ impl Miner {
     fn build_template_with_script(
         &self,
         chain: &ChainState,
-        transactions: Vec<Transaction>,
+        transactions: Vec<TxKind>,
         script_pubkey: Vec<u8>,
     ) -> Result<BlockTemplate, MiningError> {
         let tip = chain
@@ -509,23 +509,38 @@ impl Miner {
 
         let subsidy = crate::consensus::validation::calculate_subsidy(height);
 
-        let coinbase = self.create_coinbase_internal(height, subsidy, 0, script_pubkey);
+        let coinbase = TxKind::V1(self.create_coinbase_internal(height, subsidy, 0, script_pubkey));
 
         // Reserve 10 % headroom so the solved block never hits MAX_BLOCK_WEIGHT.
         let weight_budget = MAX_BLOCK_WEIGHT * 9 / 10;
-        let mut used_weight = Self::tx_weight(&coinbase);
+        let mut used_weight = coinbase.weight();
 
-        let mut all_txs = vec![coinbase];
+        let mut all_txs: Vec<TxKind> = vec![coinbase];
         let mut total_fees: u64 = 0;
         for tx in transactions {
-            let w = Self::tx_weight(&tx);
+            let w = tx.weight();
             if used_weight.saturating_add(w) > weight_budget {
                 break;
             }
             // Skip txs that would fail validation (stale/missing/immature inputs).
-            let fee = match Self::tx_fee(chain, &tx, height as u64) {
-                Some(f) => f,
-                None => continue,
+            let fee = match &tx {
+                TxKind::V1(v1) => match Self::tx_fee(chain, v1, height as u64) {
+                    Some(f) => f,
+                    None => continue,
+                },
+                TxKind::V2(v2) => {
+                    let all_present = v2.inputs.iter().all(|input| {
+                        let op = OutPoint {
+                            txid: input.prev_txid,
+                            vout: input.prev_index,
+                        };
+                        chain.get_utxo_v2(&op).ok().flatten().is_some()
+                    });
+                    if !all_present {
+                        continue;
+                    }
+                    v2.fee
+                }
             };
             total_fees = total_fees.saturating_add(fee);
             used_weight += w;
@@ -534,7 +549,9 @@ impl Miner {
 
         // Coinbase claims subsidy + collected fees.  The value field is fixed
         // width, so updating it does not change the weight computed above.
-        all_txs[0].outputs[0].value = subsidy + total_fees;
+        if let TxKind::V1(cb) = &mut all_txs[0] {
+            cb.outputs[0].value = subsidy + total_fees;
+        }
 
         let txids: Vec<_> = all_txs.iter().map(|tx| tx.txid()).collect();
         let merkle_root = compute_merkle_root(&txids);
@@ -569,7 +586,7 @@ impl Miner {
     pub fn solve_template(
         &self,
         template: BlockTemplate,
-    ) -> Result<(BlockHeader, Vec<Transaction>), MiningError> {
+    ) -> Result<(BlockHeader, Vec<TxKind>), MiningError> {
         let header = template.header;
         let height = template.height;
         let all_txs = template.transactions;

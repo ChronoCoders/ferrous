@@ -1,5 +1,5 @@
 use crate::consensus::block::BlockHeader;
-use crate::consensus::transaction::Transaction;
+use crate::consensus::transaction::{Transaction, TxKind};
 use crate::primitives::serialize::{Decode, DecodeError, Encode};
 use crate::primitives::varint::{decode as decode_varint, encode as encode_varint, VarIntError};
 use std::net::SocketAddr;
@@ -532,7 +532,7 @@ impl Decode for HeadersMessage {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TxMessage {
-    pub transaction: Transaction,
+    pub transaction: TxKind,
 }
 
 impl Encode for TxMessage {
@@ -547,7 +547,7 @@ impl Encode for TxMessage {
 
 impl Decode for TxMessage {
     fn decode(bytes: &[u8]) -> Result<(Self, usize), DecodeError> {
-        let (transaction, consumed) = Transaction::decode(bytes)?;
+        let (transaction, consumed) = TxKind::decode(bytes)?;
         Ok((Self { transaction }, consumed))
     }
 }

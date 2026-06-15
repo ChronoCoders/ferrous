@@ -131,10 +131,29 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
   exposure: use Bulletproofs **batched/aggregated** verification (the range proof is ~73% of v2
   verify cost per the benchmark) and cache the generators in a `OnceLock` (as `h_generator` does).
   Also bound output count / total proof bytes per tx.
-- **N7 — unambiguous v1/v2 discriminator.** A v1 `Transaction` with `version == 2` and a
-  `TransactionV2` both lead with a `version = 2` `u32`. They are safe today only because they decode
-  on separate Rust paths; before any shared decode path (mempool/network/block) introduce a
-  distinct discriminator (distinct version number or explicit type tag).
+- **DONE (N7) — unambiguous v1/v2 discriminator.** Resolved by the leading-u32 version field:
+  `TX_VERSION_V2 = 3`, `TxKind::decode` routes `version == 3` to `TransactionV2` and everything else to
+  `Transaction`; v1 `check_structure` rejects `version == 0` and `version > 2`, and v2 `check_structure`
+  requires `version == 3`. Version 3 is exclusively v2, 1–2 exclusively v1. The shared decode paths
+  introduced in Step 4 (mempool `add_transaction`, RPC `sendrawtransaction`, P2P `TxMessage`) all
+  dispatch through `TxKind::decode`, so the discriminator is unambiguous.
+- **BLOCKING (before any v2 tx is mined/relayed) — `BlockMessage` is still v1-only.** Step 4 wired v2
+  through mempool → TX relay (INV/GETDATA/TX) → miner template → block validation → reorg, but the P2P
+  `BlockMessage` still carries `Vec<Transaction>` and relay serves `Block::v1_transactions()`. A
+  locally-mined block containing a v2 tx therefore cannot propagate (peers reject on merkle mismatch).
+  Safe only while v2 is not activated (miner template + `BlockMessage` are v1-only, so no v2 tx ever
+  enters a relayed block). Before v2 activation, `BlockMessage` must carry `Vec<TxKind>` (encode/decode
+  via `TxKind`, v1 bytes unchanged) and relay/sync must stop filtering through `v1_transactions()`.
+- **Pre-mainnet — `add_block` v1+v2 apply is not a single atomic batch.** The non-reorg apply path does
+  separate RocksDB commits (`utxo_store.apply_block`, `store_undo_data`, `utxo_store_v2.apply_block`,
+  `utxo_store_v2.store_undo_data`, `store_block`, `set_tip`); a crash between them can leave the v1 and
+  v2 UTXO sets partially applied. Same non-atomicity already present for v1, but the second CF widens
+  the window. Fold the whole `add_block` apply into one `DatabaseBatch` (as `reorganize` already does)
+  before mainnet.
+- **Pre-mainnet — v2 crypto verify under the chain write lock.** `collect_v2_utxo_changes` (in
+  `add_block`) and the reorg sim run Bulletproof + Dilithium verification while the chain write lock is
+  held; a v2-heavy block lengthens lock-hold time and is a DoS surface. Combine with the existing
+  reorg-Dilithium and `handle_headers` lock-hold items in the pre-mainnet lock-hold-time pass.
 - **DONE — exact-value send no longer leaks the amount.** `build_v2_transaction` previously forced the
   payment-output blinding to 0 when there was no change (exact-value send), making the commitment
   `amount·G` (amount trivially recoverable by computing `k·G` for candidate `k`). Resolved: the builder

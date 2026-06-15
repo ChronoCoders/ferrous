@@ -481,3 +481,242 @@ fn test_v1_intrablock_double_spend_rejected() {
         Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent))
     ));
 }
+
+fn build_valid_v2(
+    kp: &DilithiumKeypair,
+    in_op: OutPoint,
+    v_in: u64,
+    fee: u64,
+) -> (TransactionV2, UtxoEntryV2) {
+    let pubkey = kp.verifying_key_bytes();
+    let script_pubkey = p2dl_script(&pubkey);
+    let v_out = v_in - fee;
+    let blind = BlindingFactor([5u8; 32]);
+
+    let c_in = commit(v_in, &blind);
+    let in_entry = UtxoEntryV2 {
+        commitment: *c_in.0.as_bytes(),
+        script_pubkey: script_pubkey.clone(),
+        encrypted_amount: vec![],
+        ephemeral_pubkey: [0u8; 32],
+        coinbase: false,
+        height: 0,
+    };
+
+    let c_out = commit(v_out, &blind);
+    let proof = generate_range_proof(v_out, &blind).unwrap();
+
+    let mut tx = TransactionV2 {
+        version: TX_VERSION_V2,
+        inputs: vec![TxInputV2 {
+            prev_txid: in_op.txid,
+            prev_index: in_op.vout,
+            script_sig: vec![],
+            sequence: 0xFFFF_FFFF,
+        }],
+        outputs: vec![TxOutputV2 {
+            commitment: c_out,
+            range_proof: proof,
+            script_pubkey: script_pubkey.clone(),
+            encrypted_amount: vec![],
+            ephemeral_pubkey: [0u8; 32],
+        }],
+        fee,
+        locktime: 0,
+    };
+
+    let sighash = compute_sighash_v2(&tx, 0, &script_pubkey).unwrap();
+    let sig = kp.sign(&sighash);
+    let mut script_sig = Vec::new();
+    push_data(&mut script_sig, &sig);
+    push_data(&mut script_sig, &pubkey);
+    tx.inputs[0].script_sig = script_sig;
+
+    (tx, in_entry)
+}
+
+fn coinbase_v1(height: u32) -> Transaction {
+    let mut script_sig = Vec::new();
+    script_sig.push(4);
+    script_sig.extend_from_slice(&height.to_le_bytes());
+    Transaction {
+        version: 1,
+        inputs: vec![TxInput {
+            prev_txid: [0u8; 32],
+            prev_index: 0xFFFF_FFFF,
+            script_sig,
+            sequence: 0xFFFF_FFFF,
+        }],
+        outputs: vec![TxOutput {
+            value: crate::consensus::validation::calculate_subsidy(height),
+            script_pubkey: vec![0x51],
+        }],
+        witnesses: vec![],
+        locktime: 0,
+    }
+}
+
+#[test]
+fn test_v2_mempool_admit() {
+    use crate::network::mempool::NetworkMempool;
+    use std::sync::{Arc, RwLock};
+
+    let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let kp = DilithiumKeypair::generate();
+    let in_op = OutPoint {
+        txid: [9u8; 32],
+        vout: 0,
+    };
+    let (tx, in_entry) = build_valid_v2(&kp, in_op, 1000, 100);
+    chain.utxo_store_v2.put_utxo(&in_op, &in_entry).unwrap();
+
+    let txid = tx.txid();
+    let chain = Arc::new(RwLock::new(chain));
+    let mempool = NetworkMempool::new(chain);
+
+    let admitted = mempool.add_transaction(TxKind::V2(tx)).unwrap();
+    assert!(admitted);
+    assert!(mempool.has_transaction(&txid));
+    assert_eq!(mempool.size(), 1);
+}
+
+#[test]
+fn test_v2_miner_includes_v2() {
+    use crate::consensus::block::create_genesis_block;
+    use crate::mining::miner::Miner;
+
+    let mut chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let genesis = create_genesis_block(0x207f_ffff);
+    let g_work = genesis.header.work();
+    chain.seed_block_for_test(genesis, 0, g_work, true);
+
+    let kp = DilithiumKeypair::generate();
+    let in_op = OutPoint {
+        txid: [9u8; 32],
+        vout: 0,
+    };
+    let (tx, in_entry) = build_valid_v2(&kp, in_op, 1000, 100);
+    chain.utxo_store_v2.put_utxo(&in_op, &in_entry).unwrap();
+    let v2_txid = tx.txid();
+
+    let miner = Miner::new(Network::Regtest.params(), vec![0x51]);
+    let template = miner
+        .build_template(&chain, vec![TxKind::V2(tx)])
+        .expect("template ok");
+
+    assert!(template
+        .transactions
+        .iter()
+        .any(|t| matches!(t, TxKind::V2(v2) if v2.txid() == v2_txid)));
+}
+
+#[test]
+fn test_v2_reorg_unblocked() {
+    use crate::consensus::block::create_genesis_block;
+
+    let mut chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let genesis = create_genesis_block(0x207f_ffff);
+    let g_hash = genesis.hash();
+    let g_work = genesis.header.work();
+    chain.seed_block_for_test(genesis, 0, g_work, true);
+
+    let kp = DilithiumKeypair::generate();
+    let in_op = OutPoint {
+        txid: [9u8; 32],
+        vout: 0,
+    };
+    let (v2_tx, in_entry) = build_valid_v2(&kp, in_op, 1000, 100);
+    let out_op = OutPoint {
+        txid: v2_tx.txid(),
+        vout: 0,
+    };
+    let out_entry = UtxoEntryV2 {
+        commitment: *v2_tx.outputs[0].commitment.0.as_bytes(),
+        script_pubkey: v2_tx.outputs[0].script_pubkey.clone(),
+        encrypted_amount: v2_tx.outputs[0].encrypted_amount.clone(),
+        ephemeral_pubkey: v2_tx.outputs[0].ephemeral_pubkey,
+        coinbase: false,
+        height: 1,
+    };
+
+    let cb_a = coinbase_v1(1);
+    let cb_a_op = OutPoint {
+        txid: cb_a.txid(),
+        vout: 0,
+    };
+    let cb_a_entry = UtxoEntry {
+        output: cb_a.outputs[0].clone(),
+        coinbase: true,
+        height: 1,
+    };
+    let a_txs = vec![TxKind::V1(cb_a), TxKind::V2(v2_tx)];
+    let a_txids: Vec<_> = a_txs.iter().map(|t| t.txid()).collect();
+    let block_a = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: g_hash,
+            merkle_root: compute_merkle_root(&a_txids),
+            timestamp: 1_700_000_100,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: a_txs,
+    };
+    let a_hash = block_a.hash();
+    let cum_a = g_work + block_a.header.work();
+    chain.seed_block_for_test(block_a, 1, cum_a, true);
+
+    chain
+        .utxo_store
+        .apply_block(&[(cb_a_op, cb_a_entry)], &[])
+        .unwrap();
+    chain.utxo_store.store_undo_data(&a_hash, &[]).unwrap();
+    chain.utxo_store_v2.put_utxo(&out_op, &out_entry).unwrap();
+    chain
+        .utxo_store_v2
+        .store_undo_data(&a_hash, &[(in_op, in_entry.clone())])
+        .unwrap();
+
+    let cb_b = coinbase_v1(1);
+    let b_txids = vec![cb_b.txid()];
+    let block_b = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: g_hash,
+            merkle_root: compute_merkle_root(&b_txids),
+            timestamp: 1_700_000_050,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb_b)],
+    };
+    let b_hash = block_b.hash();
+    let cum_b = g_work + block_b.header.work();
+    chain.seed_block_for_test(block_b, 1, cum_b, false);
+
+    let cb_b2 = coinbase_v1(2);
+    let b2_txids = vec![cb_b2.txid()];
+    let block_b2 = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: b_hash,
+            merkle_root: compute_merkle_root(&b2_txids),
+            timestamp: 1_700_000_060,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb_b2)],
+    };
+    let b2_hash = block_b2.hash();
+    let cum_b2 = cum_b + block_b2.header.work();
+    chain.seed_block_for_test(block_b2, 2, cum_b2, false);
+
+    assert!(chain.utxo_store_v2.get_utxo(&out_op).unwrap().is_some());
+    assert!(chain.utxo_store_v2.get_utxo(&in_op).unwrap().is_none());
+
+    chain.reorganize(&a_hash, &b2_hash).unwrap();
+
+    assert!(chain.utxo_store_v2.get_utxo(&out_op).unwrap().is_none());
+    let restored = chain.utxo_store_v2.get_utxo(&in_op).unwrap();
+    assert_eq!(restored, Some(in_entry));
+}

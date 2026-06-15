@@ -10,6 +10,7 @@ pub const CF_UTXO: &str = "utxo";
 pub const CF_UTXO_V2: &str = "utxo_v2";
 pub const CF_CHAIN_STATE: &str = "chain_state";
 pub const CF_UNDO: &str = "undo";
+pub const CF_UNDO_V2: &str = "undo_v2";
 pub const CF_BLOCK_META: &str = "block_meta";
 
 pub type DbEntry = (Vec<u8>, Vec<u8>);
@@ -37,6 +38,7 @@ impl Database {
             CF_UTXO_V2,
             CF_CHAIN_STATE,
             CF_UNDO,
+            CF_UNDO_V2,
         ];
 
         let db = DB::open_cf(&opts, path, &cfs)

@@ -1,6 +1,7 @@
 use crate::consensus::chain::ChainState;
-use crate::consensus::transaction::{Transaction, TxOutput};
+use crate::consensus::transaction::{Transaction, TxKind, TxOutput};
 use crate::consensus::utxo::OutPoint;
+use crate::consensus::validation::validate_transaction_v2;
 use crate::primitives::hash::Hash256;
 use crate::script::engine::{validate_p2dl, ScriptContext};
 use std::collections::{HashMap, HashSet};
@@ -11,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 pub const MEMPOOL_MAX_ENTRIES: usize = 5_000;
 
 pub struct NetworkMempool {
-    transactions: Arc<Mutex<HashMap<[u8; 32], Transaction>>>,
+    transactions: Arc<Mutex<HashMap<[u8; 32], TxKind>>>,
     chain: Arc<RwLock<ChainState>>,
 }
 
@@ -24,47 +25,18 @@ impl NetworkMempool {
     }
 
     // Add transaction to mempool
-    pub fn add_transaction(&self, tx: Transaction) -> Result<bool, String> {
+    pub fn add_transaction(&self, tx: TxKind) -> Result<bool, String> {
         let txid = tx.txid();
 
         // Validate inputs against chain state first (no mempool lock held here,
         // so the chain lock and mempool lock are never acquired simultaneously,
         // eliminating any lock-ordering deadlock risk).
-        {
-            let chain = self.chain.read().unwrap();
-            let mut spent_outputs: Vec<TxOutput> = Vec::with_capacity(tx.inputs.len());
-            for input in &tx.inputs {
-                let outpoint = OutPoint {
-                    txid: input.prev_txid,
-                    vout: input.prev_index,
-                };
-                let utxo = chain
-                    .get_utxo(&outpoint)?
-                    .ok_or_else(|| "Input UTXO not found".to_string())?;
-                spent_outputs.push(utxo.output);
-            }
-            // Validate scripts for all inputs so transactions with invalid
-            // signatures are rejected here rather than causing ScriptValidationFailed
-            // in add_block after PoW has already been solved.
-            for (index, input) in tx.inputs.iter().enumerate() {
-                let script_pubkey = &spent_outputs[index].script_pubkey;
-                let context = ScriptContext {
-                    transaction: &tx,
-                    input_index: index,
-                    spent_outputs: &spent_outputs,
-                };
-                let is_p2dl = script_pubkey.len() == 36
-                    && script_pubkey[0] == 0xaa
-                    && script_pubkey[1] == 0x20
-                    && script_pubkey[34] == 0x88
-                    && script_pubkey[35] == 0xac;
-                if is_p2dl {
-                    let ok = validate_p2dl(&input.script_sig, script_pubkey, &context)
-                        .map_err(|e| format!("Script validation error: {:?}", e))?;
-                    if !ok {
-                        return Err("P2DL script validation failed".to_string());
-                    }
-                }
+        match &tx {
+            TxKind::V1(v1) => self.validate_v1_against_chain(v1)?,
+            TxKind::V2(v2) => {
+                let chain = self.chain.read().unwrap();
+                validate_transaction_v2(v2, &chain)
+                    .map_err(|e| format!("V2 validation failed: {:?}", e))?;
             }
         }
 
@@ -90,16 +62,11 @@ impl NetworkMempool {
         // both pass the chain UTXO check (the UTXO is still unspent on-chain) and
         // produce two transactions spending the same UTXO. build_template then
         // includes both, and add_block fails on the second with UtxoNotFound.
+        let new_inputs = tx.input_outpoints();
         for pending in mempool.values() {
-            for pending_in in &pending.inputs {
-                for new_in in &tx.inputs {
-                    if new_in.prev_txid == pending_in.prev_txid
-                        && new_in.prev_index == pending_in.prev_index
-                    {
-                        return Err(
-                            "Input already spent by a pending mempool transaction".to_string()
-                        );
-                    }
+            for pending_in in pending.input_outpoints() {
+                if new_inputs.contains(&pending_in) {
+                    return Err("Input already spent by a pending mempool transaction".to_string());
                 }
             }
         }
@@ -108,8 +75,44 @@ impl NetworkMempool {
         Ok(true)
     }
 
+    fn validate_v1_against_chain(&self, tx: &Transaction) -> Result<(), String> {
+        let chain = self.chain.read().unwrap();
+        let mut spent_outputs: Vec<TxOutput> = Vec::with_capacity(tx.inputs.len());
+        for input in &tx.inputs {
+            let outpoint = OutPoint {
+                txid: input.prev_txid,
+                vout: input.prev_index,
+            };
+            let utxo = chain
+                .get_utxo(&outpoint)?
+                .ok_or_else(|| "Input UTXO not found".to_string())?;
+            spent_outputs.push(utxo.output);
+        }
+        for (index, input) in tx.inputs.iter().enumerate() {
+            let script_pubkey = &spent_outputs[index].script_pubkey;
+            let context = ScriptContext {
+                transaction: tx,
+                input_index: index,
+                spent_outputs: &spent_outputs,
+            };
+            let is_p2dl = script_pubkey.len() == 36
+                && script_pubkey[0] == 0xaa
+                && script_pubkey[1] == 0x20
+                && script_pubkey[34] == 0x88
+                && script_pubkey[35] == 0xac;
+            if is_p2dl {
+                let ok = validate_p2dl(&input.script_sig, script_pubkey, &context)
+                    .map_err(|e| format!("Script validation error: {:?}", e))?;
+                if !ok {
+                    return Err("P2DL script validation failed".to_string());
+                }
+            }
+        }
+        Ok(())
+    }
+
     // Get transaction by hash
-    pub fn get_transaction(&self, txid: &[u8; 32]) -> Option<Transaction> {
+    pub fn get_transaction(&self, txid: &[u8; 32]) -> Option<TxKind> {
         let mempool = self.transactions.lock().unwrap();
         mempool.get(txid).cloned()
     }
@@ -130,13 +133,12 @@ impl NetworkMempool {
     // that conflict with block transactions (spend the same inputs). This handles
     // the case where a peer mines a block containing a transaction we didn't have
     // in our mempool, but which spends the same UTXO as one we do have.
-    pub fn remove_block_transactions(&self, block_txs: &[Transaction]) {
+    pub fn remove_block_transactions(&self, block_txs: &[TxKind]) {
         // Collect all OutPoints spent by the confirmed block.
-        let mut spent: std::collections::HashSet<([u8; 32], u32)> =
-            std::collections::HashSet::new();
+        let mut spent: HashSet<(Hash256, u32)> = HashSet::new();
         for tx in block_txs {
-            for input in &tx.inputs {
-                spent.insert((input.prev_txid, input.prev_index));
+            for op in tx.input_outpoints() {
+                spent.insert(op);
             }
         }
 
@@ -148,14 +150,14 @@ impl NetworkMempool {
         // Evict any remaining mempool tx that spends a now-confirmed input.
         mempool.retain(|_, pending| {
             !pending
-                .inputs
+                .input_outpoints()
                 .iter()
-                .any(|i| spent.contains(&(i.prev_txid, i.prev_index)))
+                .any(|op| spent.contains(op))
         });
     }
 
     // Get all transactions
-    pub fn get_all_transactions(&self) -> Vec<Transaction> {
+    pub fn get_all_transactions(&self) -> Vec<TxKind> {
         let mempool = self.transactions.lock().unwrap();
         mempool.values().cloned().collect()
     }
@@ -166,7 +168,7 @@ impl NetworkMempool {
         let mempool = self.transactions.lock().unwrap();
         mempool
             .values()
-            .flat_map(|tx| tx.inputs.iter().map(|i| (i.prev_txid, i.prev_index)))
+            .flat_map(|tx| tx.input_outpoints())
             .collect()
     }
 
@@ -184,14 +186,24 @@ impl NetworkMempool {
         let chain = self.chain.read().unwrap();
         let mut mempool = self.transactions.lock().unwrap();
         let before = mempool.len();
-        mempool.retain(|_, tx| {
-            tx.inputs.iter().all(|input| {
+        mempool.retain(|_, tx| match tx {
+            TxKind::V1(v1) => v1.inputs.iter().all(|input| {
                 let outpoint = OutPoint {
                     txid: input.prev_txid,
                     vout: input.prev_index,
                 };
                 chain.is_utxo_unspent(&outpoint)
-            })
+            }),
+            TxKind::V2(v2) => v2.inputs.iter().all(|input| {
+                let outpoint = OutPoint {
+                    txid: input.prev_txid,
+                    vout: input.prev_index,
+                };
+                chain
+                    .get_utxo_v2(&outpoint)
+                    .map(|o| o.is_some())
+                    .unwrap_or(false)
+            }),
         });
         let evicted = before - mempool.len();
         if evicted > 0 {
@@ -244,13 +256,13 @@ mod tests {
         // If inputs empty, it passes "is_utxo_unspent" check (loop doesn't run).
 
         // Insert
-        let result = mempool.add_transaction(tx.clone());
+        let result = mempool.add_transaction(TxKind::V1(tx.clone()));
         assert!(result.is_ok());
         assert_eq!(mempool.size(), 1);
         assert!(mempool.has_transaction(&tx.txid()));
 
         // Insert again
-        let result = mempool.add_transaction(tx.clone());
+        let result = mempool.add_transaction(TxKind::V1(tx.clone()));
         assert!(result.is_ok());
         assert!(!result.unwrap()); // Returns false (already exists)
 

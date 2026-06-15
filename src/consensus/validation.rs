@@ -6,7 +6,7 @@ use crate::consensus::merkle::{compute_merkle_root, compute_witness_merkle_root}
 use crate::consensus::transaction::{
     PedersenCommitment, Transaction, TransactionV2, TxKind, MAX_MONEY,
 };
-use crate::consensus::utxo::OutPoint;
+use crate::consensus::utxo::{OutPoint, UtxoEntryV2};
 use crate::crypto::commitments::{verify_balance, verify_range_proof};
 use crate::primitives::hash::sha256d;
 use crate::script::engine::verify_p2dl_signature;
@@ -123,23 +123,24 @@ pub fn validate_block(
     Ok(())
 }
 
-pub fn validate_transaction_v2(
+pub(crate) fn validate_transaction_v2_inner<F>(
     tx: &TransactionV2,
-    chain: &ChainState,
-) -> Result<(), ValidationError> {
+    mut get_utxo_v2: F,
+) -> Result<Vec<(OutPoint, UtxoEntryV2)>, ValidationError>
+where
+    F: FnMut(&OutPoint) -> Result<Option<UtxoEntryV2>, ValidationError>,
+{
     tx.check_structure()
         .map_err(|_| ValidationError::TransactionStructureInvalid)?;
 
     let mut input_commitments = Vec::with_capacity(tx.inputs.len());
+    let mut spent_entries = Vec::with_capacity(tx.inputs.len());
     for (i, input) in tx.inputs.iter().enumerate() {
         let outpoint = OutPoint {
             txid: input.prev_txid,
             vout: input.prev_index,
         };
-        let entry = chain
-            .get_utxo_v2(&outpoint)
-            .map_err(|_| ValidationError::V2InputNotFound)?
-            .ok_or(ValidationError::V2InputNotFound)?;
+        let entry = get_utxo_v2(&outpoint)?.ok_or(ValidationError::V2InputNotFound)?;
 
         let sighash = compute_sighash_v2(tx, i, &entry.script_pubkey)
             .map_err(|_| ValidationError::V2SignatureInvalid)?;
@@ -150,6 +151,7 @@ pub fn validate_transaction_v2(
         }
 
         input_commitments.push(PedersenCommitment(CompressedRistretto(entry.commitment)));
+        spent_entries.push((outpoint, entry));
     }
 
     for output in &tx.outputs {
@@ -162,6 +164,18 @@ pub fn validate_transaction_v2(
         return Err(ValidationError::V2BalanceInvalid);
     }
 
+    Ok(spent_entries)
+}
+
+pub fn validate_transaction_v2(
+    tx: &TransactionV2,
+    chain: &ChainState,
+) -> Result<(), ValidationError> {
+    validate_transaction_v2_inner(tx, |op| {
+        chain
+            .get_utxo_v2(op)
+            .map_err(|_| ValidationError::V2InputNotFound)
+    })?;
     Ok(())
 }
 

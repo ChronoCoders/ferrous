@@ -379,6 +379,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mempool_mine = mempool.clone();
             std::thread::spawn(move || loop {
                 use ferrous_node::consensus::block::Block;
+                use ferrous_node::consensus::transaction::TxKind;
                 use ferrous_node::mining::miner::BlockTemplate;
 
                 // Phase 1: build template with read lock — fast (<1ms), no PoW.
@@ -414,7 +415,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Phase 3: commit with write lock — brief (~add_block duration).
                 let result = {
                     let mut chain_guard = chain_mine.write().unwrap();
-                    chain_guard.add_block(Block::from_v1(header, txs.clone()))
+                    chain_guard.add_block(Block {
+                        header,
+                        transactions: txs.clone(),
+                    })
                 };
                 // Write lock is now released.
 
@@ -425,7 +429,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         mempool_mine.purge_stale();
                         // Re-add transactions from any disconnected blocks.
                         for tx in requeued_txs {
-                            let _ = mempool_mine.add_transaction(tx);
+                            let _ = mempool_mine.add_transaction(TxKind::V1(tx));
                         }
                         // Notify recovery manager so last_block_age reflects locally
                         // mined blocks, not just P2P-received ones.

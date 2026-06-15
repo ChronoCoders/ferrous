@@ -5,12 +5,14 @@ use crate::consensus::transaction::TxKind;
 use crate::consensus::utxo::{OutPoint, UtxoEntry, UtxoEntryV2, UtxoError};
 use crate::consensus::validation::{
     validate_block, validate_coinbase_height, validate_coinbase_reward, validate_timestamp,
-    validate_transaction_v2, ValidationError, COINBASE_MATURITY,
+    validate_transaction_v2_inner, ValidationError, COINBASE_MATURITY,
 };
 use crate::primitives::hash::Hash256;
+use crate::primitives::serialize::Encode;
 use crate::script::engine::{validate_p2dl, ScriptContext};
 use crate::storage::{
-    BlockStore, ChainStateStore, ChainTip, Database, UtxoStore, UtxoStoreV2, CF_UNDO, CF_UTXO,
+    BlockStore, ChainStateStore, ChainTip, Database, UtxoStore, UtxoStoreV2, CF_UNDO, CF_UNDO_V2,
+    CF_UTXO, CF_UTXO_V2,
 };
 use log::info;
 use lru::LruCache;
@@ -80,6 +82,7 @@ type ApplyBlockToUtxoResult = (
 pub(crate) struct V2UtxoChanges {
     created: Vec<(OutPoint, UtxoEntryV2)>,
     spent: Vec<OutPoint>,
+    spent_entries: Vec<(OutPoint, UtxoEntryV2)>,
     fees: u64,
 }
 
@@ -125,6 +128,36 @@ impl ChainState {
         std::mem::forget(temp_dir);
 
         Ok(chain)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_block_for_test(
+        &mut self,
+        block: Block,
+        height: u64,
+        cumulative_work: U256,
+        set_tip: bool,
+    ) {
+        let hash = block.hash();
+        self.blocks.put(
+            hash,
+            BlockData {
+                block: block.clone(),
+                height,
+                cumulative_work,
+            },
+        );
+        let _ = self
+            .block_store
+            .store_block(&block, height, cumulative_work);
+        if set_tip {
+            let _ = self.state_store.set_tip(&ChainTip {
+                hash,
+                height,
+                cumulative_work,
+            });
+            self.tip = Some(hash);
+        }
     }
 
     /// Recover chain state from storage
@@ -264,7 +297,7 @@ impl ChainState {
             .map_err(|e| ChainError::DbError(format!("UTXO serialize failed: {}", e)))
     }
 
-    fn reorganize(
+    pub(crate) fn reorganize(
         &mut self,
         old_tip: &Hash256,
         new_tip: &Hash256,
@@ -374,12 +407,15 @@ impl ChainState {
         // None  = outpoint deleted (was created by an old block being disconnected)
         // Some  = outpoint exists (was restored from undo data)
         let mut overlay: HashMap<OutPoint, Option<UtxoEntry>> = HashMap::new();
+        let mut overlay_v2: HashMap<OutPoint, Option<UtxoEntryV2>> = HashMap::new();
 
         struct DisconnectEntry {
             block_hash: Hash256,
             block: Block,
             undo_data: Vec<(OutPoint, UtxoEntry)>,
             created_outpoints: Vec<OutPoint>,
+            undo_data_v2: Vec<(OutPoint, UtxoEntryV2)>,
+            created_outpoints_v2: Vec<OutPoint>,
         }
 
         let mut disconnect_entries: Vec<DisconnectEntry> = Vec::with_capacity(old_chain.len());
@@ -405,36 +441,47 @@ impl ChainState {
                     ))
                 })?;
 
-            if block
-                .transactions
-                .iter()
-                .any(|t| matches!(t, TxKind::V2(_)))
-            {
-                return Err(ChainError::DbError(
-                    "reorg across v2 transactions not supported".to_string(),
-                ));
-            }
+            let undo_data_v2 = self
+                .utxo_store_v2
+                .get_undo_data(block_hash)
+                .map_err(ChainError::DbError)?
+                .unwrap_or_default();
 
             // Remove UTXOs created by this old block from the overlay view.
             let mut created_outpoints = Vec::new();
+            let mut created_outpoints_v2 = Vec::new();
             for txkind in &block.transactions {
-                let tx = match txkind {
-                    TxKind::V1(t) => t,
-                    TxKind::V2(_) => continue,
-                };
-                let txid = tx.txid();
-                for vout in 0..tx.outputs.len() {
-                    let op = OutPoint {
-                        txid,
-                        vout: vout as u32,
-                    };
-                    overlay.insert(op, None);
-                    created_outpoints.push(op);
+                match txkind {
+                    TxKind::V1(tx) => {
+                        let txid = tx.txid();
+                        for vout in 0..tx.outputs.len() {
+                            let op = OutPoint {
+                                txid,
+                                vout: vout as u32,
+                            };
+                            overlay.insert(op, None);
+                            created_outpoints.push(op);
+                        }
+                    }
+                    TxKind::V2(tx) => {
+                        let txid = tx.txid();
+                        for vout in 0..tx.outputs.len() {
+                            let op = OutPoint {
+                                txid,
+                                vout: vout as u32,
+                            };
+                            overlay_v2.insert(op, None);
+                            created_outpoints_v2.push(op);
+                        }
+                    }
                 }
             }
             // Restore UTXOs that were spent by this old block.
             for (op, entry) in &undo_data {
                 overlay.insert(*op, Some(entry.clone()));
+            }
+            for (op, entry) in &undo_data_v2 {
+                overlay_v2.insert(*op, Some(entry.clone()));
             }
 
             disconnect_entries.push(DisconnectEntry {
@@ -442,6 +489,8 @@ impl ChainState {
                 block,
                 undo_data,
                 created_outpoints,
+                undo_data_v2,
+                created_outpoints_v2,
             });
         }
 
@@ -453,6 +502,9 @@ impl ChainState {
             created: Vec<(OutPoint, UtxoEntry)>,
             spent: Vec<OutPoint>,
             undo_data: Vec<(OutPoint, UtxoEntry)>,
+            created_v2: Vec<(OutPoint, UtxoEntryV2)>,
+            spent_v2: Vec<OutPoint>,
+            undo_data_v2: Vec<(OutPoint, UtxoEntryV2)>,
         }
 
         let mut reconnect_entries: Vec<ReconnectEntry> = Vec::with_capacity(new_chain.len());
@@ -476,24 +528,25 @@ impl ChainState {
                 (b, meta.height)
             };
 
-            if block
-                .transactions
-                .iter()
-                .any(|t| matches!(t, TxKind::V2(_)))
-            {
-                return Err(ChainError::DbError(
-                    "reorg across v2 transactions not supported".to_string(),
-                ));
-            }
-
             let (created, spent, undo, fees) =
                 self.apply_block_to_utxo_sim(&block, height, &overlay)?;
+
+            let V2UtxoChanges {
+                created: created_v2,
+                spent: spent_v2,
+                spent_entries: undo_data_v2,
+                fees: fees_v2,
+            } = self.collect_v2_utxo_changes_sim(&block, height, &overlay_v2)?;
+
+            let block_fees = fees
+                .checked_add(fees_v2)
+                .ok_or(ChainError::UtxoError(UtxoError::ValueOverflow))?;
 
             let coinbase = match &block.transactions[0] {
                 TxKind::V1(t) => t,
                 TxKind::V2(_) => return Err(ChainError::InvalidBlock(ValidationError::NoCoinbase)),
             };
-            validate_coinbase_reward(coinbase, fees, height as u32)
+            validate_coinbase_reward(coinbase, block_fees, height as u32)
                 .map_err(ChainError::InvalidBlock)?;
 
             // Advance the overlay with this block's changes.
@@ -503,6 +556,12 @@ impl ChainState {
             for (op, entry) in &created {
                 overlay.insert(*op, Some(entry.clone()));
             }
+            for op in &spent_v2 {
+                overlay_v2.insert(*op, None);
+            }
+            for (op, entry) in &created_v2 {
+                overlay_v2.insert(*op, Some(entry.clone()));
+            }
 
             reconnect_entries.push(ReconnectEntry {
                 block_hash: *hash,
@@ -510,6 +569,9 @@ impl ChainState {
                 created,
                 spent,
                 undo_data: undo,
+                created_v2,
+                spent_v2,
+                undo_data_v2,
             });
         }
 
@@ -534,6 +596,19 @@ impl ChainState {
             batch
                 .delete(CF_UNDO, &entry.block_hash)
                 .map_err(ChainError::DbError)?;
+            for op in &entry.created_outpoints_v2 {
+                batch
+                    .delete(CF_UTXO_V2, &Self::utxo_key(op))
+                    .map_err(ChainError::DbError)?;
+            }
+            for (op, v2_entry) in &entry.undo_data_v2 {
+                batch
+                    .put(CF_UTXO_V2, &Self::utxo_key(op), &v2_entry.encode())
+                    .map_err(ChainError::DbError)?;
+            }
+            batch
+                .delete(CF_UNDO_V2, &entry.block_hash)
+                .map_err(ChainError::DbError)?;
         }
 
         for entry in &reconnect_entries {
@@ -555,6 +630,23 @@ impl ChainState {
             batch
                 .put(CF_UNDO, &entry.block_hash, &undo_bytes)
                 .map_err(ChainError::DbError)?;
+            for op in &entry.spent_v2 {
+                batch
+                    .delete(CF_UTXO_V2, &Self::utxo_key(op))
+                    .map_err(ChainError::DbError)?;
+            }
+            for (op, v2_entry) in &entry.created_v2 {
+                batch
+                    .put(CF_UTXO_V2, &Self::utxo_key(op), &v2_entry.encode())
+                    .map_err(ChainError::DbError)?;
+            }
+            if !entry.undo_data_v2.is_empty() {
+                let undo_bytes_v2 = bincode::serialize(&entry.undo_data_v2)
+                    .map_err(|e| ChainError::DbError(format!("v2 undo serialize: {}", e)))?;
+                batch
+                    .put(CF_UNDO_V2, &entry.block_hash, &undo_bytes_v2)
+                    .map_err(ChainError::DbError)?;
+            }
         }
 
         batch.commit().map_err(ChainError::DbError)?;
@@ -748,6 +840,7 @@ impl ChainState {
                 let V2UtxoChanges {
                     created: v2_created,
                     spent: v2_spent,
+                    spent_entries: v2_spent_entries,
                     fees: v2_fees,
                 } = self.collect_v2_utxo_changes(&block, height)?;
 
@@ -774,6 +867,11 @@ impl ChainState {
                 if !v2_created.is_empty() || !v2_spent.is_empty() {
                     self.utxo_store_v2
                         .apply_block(&v2_created, &v2_spent)
+                        .map_err(ChainError::DbError)?;
+                }
+                if !v2_spent_entries.is_empty() {
+                    self.utxo_store_v2
+                        .store_undo_data(&block_hash, &v2_spent_entries)
                         .map_err(ChainError::DbError)?;
                 }
             }
@@ -941,13 +1039,17 @@ impl ChainState {
         self.utxo_store_v2.get_utxo(outpoint)
     }
 
-    pub(crate) fn collect_v2_utxo_changes(
-        &self,
+    fn collect_v2_utxo_changes_inner<F>(
         block: &Block,
         height: u64,
-    ) -> Result<V2UtxoChanges, ChainError> {
+        mut get_utxo_v2: F,
+    ) -> Result<V2UtxoChanges, ChainError>
+    where
+        F: FnMut(&OutPoint) -> Result<Option<UtxoEntryV2>, ChainError>,
+    {
         let mut created = Vec::new();
         let mut spent = Vec::new();
+        let mut spent_entries = Vec::new();
         let mut fees: u64 = 0;
         let mut spent_in_block: HashSet<OutPoint> = HashSet::new();
 
@@ -957,27 +1059,27 @@ impl ChainState {
                 TxKind::V1(_) => continue,
             };
 
-            validate_transaction_v2(tx, self).map_err(ChainError::InvalidBlock)?;
+            let mut lookup_err: Option<ChainError> = None;
+            let validated_spent = validate_transaction_v2_inner(tx, |op| match get_utxo_v2(op) {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    lookup_err = Some(e);
+                    Err(ValidationError::V2InputNotFound)
+                }
+            });
+            if let Some(e) = lookup_err {
+                return Err(e);
+            }
+            let validated_spent = validated_spent.map_err(ChainError::InvalidBlock)?;
 
             let txid = tx.txid();
 
-            for input in &tx.inputs {
-                let op = OutPoint {
-                    txid: input.prev_txid,
-                    vout: input.prev_index,
-                };
+            for (op, entry) in validated_spent {
                 if !spent_in_block.insert(op) {
                     return Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent));
                 }
-                if self
-                    .utxo_store_v2
-                    .get_utxo(&op)
-                    .map_err(ChainError::DbError)?
-                    .is_none()
-                {
-                    return Err(ChainError::UtxoError(UtxoError::UtxoNotFound));
-                }
                 spent.push(op);
+                spent_entries.push((op, entry));
             }
 
             for (vout, output) in tx.outputs.iter().enumerate() {
@@ -1004,7 +1106,33 @@ impl ChainState {
         Ok(V2UtxoChanges {
             created,
             spent,
+            spent_entries,
             fees,
+        })
+    }
+
+    pub(crate) fn collect_v2_utxo_changes(
+        &self,
+        block: &Block,
+        height: u64,
+    ) -> Result<V2UtxoChanges, ChainError> {
+        let utxo = &self.utxo_store_v2;
+        Self::collect_v2_utxo_changes_inner(block, height, |op| {
+            utxo.get_utxo(op).map_err(ChainError::DbError)
+        })
+    }
+
+    fn collect_v2_utxo_changes_sim(
+        &self,
+        block: &Block,
+        height: u64,
+        overlay_v2: &HashMap<OutPoint, Option<UtxoEntryV2>>,
+    ) -> Result<V2UtxoChanges, ChainError> {
+        let utxo = &self.utxo_store_v2;
+        Self::collect_v2_utxo_changes_inner(block, height, |op| match overlay_v2.get(op) {
+            Some(Some(entry)) => Ok(Some(entry.clone())),
+            Some(None) => Ok(None),
+            None => utxo.get_utxo(op).map_err(ChainError::DbError),
         })
     }
 
