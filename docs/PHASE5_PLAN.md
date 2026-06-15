@@ -135,6 +135,20 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
   `TransactionV2` both lead with a `version = 2` `u32`. They are safe today only because they decode
   on separate Rust paths; before any shared decode path (mempool/network/block) introduce a
   distinct discriminator (distinct version number or explicit type tag).
+- **BLOCKING (before v2 mempool/relay) — exact-value send leaks the amount.** `build_v2_transaction`
+  (Step 3) forces the payment-output blinding to 0 when there is no change (exact-value send), so the
+  output blinding sum stays 0 with v1 inputs at blinding 0. That makes the commitment `amount·G`, from
+  which the amount is trivially recoverable (compute `k·G` for candidate `k`). The balance check still
+  holds but confidentiality is lost for any send that consumes its inputs exactly. This is BLOCKING-2
+  territory: implement a real CT excess/kernel, or require a mandatory zero-value (randomly blinded)
+  balancing output, so the output blinding sum can be non-trivial while still summing to zero. Must be
+  resolved before any v2 path is relayed.
+- **Pre-mainnet — `decrypt_amount` is unauthenticated alone (document as invariant).** The amount
+  ciphertext is XOR over a BLAKE3 keystream with no MAC, so `decrypt_amount` returns a `(value,
+  blinding)` for any 40-byte input. Authentication is delegated entirely to the commitment-opening
+  check (`commit(value, blinding) == output.commitment`) performed by `scan_v2_outputs`. Every future
+  caller of `decrypt_amount` MUST perform the same commitment-opening check before trusting the
+  result; document this as a hard invariant before mainnet.
 - **DONE (`42bf89d`) — intra-block v2 double-spend guard added in `collect_v2_utxo_changes`.** Two v2
   transactions spending the same outpoint within a single block both passed the `get_utxo().is_none()`
   DB check (the outpoint stays unspent in the DB until the end-of-block commit) and the

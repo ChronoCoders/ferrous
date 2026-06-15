@@ -5,4 +5,5 @@ pub mod builder;
 pub mod dilithium;
 pub mod keys;
 pub mod manager;
+pub mod scan;
 pub mod shamir;

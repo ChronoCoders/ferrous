@@ -1,8 +1,13 @@
+use crate::consensus::transaction::BlindingFactor;
+use crate::consensus::utxo::OutPoint;
 use crate::wallet::address::pubkey_to_address;
 use crate::wallet::bip39::{entropy_to_mnemonic, mnemonic_to_seed};
 use crate::wallet::dilithium::DilithiumKeypair;
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+use curve25519_dalek_ng::constants::RISTRETTO_BASEPOINT_POINT;
+use curve25519_dalek_ng::ristretto::RistrettoPoint;
+use curve25519_dalek_ng::scalar::Scalar;
 use pbkdf2::pbkdf2_hmac;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -396,6 +401,12 @@ impl KeyStore {
         self.seed_entropy
     }
 
+    pub fn bip39_seed(&self) -> Option<[u8; 64]> {
+        let entropy = self.seed_entropy?;
+        let mnemonic = entropy_to_mnemonic(&entropy).ok()?;
+        Some(mnemonic_to_seed(&mnemonic, ""))
+    }
+
     pub fn is_encrypted(&self) -> bool {
         self.encrypted
     }
@@ -483,6 +494,32 @@ fn csv_deobfuscate(obfuscated: &[u8], salt: &[u8]) -> Vec<u8> {
         .enumerate()
         .map(|(i, b)| b ^ mask[i % 32])
         .collect()
+}
+
+fn scalar_from_blake3(label: &[u8], parts: &[&[u8]]) -> Scalar {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(label);
+    for p in parts {
+        hasher.update(p);
+    }
+    let mut reader = hasher.finalize_xof();
+    let mut wide = [0u8; 64];
+    reader.fill(&mut wide);
+    Scalar::from_bytes_mod_order_wide(&wide)
+}
+
+pub fn derive_blinding(seed: &[u8; 64], outpoint: &OutPoint) -> BlindingFactor {
+    let scalar = scalar_from_blake3(
+        b"Ferrous/blinding",
+        &[seed, &outpoint.txid, &outpoint.vout.to_le_bytes()],
+    );
+    BlindingFactor(scalar.to_bytes())
+}
+
+pub fn derive_view_key(seed: &[u8; 64]) -> (Scalar, RistrettoPoint) {
+    let scalar = scalar_from_blake3(b"Ferrous/view", &[seed]);
+    let point = scalar * RISTRETTO_BASEPOINT_POINT;
+    (scalar, point)
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -680,5 +717,29 @@ mod tests {
         assert_eq!(ks2.receive_index, 2);
         assert_eq!(ks2.change_index, 1);
         assert_eq!(ks2.entries().len(), 3);
+    }
+
+    #[test]
+    fn test_blinding_derivation_deterministic() {
+        let seed = [0x33u8; 64];
+        let op = OutPoint {
+            txid: [1u8; 32],
+            vout: 0,
+        };
+
+        let a = derive_blinding(&seed, &op);
+        let b = derive_blinding(&seed, &op);
+        assert_eq!(a, b, "same seed + outpoint must derive the same blinding");
+
+        let op2 = OutPoint {
+            txid: [1u8; 32],
+            vout: 1,
+        };
+        let c = derive_blinding(&seed, &op2);
+        assert_ne!(a, c, "different outpoint must derive a different blinding");
+
+        let seed2 = [0x44u8; 64];
+        let d = derive_blinding(&seed2, &op);
+        assert_ne!(a, d, "different seed must derive a different blinding");
     }
 }
