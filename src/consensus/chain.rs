@@ -83,7 +83,7 @@ pub(crate) struct V2UtxoChanges {
     created: Vec<(OutPoint, UtxoEntryV2)>,
     spent: Vec<OutPoint>,
     spent_entries: Vec<(OutPoint, UtxoEntryV2)>,
-    fees: u64,
+    pub(crate) fees: u64,
 }
 
 impl ChainState {
