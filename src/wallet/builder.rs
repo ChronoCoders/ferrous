@@ -178,6 +178,56 @@ impl TransactionBuilder {
 
         Ok(tx)
     }
+
+    pub fn build_funding_tx(
+        wallet: &mut Wallet,
+        to_address: &str,
+        recipient_view_pubkey: &RistrettoPoint,
+        v1_utxo: &WalletUtxo,
+        fee: u64,
+    ) -> Result<TransactionV2, String> {
+        let value = v1_utxo
+            .value
+            .checked_sub(fee)
+            .ok_or_else(|| "Fee exceeds input value".to_string())?;
+        if value == 0 {
+            return Err("Funding output must be positive".to_string());
+        }
+
+        let blind = BlindingFactor([0u8; 32]);
+        let to_script = address_to_script_pubkey(to_address)?;
+        let commitment = commit(value, &blind);
+        let proof = generate_range_proof(value, &blind)
+            .map_err(|e| format!("Range proof (funding): {:?}", e))?;
+        let (enc, eph) = encrypt_amount(value, &blind, recipient_view_pubkey);
+
+        let mut tx = TransactionV2 {
+            version: TX_VERSION_V2,
+            inputs: vec![TxInputV2 {
+                prev_txid: v1_utxo.txid,
+                prev_index: v1_utxo.vout,
+                script_sig: Vec::new(),
+                sequence: 0xFFFF_FFFF,
+            }],
+            outputs: vec![TxOutputV2 {
+                commitment,
+                range_proof: proof,
+                script_pubkey: to_script,
+                encrypted_amount: enc,
+                ephemeral_pubkey: eph,
+            }],
+            fee,
+            locktime: 0,
+        };
+
+        sign_v2_transaction(
+            &mut tx,
+            std::slice::from_ref(&v1_utxo.script_pubkey),
+            wallet,
+        )?;
+
+        Ok(tx)
+    }
 }
 
 fn select_coins(
@@ -312,8 +362,11 @@ fn sign_v2_transaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consensus::block::{Block, BlockHeader};
     use crate::consensus::params::Network;
+    use crate::consensus::transaction::TxKind;
     use crate::consensus::utxo::UtxoEntry;
+    use crate::consensus::validation::validate_transaction_v2;
     use crate::crypto::commitments::verify_balance;
     use crate::wallet::keys::derive_view_key;
     use tempfile::TempDir;
@@ -435,5 +488,117 @@ mod tests {
         let input_commitments = vec![commit(utxo_value, &BlindingFactor([0u8; 32]))];
         let output_commitments: Vec<_> = tx.outputs.iter().map(|o| o.commitment.clone()).collect();
         assert!(verify_balance(&input_commitments, &output_commitments, fee));
+    }
+
+    fn funding_setup() -> (Wallet, ChainState, String, OutPoint, u64, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let wallet_path = dir.path().join("wallet.dat");
+        let mut wallet = Wallet::load(&wallet_path, 0x6f).unwrap();
+        wallet.set_seed([0x33u8; 32]).unwrap();
+        let addr = wallet.generate_address().unwrap();
+        let script = address_to_script_pubkey(&addr).unwrap();
+
+        let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+        let utxo_value = 1_000_000u64;
+        let in_op = OutPoint {
+            txid: [7u8; 32],
+            vout: 0,
+        };
+        chain
+            .utxo_store
+            .put_utxo(
+                &in_op,
+                &UtxoEntry {
+                    output: TxOutput {
+                        value: utxo_value,
+                        script_pubkey: script,
+                    },
+                    coinbase: false,
+                    height: 0,
+                },
+            )
+            .unwrap();
+
+        (wallet, chain, addr, in_op, utxo_value, dir)
+    }
+
+    #[test]
+    fn test_v1_to_v2_funding_validates() {
+        let (mut wallet, chain, addr, _in_op, _value, _dir) = funding_setup();
+
+        let utxos = wallet.get_utxos(&chain, &HashSet::new()).unwrap();
+        assert_eq!(utxos.len(), 1);
+        let v1_utxo = utxos[0].clone();
+
+        let (_, recipient_view_pubkey) = derive_view_key(&[0x44u8; 64]);
+        let fee = 1_000u64;
+
+        let tx = TransactionBuilder::build_funding_tx(
+            &mut wallet,
+            &addr,
+            &recipient_view_pubkey,
+            &v1_utxo,
+            fee,
+        )
+        .unwrap();
+
+        assert_eq!(tx.inputs.len(), 1);
+        assert_eq!(tx.outputs.len(), 1);
+        assert!(!tx.inputs[0].script_sig.is_empty());
+
+        validate_transaction_v2(&tx, &chain).unwrap();
+    }
+
+    #[test]
+    fn test_v2_utxo_populated_after_funding() {
+        let (mut wallet, chain, addr, in_op, _value, _dir) = funding_setup();
+
+        let v1_utxo = wallet.get_utxos(&chain, &HashSet::new()).unwrap()[0].clone();
+        let (_, recipient_view_pubkey) = derive_view_key(&[0x44u8; 64]);
+        let fee = 1_000u64;
+
+        let tx = TransactionBuilder::build_funding_tx(
+            &mut wallet,
+            &addr,
+            &recipient_view_pubkey,
+            &v1_utxo,
+            fee,
+        )
+        .unwrap();
+        validate_transaction_v2(&tx, &chain).unwrap();
+
+        let out_op = OutPoint {
+            txid: tx.txid(),
+            vout: 0,
+        };
+
+        let block = Block {
+            header: BlockHeader {
+                version: 1,
+                prev_block_hash: [0u8; 32],
+                merkle_root: [0u8; 32],
+                timestamp: 0,
+                n_bits: 0,
+                nonce: 0,
+            },
+            transactions: vec![TxKind::V2(tx)],
+        };
+
+        let changes = chain.collect_v2_utxo_changes(&block, 1).unwrap();
+        assert_eq!(changes.created.len(), 1);
+        assert!(changes.spent.is_empty());
+        assert_eq!(changes.spent_v1, vec![in_op]);
+
+        chain
+            .utxo_store_v2
+            .apply_block(&changes.created, &changes.spent)
+            .unwrap();
+        chain
+            .utxo_store
+            .apply_block(&[], &changes.spent_v1)
+            .unwrap();
+
+        assert!(chain.utxo_store_v2.get_utxo(&out_op).unwrap().is_some());
+        assert!(chain.utxo_store.get_utxo(&in_op).unwrap().is_none());
     }
 }

@@ -4,10 +4,10 @@ use crate::consensus::block::BlockHeader;
 use crate::consensus::chain::ChainState;
 use crate::consensus::merkle::{compute_merkle_root, compute_witness_merkle_root};
 use crate::consensus::transaction::{
-    PedersenCommitment, Transaction, TransactionV2, TxKind, MAX_MONEY,
+    BlindingFactor, PedersenCommitment, Transaction, TransactionV2, TxKind, MAX_MONEY,
 };
-use crate::consensus::utxo::{OutPoint, UtxoEntryV2};
-use crate::crypto::commitments::{verify_balance, verify_range_proof};
+use crate::consensus::utxo::{OutPoint, UtxoEntry, UtxoEntryV2};
+use crate::crypto::commitments::{commit, verify_balance, verify_range_proof};
 use crate::primitives::hash::sha256d;
 use crate::script::engine::verify_p2dl_signature;
 use crate::script::sighash::compute_sighash_v2;
@@ -123,35 +123,59 @@ pub fn validate_block(
     Ok(())
 }
 
+pub(crate) enum ResolvedV2Input {
+    V2(UtxoEntryV2),
+    V1(UtxoEntry),
+}
+
+pub(crate) struct V2Spends {
+    pub(crate) v2: Vec<(OutPoint, UtxoEntryV2)>,
+    pub(crate) v1: Vec<(OutPoint, UtxoEntry)>,
+}
+
 pub(crate) fn validate_transaction_v2_inner<F>(
     tx: &TransactionV2,
-    mut get_utxo_v2: F,
-) -> Result<Vec<(OutPoint, UtxoEntryV2)>, ValidationError>
+    mut resolve_input: F,
+) -> Result<V2Spends, ValidationError>
 where
-    F: FnMut(&OutPoint) -> Result<Option<UtxoEntryV2>, ValidationError>,
+    F: FnMut(&OutPoint) -> Result<Option<ResolvedV2Input>, ValidationError>,
 {
     tx.check_structure()
         .map_err(|_| ValidationError::TransactionStructureInvalid)?;
 
     let mut input_commitments = Vec::with_capacity(tx.inputs.len());
-    let mut spent_entries = Vec::with_capacity(tx.inputs.len());
+    let mut spent_v2 = Vec::new();
+    let mut spent_v1 = Vec::new();
     for (i, input) in tx.inputs.iter().enumerate() {
         let outpoint = OutPoint {
             txid: input.prev_txid,
             vout: input.prev_index,
         };
-        let entry = get_utxo_v2(&outpoint)?.ok_or(ValidationError::V2InputNotFound)?;
+        let resolved = resolve_input(&outpoint)?.ok_or(ValidationError::V2InputNotFound)?;
 
-        let sighash = compute_sighash_v2(tx, i, &entry.script_pubkey)
+        let script_pubkey = match &resolved {
+            ResolvedV2Input::V2(e) => &e.script_pubkey,
+            ResolvedV2Input::V1(e) => &e.output.script_pubkey,
+        };
+
+        let sighash = compute_sighash_v2(tx, i, script_pubkey)
             .map_err(|_| ValidationError::V2SignatureInvalid)?;
-        let valid = verify_p2dl_signature(&input.script_sig, &entry.script_pubkey, &sighash)
+        let valid = verify_p2dl_signature(&input.script_sig, script_pubkey, &sighash)
             .map_err(|_| ValidationError::V2SignatureInvalid)?;
         if !valid {
             return Err(ValidationError::V2SignatureInvalid);
         }
 
-        input_commitments.push(PedersenCommitment(CompressedRistretto(entry.commitment)));
-        spent_entries.push((outpoint, entry));
+        match resolved {
+            ResolvedV2Input::V2(entry) => {
+                input_commitments.push(PedersenCommitment(CompressedRistretto(entry.commitment)));
+                spent_v2.push((outpoint, entry));
+            }
+            ResolvedV2Input::V1(entry) => {
+                input_commitments.push(commit(entry.output.value, &BlindingFactor([0u8; 32])));
+                spent_v1.push((outpoint, entry));
+            }
+        }
     }
 
     for output in &tx.outputs {
@@ -164,7 +188,10 @@ where
         return Err(ValidationError::V2BalanceInvalid);
     }
 
-    Ok(spent_entries)
+    Ok(V2Spends {
+        v2: spent_v2,
+        v1: spent_v1,
+    })
 }
 
 pub fn validate_transaction_v2(
@@ -172,9 +199,19 @@ pub fn validate_transaction_v2(
     chain: &ChainState,
 ) -> Result<(), ValidationError> {
     validate_transaction_v2_inner(tx, |op| {
-        chain
+        if let Some(e) = chain
             .get_utxo_v2(op)
-            .map_err(|_| ValidationError::V2InputNotFound)
+            .map_err(|_| ValidationError::V2InputNotFound)?
+        {
+            return Ok(Some(ResolvedV2Input::V2(e)));
+        }
+        if let Some(e) = chain
+            .get_utxo(op)
+            .map_err(|_| ValidationError::V2InputNotFound)?
+        {
+            return Ok(Some(ResolvedV2Input::V1(e)));
+        }
+        Ok(None)
     })?;
     Ok(())
 }

@@ -5,7 +5,7 @@ use crate::consensus::transaction::TxKind;
 use crate::consensus::utxo::{OutPoint, UtxoEntry, UtxoEntryV2, UtxoError};
 use crate::consensus::validation::{
     validate_block, validate_coinbase_height, validate_coinbase_reward, validate_timestamp,
-    validate_transaction_v2_inner, ValidationError, COINBASE_MATURITY,
+    validate_transaction_v2_inner, ResolvedV2Input, ValidationError, COINBASE_MATURITY,
 };
 use crate::primitives::hash::Hash256;
 use crate::primitives::serialize::Encode;
@@ -80,9 +80,11 @@ type ApplyBlockToUtxoResult = (
 );
 
 pub(crate) struct V2UtxoChanges {
-    created: Vec<(OutPoint, UtxoEntryV2)>,
-    spent: Vec<OutPoint>,
-    spent_entries: Vec<(OutPoint, UtxoEntryV2)>,
+    pub(crate) created: Vec<(OutPoint, UtxoEntryV2)>,
+    pub(crate) spent: Vec<OutPoint>,
+    pub(crate) spent_entries: Vec<(OutPoint, UtxoEntryV2)>,
+    pub(crate) spent_v1: Vec<OutPoint>,
+    pub(crate) spent_v1_entries: Vec<(OutPoint, UtxoEntry)>,
     pub(crate) fees: u64,
 }
 
@@ -528,15 +530,26 @@ impl ChainState {
                 (b, meta.height)
             };
 
-            let (created, spent, undo, fees) =
+            let (created, mut spent, mut undo, fees) =
                 self.apply_block_to_utxo_sim(&block, height, &overlay)?;
 
             let V2UtxoChanges {
                 created: created_v2,
                 spent: spent_v2,
                 spent_entries: undo_data_v2,
+                spent_v1,
+                spent_v1_entries,
                 fees: fees_v2,
-            } = self.collect_v2_utxo_changes_sim(&block, height, &overlay_v2)?;
+            } = self.collect_v2_utxo_changes_sim(&block, height, &overlay_v2, &overlay)?;
+
+            let mut v1_spent_set: HashSet<OutPoint> = spent.iter().copied().collect();
+            for op in &spent_v1 {
+                if !v1_spent_set.insert(*op) {
+                    return Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent));
+                }
+            }
+            spent.extend(spent_v1.iter().copied());
+            undo.extend(spent_v1_entries.iter().cloned());
 
             let block_fees = fees
                 .checked_add(fees_v2)
@@ -834,15 +847,26 @@ impl ChainState {
             };
 
             if !did_reorg {
-                let (created_utxos, spent_utxos, spent_entries, v1_fees) =
+                let (created_utxos, mut spent_utxos, mut spent_entries, v1_fees) =
                     self.apply_block_to_utxo(&block, height)?;
 
                 let V2UtxoChanges {
                     created: v2_created,
                     spent: v2_spent,
                     spent_entries: v2_spent_entries,
+                    spent_v1,
+                    spent_v1_entries,
                     fees: v2_fees,
                 } = self.collect_v2_utxo_changes(&block, height)?;
+
+                let mut v1_spent_set: HashSet<OutPoint> = spent_utxos.iter().copied().collect();
+                for op in &spent_v1 {
+                    if !v1_spent_set.insert(*op) {
+                        return Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent));
+                    }
+                }
+                spent_utxos.extend(spent_v1.iter().copied());
+                spent_entries.extend(spent_v1_entries.iter().cloned());
 
                 let block_fees = v1_fees
                     .checked_add(v2_fees)
@@ -1042,14 +1066,16 @@ impl ChainState {
     fn collect_v2_utxo_changes_inner<F>(
         block: &Block,
         height: u64,
-        mut get_utxo_v2: F,
+        mut resolve_input: F,
     ) -> Result<V2UtxoChanges, ChainError>
     where
-        F: FnMut(&OutPoint) -> Result<Option<UtxoEntryV2>, ChainError>,
+        F: FnMut(&OutPoint) -> Result<Option<ResolvedV2Input>, ChainError>,
     {
         let mut created = Vec::new();
         let mut spent = Vec::new();
         let mut spent_entries = Vec::new();
+        let mut spent_v1 = Vec::new();
+        let mut spent_v1_entries = Vec::new();
         let mut fees: u64 = 0;
         let mut spent_in_block: HashSet<OutPoint> = HashSet::new();
 
@@ -1060,7 +1086,7 @@ impl ChainState {
             };
 
             let mut lookup_err: Option<ChainError> = None;
-            let validated_spent = validate_transaction_v2_inner(tx, |op| match get_utxo_v2(op) {
+            let validated = validate_transaction_v2_inner(tx, |op| match resolve_input(op) {
                 Ok(v) => Ok(v),
                 Err(e) => {
                     lookup_err = Some(e);
@@ -1070,16 +1096,27 @@ impl ChainState {
             if let Some(e) = lookup_err {
                 return Err(e);
             }
-            let validated_spent = validated_spent.map_err(ChainError::InvalidBlock)?;
+            let validated = validated.map_err(ChainError::InvalidBlock)?;
 
             let txid = tx.txid();
 
-            for (op, entry) in validated_spent {
+            for (op, entry) in validated.v2 {
                 if !spent_in_block.insert(op) {
                     return Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent));
                 }
                 spent.push(op);
                 spent_entries.push((op, entry));
+            }
+
+            for (op, entry) in validated.v1 {
+                if !spent_in_block.insert(op) {
+                    return Err(ChainError::UtxoError(UtxoError::UtxoAlreadySpent));
+                }
+                if entry.coinbase && height < entry.height.saturating_add(COINBASE_MATURITY) {
+                    return Err(ChainError::UtxoError(UtxoError::ImmatureCoinbase));
+                }
+                spent_v1.push(op);
+                spent_v1_entries.push((op, entry));
             }
 
             for (vout, output) in tx.outputs.iter().enumerate() {
@@ -1107,6 +1144,8 @@ impl ChainState {
             created,
             spent,
             spent_entries,
+            spent_v1,
+            spent_v1_entries,
             fees,
         })
     }
@@ -1116,9 +1155,16 @@ impl ChainState {
         block: &Block,
         height: u64,
     ) -> Result<V2UtxoChanges, ChainError> {
-        let utxo = &self.utxo_store_v2;
+        let utxo_v2 = &self.utxo_store_v2;
+        let utxo_v1 = &self.utxo_store;
         Self::collect_v2_utxo_changes_inner(block, height, |op| {
-            utxo.get_utxo(op).map_err(ChainError::DbError)
+            if let Some(e) = utxo_v2.get_utxo(op).map_err(ChainError::DbError)? {
+                return Ok(Some(ResolvedV2Input::V2(e)));
+            }
+            if let Some(e) = utxo_v1.get_utxo(op).map_err(ChainError::DbError)? {
+                return Ok(Some(ResolvedV2Input::V1(e)));
+            }
+            Ok(None)
         })
     }
 
@@ -1127,12 +1173,28 @@ impl ChainState {
         block: &Block,
         height: u64,
         overlay_v2: &HashMap<OutPoint, Option<UtxoEntryV2>>,
+        overlay: &HashMap<OutPoint, Option<UtxoEntry>>,
     ) -> Result<V2UtxoChanges, ChainError> {
-        let utxo = &self.utxo_store_v2;
-        Self::collect_v2_utxo_changes_inner(block, height, |op| match overlay_v2.get(op) {
-            Some(Some(entry)) => Ok(Some(entry.clone())),
-            Some(None) => Ok(None),
-            None => utxo.get_utxo(op).map_err(ChainError::DbError),
+        let utxo_v2 = &self.utxo_store_v2;
+        let utxo_v1 = &self.utxo_store;
+        Self::collect_v2_utxo_changes_inner(block, height, |op| {
+            match overlay_v2.get(op) {
+                Some(Some(entry)) => return Ok(Some(ResolvedV2Input::V2(entry.clone()))),
+                Some(None) => return Ok(None),
+                None => {}
+            }
+            if let Some(e) = utxo_v2.get_utxo(op).map_err(ChainError::DbError)? {
+                return Ok(Some(ResolvedV2Input::V2(e)));
+            }
+            match overlay.get(op) {
+                Some(Some(entry)) => return Ok(Some(ResolvedV2Input::V1(entry.clone()))),
+                Some(None) => return Ok(None),
+                None => {}
+            }
+            if let Some(e) = utxo_v1.get_utxo(op).map_err(ChainError::DbError)? {
+                return Ok(Some(ResolvedV2Input::V1(e)));
+            }
+            Ok(None)
         })
     }
 
