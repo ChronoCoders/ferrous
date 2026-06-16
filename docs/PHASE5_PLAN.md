@@ -194,6 +194,47 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
   `apply_block_to_utxo_sim` paths — rejects duplicates with `UtxoError::UtxoAlreadySpent` before the
   UTXO lookup; the redundant per-tx set was removed (test `test_v1_intrablock_double_spend_rejected`).
 
+## 5a Activation Prerequisites (before confidential-amount v2 can go live)
+
+These gate turning v2 on, independent of the 5b CLSAG work above. Surfaced 2026-06-16 while
+scoping BLOCKING-2.
+
+- **DONE (2026-06-16) — v1→v2 funding bridge.** Previously `CF_UTXO_V2` was unspawnable (no genesis
+  v2 output, no conversion tx, and `validate_transaction_v2_inner` looked inputs up only in
+  `CF_UTXO_V2`), so no v2 tx could ever validate on-chain. Resolved: a `TransactionV2` may now spend a
+  transparent v1 UTXO — `validate_transaction_v2_inner` resolves each input to `ResolvedV2Input::{V2,V1}`
+  (v1 → input commitment `commit(value, 0) = value·G` since the value is public), and the spend-side
+  accounting deletes the spent v1 UTXO from `CF_UTXO`, writes its undo to `CF_UNDO`, enforces coinbase
+  maturity, and guards (combined `HashSet`) against a v1 UTXO being spent by both a v1 tx and a funding
+  tx in the same block — in both the live `add_block` path and the atomic reorg reconnect path.
+  `build_funding_tx` (wallet) produces a single-v1-input → single-v2-output (blinding 0) conversion tx.
+  rust-reviewer: APPROVE (no inflation path; reorg atomic + symmetric). Activation still gated on the
+  spend-builder generalization below.
+- **BLOCKING — v2 spend builder hardcodes `Σx_out = 0`.** `build_v2_transaction` sets the change
+  blinding to `−x_payment`, which balances only because v1 inputs are at blinding 0 (`Σx_in = 0`).
+  This is sound for v1-funded sends but does not generalize: spending a *v2* UTXO (real non-zero
+  blinding) requires `Σx_out = Σx_in`, and the builder has no path to select v2 UTXOs or set output
+  blindings to match a non-zero input blinding sum. Until generalized, v2 UTXOs are a **roach motel** —
+  fundable (once the bridge lands) but unspendable by the wallet. (Consensus `verify_balance` already
+  supports arbitrary input commitments; this is purely a wallet-builder gap.)
+- **NOTE — generator convention is swapped vs this document.** The code commits **value on the
+  Ristretto basepoint `G`, blinding on `H`** (`commit(v,x) = v·G + x·H`; `verify_balance` checks
+  `Σ in == Σ out + fee·G`). This document's 5a text (line ~93/96) writes `C = xG + aH` and
+  `Σ C_in − Σ C_out − fee·H = 0` (amount on `H`). The implementation is internally consistent and
+  sound (BLOCKING-1 confirmed), but the **plan/`PRIVACY.md` text must be reconciled to the code**
+  before 5b/CLSAG commitment-to-zero math is written against the wrong generator.
+- **Pre-mainnet — mempool admits funding txs spending an immature coinbase.** Maturity is enforced
+  in the consensus apply path (`collect_v2_utxo_changes_inner`: `height < entry.height +
+  COINBASE_MATURITY` → `ImmatureCoinbase`), but `validate_transaction_v2` (the mempool path) does not
+  check it, so such a tx is admitted to the mempool and only rejected at block apply. No corruption or
+  inflation risk (apply rejects it); consistent with v1 mempool behavior. Add the maturity check to
+  `validate_transaction_v2` before mainnet.
+- **Pre-mainnet — disconnected funding tx is dropped from the reorg requeue.** `reorganize` only
+  requeues disconnected `TxKind::V1` non-coinbase txs (`TxKind::V2(_) => continue`), so a funding tx
+  in a disconnected block is dropped rather than re-mined onto the new chain. Liveness gap (the tx
+  must be re-submitted), not a safety issue (no double-spend, no corruption — its v1 input is restored
+  by the disconnect undo). Address before mainnet.
+
 ## Stage 5b — Sender Privacy (CLSAG + key images)
 
 - **CLSAG ring signatures**, ring size 11, decoys via gamma distribution over output age.
