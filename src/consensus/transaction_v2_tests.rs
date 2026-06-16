@@ -782,3 +782,58 @@ fn test_block_message_v2_roundtrip() {
     assert!(matches!(decoded.transactions[0], TxKind::V1(_)));
     assert!(matches!(decoded.transactions[1], TxKind::V2(_)));
 }
+
+#[test]
+fn test_v2_fee_claimed_in_coinbase() {
+    use crate::consensus::validation::{
+        calculate_subsidy, validate_coinbase_reward, ValidationError,
+    };
+
+    let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let kp = DilithiumKeypair::generate();
+    let in_op = OutPoint {
+        txid: [9u8; 32],
+        vout: 0,
+    };
+    let (v2_tx, in_entry) = build_valid_v2(&kp, in_op, 3000, 1000);
+    chain.utxo_store_v2.put_utxo(&in_op, &in_entry).unwrap();
+
+    let height: u32 = 1;
+    let subsidy = calculate_subsidy(height);
+
+    let mut coinbase = coinbase_v1(height);
+    coinbase.outputs[0].value = subsidy + 1000;
+
+    let block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: [0u8; 32],
+            merkle_root: [0u8; 32],
+            timestamp: 0,
+            n_bits: 0,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(coinbase.clone()), TxKind::V2(v2_tx)],
+    };
+
+    let (_, _, _, v1_fees) = chain.apply_block_to_utxo(&block, height as u64).unwrap();
+    let v2_changes = chain
+        .collect_v2_utxo_changes(&block, height as u64)
+        .unwrap();
+    let block_fees = v1_fees + v2_changes.fees;
+    assert_eq!(block_fees, 1000);
+
+    assert!(validate_coinbase_reward(&coinbase, block_fees, height).is_ok());
+
+    let mut over = coinbase_v1(height);
+    over.outputs[0].value = subsidy + 1001;
+    assert_eq!(
+        validate_coinbase_reward(&over, block_fees, height),
+        Err(ValidationError::CoinbaseRewardTooHigh)
+    );
+
+    assert_eq!(
+        validate_coinbase_reward(&coinbase, 0, height),
+        Err(ValidationError::CoinbaseRewardTooHigh)
+    );
+}
