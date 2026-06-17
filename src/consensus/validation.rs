@@ -42,6 +42,7 @@ pub enum ValidationError {
     V2SignatureInvalid,
     V2RangeProofInvalid,
     V2BalanceInvalid,
+    V2ImmatureCoinbase,
 }
 
 /// Validate block structure and consensus rules
@@ -213,6 +214,38 @@ pub fn validate_transaction_v2(
         }
         Ok(None)
     })?;
+    Ok(())
+}
+
+pub fn validate_transaction_v2_mempool(
+    tx: &TransactionV2,
+    chain: &ChainState,
+    tip_height: u64,
+) -> Result<(), ValidationError> {
+    validate_transaction_v2(tx, chain)?;
+
+    let next_height = tip_height.saturating_add(1);
+    for input in &tx.inputs {
+        let op = OutPoint {
+            txid: input.prev_txid,
+            vout: input.prev_index,
+        };
+        if chain
+            .get_utxo_v2(&op)
+            .map_err(|_| ValidationError::V2InputNotFound)?
+            .is_some()
+        {
+            continue;
+        }
+        if let Some(entry) = chain
+            .get_utxo(&op)
+            .map_err(|_| ValidationError::V2InputNotFound)?
+        {
+            if entry.coinbase && next_height < entry.height.saturating_add(COINBASE_MATURITY) {
+                return Err(ValidationError::V2ImmatureCoinbase);
+            }
+        }
+    }
     Ok(())
 }
 

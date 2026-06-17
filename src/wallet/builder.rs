@@ -458,7 +458,9 @@ mod tests {
     use crate::consensus::utxo::{UtxoEntry, UtxoEntryV2};
     use crate::consensus::validation::validate_transaction_v2;
     use crate::crypto::commitments::verify_balance;
+    use crate::network::mempool::NetworkMempool;
     use crate::wallet::keys::derive_view_key;
+    use std::sync::{Arc, RwLock};
     use tempfile::TempDir;
 
     #[test]
@@ -837,5 +839,122 @@ mod tests {
         assert!(verify_balance(&input_commitments, &output_commitments, fee));
 
         validate_transaction_v2(&spend, &chain).unwrap();
+    }
+
+    #[test]
+    fn test_zero_value_v2_change_accepted() {
+        let dir = TempDir::new().unwrap();
+        let wallet_path = dir.path().join("wallet.dat");
+        let mut wallet = Wallet::load(&wallet_path, 0x6f).unwrap();
+        wallet.set_seed([0xABu8; 32]).unwrap();
+        let addr = wallet.generate_address().unwrap();
+        let script = address_to_script_pubkey(&addr).unwrap();
+        let seed = wallet.bip39_seed().unwrap();
+
+        let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+        let v2_value = 500_000u64;
+        let x_in = BlindingFactor([9u8; 32]);
+        let c_in = commit(v2_value, &x_in);
+        let v2_op = OutPoint {
+            txid: [3u8; 32],
+            vout: 0,
+        };
+        chain
+            .utxo_store_v2
+            .put_utxo(
+                &v2_op,
+                &UtxoEntryV2 {
+                    commitment: *c_in.0.as_bytes(),
+                    script_pubkey: script.clone(),
+                    encrypted_amount: vec![],
+                    ephemeral_pubkey: [0u8; 32],
+                    coinbase: false,
+                    height: 0,
+                },
+            )
+            .unwrap();
+
+        let fee = 1_000u64;
+        let payment = v2_value - fee;
+        let (_, recipient_view) = derive_view_key(&[0xCDu8; 64]);
+        let spend = TransactionBuilder::spend_v2_transaction(
+            &mut wallet,
+            &addr,
+            &recipient_view,
+            &[(v2_op, v2_value, x_in, script.clone())],
+            payment,
+            fee,
+            &seed,
+        )
+        .unwrap();
+
+        assert_eq!(spend.outputs.len(), 2);
+        let pay_blind = derive_blinding(&seed, &v2_op);
+        let change_blind = BlindingFactor(
+            (Scalar::from_bytes_mod_order(x_in.0) - Scalar::from_bytes_mod_order(pay_blind.0))
+                .to_bytes(),
+        );
+        assert_eq!(spend.outputs[1].commitment, commit(0, &change_blind));
+
+        validate_transaction_v2(&spend, &chain).unwrap();
+
+        let chain = Arc::new(RwLock::new(chain));
+        let mempool = NetworkMempool::new(chain);
+        let admitted = mempool.add_transaction(TxKind::V2(spend)).unwrap();
+        assert!(admitted);
+    }
+
+    #[test]
+    fn test_funding_tx_immature_coinbase_rejected_mempool() {
+        let dir = TempDir::new().unwrap();
+        let wallet_path = dir.path().join("wallet.dat");
+        let mut wallet = Wallet::load(&wallet_path, 0x6f).unwrap();
+        wallet.set_seed([0xBCu8; 32]).unwrap();
+        let addr = wallet.generate_address().unwrap();
+        let script = address_to_script_pubkey(&addr).unwrap();
+
+        let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+        let cb_value = 50 * 100_000_000u64;
+        let cb_op = OutPoint {
+            txid: [8u8; 32],
+            vout: 0,
+        };
+        chain
+            .utxo_store
+            .put_utxo(
+                &cb_op,
+                &UtxoEntry {
+                    output: TxOutput {
+                        value: cb_value,
+                        script_pubkey: script.clone(),
+                    },
+                    coinbase: true,
+                    height: 0,
+                },
+            )
+            .unwrap();
+
+        let v1_utxo = WalletUtxo {
+            txid: cb_op.txid,
+            vout: cb_op.vout,
+            value: cb_value,
+            script_pubkey: script.clone(),
+            height: 0,
+        };
+        let (_, recipient_view) = derive_view_key(&[0xDEu8; 64]);
+        let funding = TransactionBuilder::build_funding_tx(
+            &mut wallet,
+            &addr,
+            &recipient_view,
+            &v1_utxo,
+            1_000,
+        )
+        .unwrap();
+
+        let chain = Arc::new(RwLock::new(chain));
+        let mempool = NetworkMempool::new(chain);
+        let res = mempool.add_transaction(TxKind::V2(funding));
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("ImmatureCoinbase"));
     }
 }

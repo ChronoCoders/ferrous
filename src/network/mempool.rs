@@ -1,7 +1,7 @@
 use crate::consensus::chain::ChainState;
 use crate::consensus::transaction::{Transaction, TxKind, TxOutput};
 use crate::consensus::utxo::OutPoint;
-use crate::consensus::validation::validate_transaction_v2;
+use crate::consensus::validation::validate_transaction_v2_mempool;
 use crate::primitives::hash::Hash256;
 use crate::script::engine::{validate_p2dl, ScriptContext};
 use std::collections::{HashMap, HashSet};
@@ -35,7 +35,8 @@ impl NetworkMempool {
             TxKind::V1(v1) => self.validate_v1_against_chain(v1)?,
             TxKind::V2(v2) => {
                 let chain = self.chain.read().unwrap();
-                validate_transaction_v2(v2, &chain)
+                let tip_height = chain.get_height();
+                validate_transaction_v2_mempool(v2, &chain, tip_height)
                     .map_err(|e| format!("V2 validation failed: {:?}", e))?;
             }
         }

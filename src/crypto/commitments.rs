@@ -40,6 +40,11 @@ fn pedersen_gens() -> PedersenGens {
     }
 }
 
+fn bp_gens() -> &'static BulletproofGens {
+    static BP_GENS: OnceLock<BulletproofGens> = OnceLock::new();
+    BP_GENS.get_or_init(|| BulletproofGens::new(RANGE_BITS, 1))
+}
+
 fn scalar_of(blinding: &BlindingFactor) -> Scalar {
     Scalar::from_bytes_mod_order(blinding.0)
 }
@@ -79,10 +84,9 @@ pub fn generate_range_proof(
     blinding: &BlindingFactor,
 ) -> Result<RangeProof, CommitmentError> {
     let pc_gens = pedersen_gens();
-    let bp_gens = BulletproofGens::new(RANGE_BITS, 1);
     let mut transcript = Transcript::new(TRANSCRIPT_LABEL);
     let (proof, _commitment) = BpRangeProof::prove_single(
-        &bp_gens,
+        bp_gens(),
         &pc_gens,
         &mut transcript,
         value,
@@ -98,13 +102,12 @@ pub fn verify_range_proof(
     proof: &RangeProof,
 ) -> Result<(), CommitmentError> {
     let pc_gens = pedersen_gens();
-    let bp_gens = BulletproofGens::new(RANGE_BITS, 1);
     let bp_proof =
         BpRangeProof::from_bytes(&proof.0).map_err(|_| CommitmentError::InvalidProofEncoding)?;
     let mut transcript = Transcript::new(TRANSCRIPT_LABEL);
     bp_proof
         .verify_single(
-            &bp_gens,
+            bp_gens(),
             &pc_gens,
             &mut transcript,
             &commitment.0,
