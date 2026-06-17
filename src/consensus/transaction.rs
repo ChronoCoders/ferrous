@@ -651,7 +651,7 @@ impl TxKind {
                 base * 3 + total
             }
             TxKind::V2(tx) => {
-                let total = tx.encode().len() as u64;
+                let total = tx.encoded_size() as u64;
                 total * 3 + total
             }
         }
