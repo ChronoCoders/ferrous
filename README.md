@@ -77,7 +77,7 @@ curl -X POST http://127.0.0.1:8332 \
 ## Project Status
 
 **Version**: 0.4.0 (Alpha)
-**Phase**: Phase 4 — Post-Quantum Cryptography (complete). Phase 5 (Ring CT) is next.
+**Phase**: Phase 4 - Post-Quantum Cryptography (complete). Phase 5 (Ring CT) is next.
 
 ### Implemented
 
@@ -126,16 +126,16 @@ curl -X POST http://127.0.0.1:8332 \
 
 ### Infrastructure (Live Testnet)
 
-- `seed1.ferrous.network` — `45.77.153.141` — Vultr New York — mining
-- `seed4.ferrous.network` — `45.77.64.221` — Vultr Frankfurt — mining
+- `seed1.ferrous.network` - `45.77.153.141` - Vultr New York - mining
+- `seed4.ferrous.network` - `45.77.64.221` - Vultr Frankfurt - mining
 
 ### Roadmap
 
-- **Phase 1 ✓**: Core foundation — RandomX PoW, UTXO, P2P, headers-first IBD.
-- **Phase 2 ✓**: Parallel IBD — multi-peer BlockDownloadQueue + apply-buffer backpressure.
-- **Phase 3 ✓**: Wallet integration — BIP39 seed phrase + Shamir's Secret Sharing recovery, ChaCha20-Poly1305 encryption.
-- **Phase 4 ✓**: Post-Quantum Cryptography — CRYSTALS-Dilithium (ML-DSA-65), bech32m P2DL addresses. Live on testnet since 2026-05-31.
-- **Phase 5 (Current)**: Privacy Features — Ring Confidential Transactions + CLSAG.
+- **Phase 1 ✓**: Core foundation - RandomX PoW, UTXO, P2P, headers-first IBD.
+- **Phase 2 ✓**: Parallel IBD - multi-peer BlockDownloadQueue + apply-buffer backpressure.
+- **Phase 3 ✓**: Wallet integration - BIP39 seed phrase + Shamir's Secret Sharing recovery, ChaCha20-Poly1305 encryption.
+- **Phase 4 ✓**: Post-Quantum Cryptography - CRYSTALS-Dilithium (ML-DSA-65), bech32m P2DL addresses. Live on testnet since 2026-05-31.
+- **Phase 5 (Current)**: Privacy Features - Ring Confidential Transactions + CLSAG.
 - **Phase 6**: Security audit + Mainnet launch.
 
 ## Documentation
