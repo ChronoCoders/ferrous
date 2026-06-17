@@ -12,8 +12,11 @@ use crate::rpc::methods::*;
 use crate::wallet::address::script_pubkey_to_address;
 use crate::wallet::bip39;
 use crate::wallet::builder::TransactionBuilder;
+use crate::wallet::keys::derive_view_key;
 use crate::wallet::manager::Wallet;
+use crate::wallet::scan::{scan_v2_outputs, V2UtxoCache};
 use crate::wallet::shamir;
+use curve25519_dalek_ng::ristretto::{CompressedRistretto, RistrettoPoint};
 use serde_json::{json, Value};
 use std::io::Read;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -51,6 +54,8 @@ pub struct RpcServer {
     blockchain_info_cache: Mutex<Option<(Instant, Value)>>,
     /// 1-second response cache for getmininginfo (timestamp, cached value).
     mininginfo_cache: Mutex<Option<(Instant, Value)>>,
+    v2_cache: Mutex<V2UtxoCache>,
+    v2_scan_height: Mutex<u64>,
 }
 
 impl RpcServer {
@@ -71,6 +76,8 @@ impl RpcServer {
             server,
             blockchain_info_cache: Mutex::new(None),
             mininginfo_cache: Mutex::new(None),
+            v2_cache: Mutex::new(V2UtxoCache::new()),
+            v2_scan_height: Mutex::new(0),
         })
     }
 
@@ -268,6 +275,10 @@ impl RpcServer {
             "importseed" => self.importseed(params),
             "getshamirshares" => self.getshamirshares(params),
             "getrawmempool" => self.getrawmempool(),
+            "createfundingtx" => self.createfundingtx(params),
+            "sendv2transaction" => self.sendv2transaction(params),
+            "scanv2outputs" => self.scanv2outputs(),
+            "getviewkey" => self.getviewkey(),
             "stop" => Ok(json!("stopping")),
             _ => return Err((-32601, "Method not found".to_string())),
         };
@@ -1328,6 +1339,196 @@ impl RpcServer {
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
     }
 
+    fn resolve_recipient_view(&self, req: &V2PaymentRequest) -> Result<RistrettoPoint, String> {
+        if let Some(hexkey) = &req.view_pubkey {
+            let bytes = hex::decode(hexkey).map_err(|_| "Invalid view_pubkey hex".to_string())?;
+            if bytes.len() != 32 {
+                return Err("view_pubkey must be 32 bytes".to_string());
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            CompressedRistretto(arr)
+                .decompress()
+                .ok_or_else(|| "Invalid view_pubkey point".to_string())
+        } else {
+            let wallet = self
+                .wallet
+                .lock()
+                .map_err(|_| "Lock poisoned".to_string())?;
+            let seed = wallet
+                .bip39_seed()
+                .ok_or_else(|| "Confidential transactions require a seeded wallet".to_string())?;
+            drop(wallet);
+            Ok(derive_view_key(&seed).1)
+        }
+    }
+
+    fn build_v2_funding(
+        &self,
+        req: &V2PaymentRequest,
+    ) -> Result<crate::consensus::transaction::TransactionV2, String> {
+        if req.amount == 0 {
+            return Err("Amount must be positive".to_string());
+        }
+        let needed = req
+            .amount
+            .checked_add(req.fee)
+            .ok_or_else(|| "Amount overflow".to_string())?;
+
+        let recipient_view = self.resolve_recipient_view(req)?;
+
+        let mut wallet = self
+            .wallet
+            .lock()
+            .map_err(|_| "Lock poisoned".to_string())?;
+        let spent = self.mempool.spent_outpoints();
+        let utxos = {
+            let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
+            wallet.get_utxos(&chain, &spent)?
+        };
+
+        let v1_utxo = utxos
+            .into_iter()
+            .filter(|u| u.value >= needed)
+            .min_by_key(|u| u.value)
+            .ok_or_else(|| "No single v1 UTXO covers amount + fee".to_string())?;
+
+        TransactionBuilder::build_funding_tx(
+            &mut wallet,
+            &req.to_address,
+            &recipient_view,
+            &v1_utxo,
+            req.fee,
+        )
+    }
+
+    fn createfundingtx(&self, params: &Value) -> Result<Value, String> {
+        let req: V2PaymentRequest = serde_json::from_value(param_object(params))
+            .map_err(|e| format!("Invalid params: {}", e))?;
+
+        let tx = self.build_v2_funding(&req)?;
+        let txid = hex::encode(tx.txid());
+        let hex = hex::encode(crate::consensus::transaction::TxKind::V2(tx).encode());
+
+        let response = CreateFundingTxResponse { txid, hex };
+        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+    }
+
+    fn sendv2transaction(&self, params: &Value) -> Result<Value, String> {
+        let req: V2PaymentRequest = serde_json::from_value(param_object(params))
+            .map_err(|e| format!("Invalid params: {}", e))?;
+
+        let tx = self.build_v2_funding(&req)?;
+        let txid_raw = tx.txid();
+
+        self.mempool
+            .add_transaction(crate::consensus::transaction::TxKind::V2(tx))
+            .map_err(|e| format!("Mempool rejected transaction: {}", e))?;
+
+        let _ = self.relay.announce_transaction(txid_raw);
+
+        let response = SendV2TransactionResponse {
+            txid: hex::encode(txid_raw),
+        };
+        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+    }
+
+    fn scanv2outputs(&self) -> Result<Value, String> {
+        const V2_SCAN_WINDOW: u64 = 1000;
+
+        let view_scalar = {
+            let wallet = self
+                .wallet
+                .lock()
+                .map_err(|_| "Lock poisoned".to_string())?;
+            let seed = wallet
+                .bip39_seed()
+                .ok_or_else(|| "Confidential transactions require a seeded wallet".to_string())?;
+            drop(wallet);
+            derive_view_key(&seed).0
+        };
+
+        let last_scanned = *self
+            .v2_scan_height
+            .lock()
+            .map_err(|_| "Lock poisoned".to_string())?;
+        let start = last_scanned + 1;
+
+        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
+        let tip_height = chain
+            .get_tip()
+            .map_err(|e| format!("{:?}", e))?
+            .map(|t| t.height)
+            .unwrap_or(0);
+        let end = tip_height.min(start + V2_SCAN_WINDOW - 1);
+
+        let (before, after, total_value, new_last) = {
+            let mut cache = self
+                .v2_cache
+                .lock()
+                .map_err(|_| "Lock poisoned".to_string())?;
+            let before = cache.len();
+            let mut scanned_to = last_scanned;
+
+            if start <= tip_height {
+                for h in start..=end {
+                    let hash = match chain
+                        .block_store
+                        .get_hash_by_height(h)
+                        .map_err(|e| e.to_string())?
+                    {
+                        Some(x) => x,
+                        None => break,
+                    };
+                    let block = match chain.get_block(&hash) {
+                        Some(b) => b.clone(),
+                        None => match chain
+                            .block_store
+                            .get_block(&hash)
+                            .map_err(|e| e.to_string())?
+                        {
+                            Some(b) => b,
+                            None => break,
+                        },
+                    };
+                    scan_v2_outputs(&block, &view_scalar, &mut cache);
+                    scanned_to = h;
+                }
+            }
+
+            (before, cache.len(), cache.total_value(), scanned_to)
+        };
+        drop(chain);
+
+        *self
+            .v2_scan_height
+            .lock()
+            .map_err(|_| "Lock poisoned".to_string())? = new_last;
+
+        let response = ScanV2OutputsResponse {
+            found: after - before,
+            total_value,
+        };
+        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+    }
+
+    fn getviewkey(&self) -> Result<Value, String> {
+        let wallet = self
+            .wallet
+            .lock()
+            .map_err(|_| "Lock poisoned".to_string())?;
+        let seed = wallet
+            .bip39_seed()
+            .ok_or_else(|| "Confidential transactions require a seeded wallet".to_string())?;
+        drop(wallet);
+
+        let (_, view_pubkey) = derive_view_key(&seed);
+        let response = GetViewKeyResponse {
+            view_pubkey: hex::encode(view_pubkey.compress().to_bytes()),
+        };
+        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+    }
+
     fn error_response(
         &self,
         id: Value,
@@ -1360,6 +1561,13 @@ impl RpcServer {
             },
             "id": id
         })
+    }
+}
+
+fn param_object(params: &Value) -> Value {
+    match params {
+        Value::Array(a) => a.first().cloned().unwrap_or(Value::Null),
+        other => other.clone(),
     }
 }
 

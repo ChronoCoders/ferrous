@@ -28,6 +28,10 @@ impl V2UtxoCache {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    pub fn total_value(&self) -> u64 {
+        self.entries.values().map(|(v, _)| *v).sum()
+    }
 }
 
 pub fn scan_v2_outputs(block: &Block, view_scalar: &Scalar, cache: &mut V2UtxoCache) {
