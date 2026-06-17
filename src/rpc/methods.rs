@@ -154,3 +154,34 @@ pub struct GetRawMempoolResponse {
     pub total_size: usize,
     pub transactions: Vec<MempoolTx>,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct V2PaymentRequest {
+    pub to_address: String,
+    pub amount: u64,
+    pub fee: u64,
+    #[serde(default)]
+    pub view_pubkey: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct CreateFundingTxResponse {
+    pub txid: String,
+    pub hex: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct SendV2TransactionResponse {
+    pub txid: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct ScanV2OutputsResponse {
+    pub found: usize,
+    pub total_value: u64,
+}
+
+#[derive(serde::Serialize)]
+pub struct GetViewKeyResponse {
+    pub view_pubkey: String,
+}
