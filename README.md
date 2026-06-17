@@ -77,7 +77,7 @@ curl -X POST http://127.0.0.1:8332 \
 ## Project Status
 
 **Version**: 0.4.0 (Alpha)
-**Phase**: Phase 4 - Post-Quantum Cryptography (complete). Phase 5 (Ring CT) is next.
+**Phase**: Phase 5 - Privacy (Confidential Transactions) in progress. Phase 4 (Post-Quantum Cryptography) complete.
 
 ### Implemented
 
@@ -95,33 +95,14 @@ curl -X POST http://127.0.0.1:8332 \
     - Health monitoring and stale block detection.
     - RPC commands: `getrecoverystatus`, `forcereconnect`, `resetnetwork`.
 - **Storage**: RocksDB integration for chain state and block index.
-- **RPC**: JSON-RPC API with the following methods:
-  - `getblockchaininfo`
-  - `getblockhash`
-  - `getblock`
-  - `getbestblockhash`
-  - `getmininginfo`
-  - `mineblocks`
-  - `generatetoaddress`
-  - `getnewaddress`
-  - `getbalance`
-  - `listunspent`
-  - `listaddresses`
-  - `sendtoaddress`
-  - `sendrawtransaction`
-  - `getrawmempool`
-  - `getwalletinfo`
-  - `encryptwallet`
-  - `importseed`
-  - `getshamirshares`
-  - `getnetworkinfo`
-  - `getpeerinfo`
-  - `getconnectioncount`
-  - `getnetworkhealth`
-  - `getrecoverystatus`
-  - `forcereconnect`
-  - `resetnetwork`
-  - `stop`
+- **RPC**: JSON-RPC API (31 methods):
+  - Chain/blocks: `getblockchaininfo`, `getblockhash`, `getblock`, `getbestblockhash`
+  - Mining: `getmininginfo`, `mineblocks`, `generatetoaddress`
+  - Wallet: `getnewaddress`, `getbalance`, `listunspent`, `listaddresses`, `getwalletinfo`, `encryptwallet`, `importseed`, `getshamirshares`
+  - Transactions: `sendtoaddress`, `sendrawtransaction`, `getrawmempool`
+  - Confidential v2: `createfundingtx`, `sendv2transaction`, `scanv2outputs`, `getviewkey`
+  - Network: `addnode`, `getnetworkinfo`, `getpeerinfo`, `getconnectioncount`, `getnetworkhealth`, `getrecoverystatus`, `forcereconnect`, `resetnetwork`
+  - Control: `stop`
 - **UI**: Terminal User Interface (TUI) for real-time statistics.
 
 ### Infrastructure (Live Testnet)
