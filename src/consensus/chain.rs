@@ -303,7 +303,7 @@ impl ChainState {
         &mut self,
         old_tip: &Hash256,
         new_tip: &Hash256,
-    ) -> Result<Vec<crate::consensus::transaction::Transaction>, ChainError> {
+    ) -> Result<Vec<TxKind>, ChainError> {
         info!(
             "Reorganizing chain from {} to {}",
             hex::encode(old_tip),
@@ -674,29 +674,54 @@ impl ChainState {
 
         // Collect non-coinbase transactions from disconnected blocks whose
         // inputs are still unspent on the new chain.
-        let mut requeued: Vec<crate::consensus::transaction::Transaction> = Vec::new();
+        let mut requeued: Vec<TxKind> = Vec::new();
         for entry in &disconnect_entries {
             for (tx_idx, txkind) in entry.block.transactions.iter().enumerate() {
                 if tx_idx == 0 {
                     continue;
                 }
-                let tx = match txkind {
-                    TxKind::V1(t) => t,
-                    TxKind::V2(_) => continue,
-                };
-                let all_valid = tx.inputs.iter().all(|input| {
-                    let op = OutPoint {
-                        txid: input.prev_txid,
-                        vout: input.prev_index,
-                    };
-                    match overlay.get(&op) {
-                        Some(Some(_)) => true,
-                        Some(None) => false,
-                        None => self.utxo_store.has_utxo(&op).unwrap_or(false),
+                match txkind {
+                    TxKind::V1(tx) => {
+                        let all_valid = tx.inputs.iter().all(|input| {
+                            let op = OutPoint {
+                                txid: input.prev_txid,
+                                vout: input.prev_index,
+                            };
+                            match overlay.get(&op) {
+                                Some(Some(_)) => true,
+                                Some(None) => false,
+                                None => self.utxo_store.has_utxo(&op).unwrap_or(false),
+                            }
+                        });
+                        if all_valid {
+                            requeued.push(TxKind::V1(tx.clone()));
+                        }
                     }
-                });
-                if all_valid {
-                    requeued.push(tx.clone());
+                    TxKind::V2(v2) => {
+                        let all_valid = v2.inputs.iter().all(|input| {
+                            let op = OutPoint {
+                                txid: input.prev_txid,
+                                vout: input.prev_index,
+                            };
+                            match overlay_v2.get(&op) {
+                                Some(Some(_)) => return true,
+                                Some(None) => return false,
+                                None => {}
+                            }
+                            match overlay.get(&op) {
+                                Some(Some(_)) => return true,
+                                Some(None) => return false,
+                                None => {}
+                            }
+                            if self.utxo_store_v2.get_utxo(&op).unwrap_or(None).is_some() {
+                                return true;
+                            }
+                            self.utxo_store.has_utxo(&op).unwrap_or(false)
+                        });
+                        if all_valid {
+                            requeued.push(TxKind::V2(v2.clone()));
+                        }
+                    }
                 }
             }
         }
@@ -707,7 +732,7 @@ impl ChainState {
     pub fn add_block(
         &mut self,
         block: Block,
-    ) -> Result<Vec<crate::consensus::transaction::Transaction>, ChainError> {
+    ) -> Result<Vec<TxKind>, ChainError> {
         let block_hash = block.hash();
 
         // Skip only if the block is already stored in the DB (canonical or side-chain).

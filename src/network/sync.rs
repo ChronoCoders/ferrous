@@ -1,7 +1,7 @@
 use crate::consensus::block::{Block, BlockHeader, U256};
 use crate::consensus::chain::ChainState;
 use crate::consensus::difficulty::{validate_difficulty, DIFFICULTY_WINDOW};
-use crate::consensus::transaction::Transaction;
+use crate::consensus::transaction::TxKind;
 use crate::consensus::validation::validate_timestamp;
 use crate::network::manager::PeerManager;
 use crate::network::message::NetworkMessage;
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 /// Return type of `receive_block_for_sync`: applied (block, height) pairs and
 /// transactions from any disconnected blocks (reorg rehydration candidates).
-type SyncBlockResult = Option<(Vec<(Block, u32)>, Vec<Transaction>)>;
+type SyncBlockResult = Option<(Vec<(Block, u32)>, Vec<TxKind>)>;
 
 /// Number of blocks each peer may have in-flight simultaneously.
 const DOWNLOAD_WINDOW: usize = 64;
@@ -415,7 +415,7 @@ impl SyncManager {
 
         // Apply the block and drain any consecutive buffered blocks.
         let mut applied: Vec<(Block, u32)> = Vec::new();
-        let mut requeued: Vec<crate::consensus::transaction::Transaction> = Vec::new();
+        let mut requeued: Vec<TxKind> = Vec::new();
         let mut current_height = height;
         let mut current_block = block;
 

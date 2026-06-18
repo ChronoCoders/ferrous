@@ -235,7 +235,7 @@ impl BlockRelay {
                 self.mempool.purge_stale();
                 // Re-add transactions from disconnected blocks so they can be re-mined.
                 for tx in requeued_txs {
-                    let _ = self.mempool.add_transaction(TxKind::V1(tx));
+                    let _ = self.mempool.add_transaction(tx);
                 }
             }
             // Update peer height from the last applied block.  The height comes directly
@@ -306,7 +306,7 @@ impl BlockRelay {
                     self.mempool.purge_stale();
                     // Re-add transactions from disconnected blocks so they can be re-mined.
                     for tx in requeued_txs {
-                        let _ = self.mempool.add_transaction(TxKind::V1(tx));
+                        let _ = self.mempool.add_transaction(tx);
                     }
                 }
                 Ok(())
