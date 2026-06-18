@@ -535,6 +535,7 @@ impl Miner {
                             vout: input.prev_index,
                         };
                         chain.get_utxo_v2(&op).ok().flatten().is_some()
+                            || chain.is_utxo_unspent(&op)
                     });
                     if !all_present {
                         continue;
