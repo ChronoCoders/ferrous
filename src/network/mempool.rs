@@ -204,6 +204,7 @@ impl NetworkMempool {
                     .get_utxo_v2(&outpoint)
                     .map(|o| o.is_some())
                     .unwrap_or(false)
+                    || chain.is_utxo_unspent(&outpoint)
             }),
         });
         let evicted = before - mempool.len();
