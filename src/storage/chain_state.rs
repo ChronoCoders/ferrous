@@ -1,6 +1,6 @@
 use crate::consensus::block::U256;
 use crate::primitives::hash::Hash256;
-use crate::storage::{Database, DatabaseBatch, CF_CHAIN_STATE};
+use crate::storage::{Database, DatabaseBatch, CF_CHAIN_STATE, CF_POOL_DELTA};
 use std::sync::Arc;
 
 // Chain state keys
@@ -9,6 +9,7 @@ const KEY_TIP_HEIGHT: &[u8] = b"tip_height";
 const KEY_CUMULATIVE_WORK: &[u8] = b"cumulative_work";
 const KEY_BEST_HEADER_HASH: &[u8] = b"best_header_hash";
 const KEY_BEST_HEADER_HEIGHT: &[u8] = b"best_header_height";
+const KEY_POOL_VALUE: &[u8] = b"pool_value";
 
 /// Chain state metadata
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +74,72 @@ impl ChainStateStore {
             CF_CHAIN_STATE,
             KEY_CUMULATIVE_WORK,
             &tip.cumulative_work.to_bytes_le(),
+        )?;
+        Ok(())
+    }
+
+    pub fn get_pool_value(&self) -> Result<u128, String> {
+        match self.db.get(CF_CHAIN_STATE, KEY_POOL_VALUE)? {
+            Some(b) => Ok(u128::from_le_bytes(
+                b.try_into().map_err(|_| "Invalid pool value length")?,
+            )),
+            None => Ok(0),
+        }
+    }
+
+    pub fn get_pool_delta(&self, block_hash: &Hash256) -> Result<Option<i128>, String> {
+        match self.db.get(CF_POOL_DELTA, block_hash)? {
+            Some(b) => Ok(Some(i128::from_le_bytes(
+                b.try_into().map_err(|_| "Invalid pool delta length")?,
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    pub fn stage_pool_update(
+        &self,
+        batch: &mut DatabaseBatch,
+        block_hash: &Hash256,
+        delta: i128,
+        new_pool_value: u128,
+    ) -> Result<(), String> {
+        batch.put(CF_POOL_DELTA, block_hash, &delta.to_le_bytes())?;
+        batch.put(
+            CF_CHAIN_STATE,
+            KEY_POOL_VALUE,
+            &new_pool_value.to_le_bytes(),
+        )?;
+        Ok(())
+    }
+
+    pub fn stage_pool_delta(
+        &self,
+        batch: &mut DatabaseBatch,
+        block_hash: &Hash256,
+        delta: i128,
+    ) -> Result<(), String> {
+        batch.put(CF_POOL_DELTA, block_hash, &delta.to_le_bytes())?;
+        Ok(())
+    }
+
+    pub fn stage_pool_delta_delete(
+        &self,
+        batch: &mut DatabaseBatch,
+        block_hash: &Hash256,
+    ) -> Result<(), String> {
+        batch.delete(CF_POOL_DELTA, block_hash)?;
+        Ok(())
+    }
+
+    pub fn stage_pool_value(
+        &self,
+        batch: &mut DatabaseBatch,
+        new_pool_value: u128,
+    ) -> Result<(), String> {
+        batch.put(
+            CF_CHAIN_STATE,
+            KEY_POOL_VALUE,
+            &new_pool_value.to_le_bytes(),
         )?;
         Ok(())
     }
@@ -152,6 +219,7 @@ impl ChainStateStore {
         batch.delete(CF_CHAIN_STATE, KEY_CUMULATIVE_WORK)?;
         batch.delete(CF_CHAIN_STATE, KEY_BEST_HEADER_HASH)?;
         batch.delete(CF_CHAIN_STATE, KEY_BEST_HEADER_HEIGHT)?;
+        batch.delete(CF_CHAIN_STATE, KEY_POOL_VALUE)?;
 
         batch.commit()
     }

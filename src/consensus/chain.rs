@@ -415,6 +415,7 @@ impl ChainState {
             created_outpoints: Vec<OutPoint>,
             undo_data_v2: Vec<(OutPoint, UtxoEntryV2)>,
             created_outpoints_v2: Vec<OutPoint>,
+            pool_delta: i128,
         }
 
         let mut disconnect_entries: Vec<DisconnectEntry> = Vec::with_capacity(old_chain.len());
@@ -445,6 +446,12 @@ impl ChainState {
                 .get_undo_data(block_hash)
                 .map_err(ChainError::DbError)?
                 .unwrap_or_default();
+
+            let pool_delta = self
+                .state_store
+                .get_pool_delta(block_hash)
+                .map_err(ChainError::DbError)?
+                .unwrap_or(0);
 
             // Remove UTXOs created by this old block from the overlay view.
             let mut created_outpoints = Vec::new();
@@ -490,6 +497,7 @@ impl ChainState {
                 created_outpoints,
                 undo_data_v2,
                 created_outpoints_v2,
+                pool_delta,
             });
         }
 
@@ -506,6 +514,7 @@ impl ChainState {
             created_v2: Vec<(OutPoint, UtxoEntryV2)>,
             spent_v2: Vec<OutPoint>,
             undo_data_v2: Vec<(OutPoint, UtxoEntryV2)>,
+            pool_delta: i128,
         }
 
         let mut reconnect_entries: Vec<ReconnectEntry> = Vec::with_capacity(new_chain.len());
@@ -540,6 +549,8 @@ impl ChainState {
                 spent_v1_entries,
                 fees: fees_v2,
             } = self.collect_v2_utxo_changes_sim(&block, height, &overlay_v2, &overlay)?;
+
+            let pool_delta = Self::pool_delta(&spent_v1_entries, fees_v2);
 
             let mut v1_spent_set: HashSet<OutPoint> = spent.iter().copied().collect();
             for op in &spent_v1 {
@@ -586,8 +597,26 @@ impl ChainState {
                 created_v2,
                 spent_v2,
                 undo_data_v2,
+                pool_delta,
             });
         }
+
+        let mut pool_running: i128 = self
+            .state_store
+            .get_pool_value()
+            .map_err(ChainError::DbError)? as i128;
+        for entry in &disconnect_entries {
+            pool_running -= entry.pool_delta;
+        }
+        for entry in &reconnect_entries {
+            pool_running += entry.pool_delta;
+            if pool_running < 0 {
+                return Err(ChainError::InvalidBlock(
+                    ValidationError::TurnstileUnderflow,
+                ));
+            }
+        }
+        let pool_final = pool_running as u128;
 
         // ── Phase 3: all validation passed — commit all changes atomically ───
 
@@ -605,6 +634,9 @@ impl ChainState {
                 .map_err(ChainError::DbError)?;
             batch
                 .delete(CF_UNDO_V2, &entry.block_hash)
+                .map_err(ChainError::DbError)?;
+            self.state_store
+                .stage_pool_delta_delete(&mut batch, &entry.block_hash)
                 .map_err(ChainError::DbError)?;
         }
 
@@ -631,6 +663,9 @@ impl ChainState {
                     entry.cumulative_work,
                 )
                 .map_err(ChainError::DbError)?;
+            self.state_store
+                .stage_pool_delta(&mut batch, &entry.block_hash, entry.pool_delta)
+                .map_err(ChainError::DbError)?;
         }
 
         let tip_state = ChainTip {
@@ -640,6 +675,9 @@ impl ChainState {
         };
         self.state_store
             .stage_set_tip(&mut batch, &tip_state)
+            .map_err(ChainError::DbError)?;
+        self.state_store
+            .stage_pool_value(&mut batch, pool_final)
             .map_err(ChainError::DbError)?;
 
         batch.commit().map_err(ChainError::DbError)?;
@@ -853,6 +891,19 @@ impl ChainState {
                     fees: v2_fees,
                 } = self.collect_v2_utxo_changes(&block, height)?;
 
+                let pool_delta = Self::pool_delta(&spent_v1_entries, v2_fees);
+                let pool_value = self
+                    .state_store
+                    .get_pool_value()
+                    .map_err(ChainError::DbError)?;
+                let new_pool = pool_value as i128 + pool_delta;
+                if new_pool < 0 {
+                    return Err(ChainError::InvalidBlock(
+                        ValidationError::TurnstileUnderflow,
+                    ));
+                }
+                let new_pool_value = new_pool as u128;
+
                 let mut v1_spent_set: HashSet<OutPoint> = spent_utxos.iter().copied().collect();
                 for op in &spent_v1 {
                     if !v1_spent_set.insert(*op) {
@@ -905,6 +956,9 @@ impl ChainState {
                     .map_err(ChainError::DbError)?;
                 self.state_store
                     .stage_set_tip(&mut batch, &new_tip)
+                    .map_err(ChainError::DbError)?;
+                self.state_store
+                    .stage_pool_update(&mut batch, &block_hash, pool_delta, new_pool_value)
                     .map_err(ChainError::DbError)?;
 
                 batch.commit().map_err(ChainError::DbError)?;
@@ -1146,6 +1200,15 @@ impl ChainState {
             spent_v1_entries,
             fees,
         })
+    }
+
+    pub(crate) fn pool_delta(spent_v1_entries: &[(OutPoint, UtxoEntry)], v2_fees: u64) -> i128 {
+        let v1_in_to_v2: u128 = spent_v1_entries
+            .iter()
+            .map(|(_, e)| e.output.value as u128)
+            .sum();
+        let transparent_v2_out: u128 = 0;
+        v1_in_to_v2 as i128 - transparent_v2_out as i128 - v2_fees as i128
     }
 
     pub(crate) fn collect_v2_utxo_changes(

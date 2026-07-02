@@ -12,6 +12,7 @@ pub const CF_CHAIN_STATE: &str = "chain_state";
 pub const CF_UNDO: &str = "undo";
 pub const CF_UNDO_V2: &str = "undo_v2";
 pub const CF_BLOCK_META: &str = "block_meta";
+pub const CF_POOL_DELTA: &str = "pool_delta";
 
 pub type DbEntry = (Vec<u8>, Vec<u8>);
 
@@ -39,6 +40,7 @@ impl Database {
             CF_CHAIN_STATE,
             CF_UNDO,
             CF_UNDO_V2,
+            CF_POOL_DELTA,
         ];
 
         let db = DB::open_cf(&opts, path, &cfs)

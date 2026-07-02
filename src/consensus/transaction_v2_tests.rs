@@ -1410,3 +1410,240 @@ fn test_reorg_encoder_unified() {
 
     assert_eq!(reorg_bytes, ref_bytes);
 }
+
+#[test]
+fn test_turnstile_genesis_zero() {
+    let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    assert_eq!(chain.state_store.get_pool_value().unwrap(), 0);
+}
+
+#[test]
+fn test_turnstile_entry_credits_x_minus_fee() {
+    let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let x: u64 = 1_000_000;
+    let f: u64 = 10_000;
+    let v1_in = OutPoint {
+        txid: [7u8; 32],
+        vout: 0,
+    };
+    let v1_entry = UtxoEntry {
+        output: TxOutput {
+            value: x,
+            script_pubkey: vec![0x51],
+        },
+        coinbase: false,
+        height: 0,
+    };
+    let spent_v1_entries = vec![(v1_in, v1_entry)];
+
+    let delta = ChainState::pool_delta(&spent_v1_entries, f);
+    assert_eq!(delta, (x - f) as i128);
+
+    let block_hash = [1u8; 32];
+    let pool_value = chain.state_store.get_pool_value().unwrap();
+    let new_pool = (pool_value as i128 + delta) as u128;
+    let mut batch = chain.db.batch();
+    chain
+        .state_store
+        .stage_pool_update(&mut batch, &block_hash, delta, new_pool)
+        .unwrap();
+    batch.commit().unwrap();
+
+    assert_eq!(chain.state_store.get_pool_value().unwrap(), (x - f) as u128);
+    assert_eq!(
+        chain.state_store.get_pool_delta(&block_hash).unwrap(),
+        Some((x - f) as i128)
+    );
+}
+
+#[test]
+fn test_turnstile_v2v2_spend_only_deducts_fee() {
+    let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let f: u64 = 10_000;
+
+    let delta = ChainState::pool_delta(&[], f);
+    assert_eq!(delta, -(f as i128));
+
+    let p: u128 = 1_000_000;
+    let mut batch = chain.db.batch();
+    chain.state_store.stage_pool_value(&mut batch, p).unwrap();
+    batch.commit().unwrap();
+    assert_eq!(chain.state_store.get_pool_value().unwrap(), p);
+
+    let block_hash = [2u8; 32];
+    let new_pool = (p as i128 + delta) as u128;
+    let mut batch = chain.db.batch();
+    chain
+        .state_store
+        .stage_pool_update(&mut batch, &block_hash, delta, new_pool)
+        .unwrap();
+    batch.commit().unwrap();
+
+    assert_eq!(chain.state_store.get_pool_value().unwrap(), p - f as u128);
+}
+
+#[test]
+fn test_turnstile_reorg_reverses_delta() {
+    use crate::consensus::block::create_genesis_block;
+
+    let mut chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let genesis = create_genesis_block(0x207f_ffff);
+    let g_hash = genesis.hash();
+    let g_work = genesis.header.work();
+    chain.seed_block_for_test(genesis, 0, g_work, true);
+
+    let cb_a = coinbase_v1(1);
+    let a_txids = vec![cb_a.txid()];
+    let block_a = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: g_hash,
+            merkle_root: compute_merkle_root(&a_txids),
+            timestamp: 1_700_000_100,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb_a)],
+    };
+    let a_hash = block_a.hash();
+    let cum_a = g_work + block_a.header.work();
+    chain.seed_block_for_test(block_a, 1, cum_a, true);
+    chain.utxo_store.store_undo_data(&a_hash, &[]).unwrap();
+
+    let d_a: i128 = 500_000;
+    let mut batch = chain.db.batch();
+    chain
+        .state_store
+        .stage_pool_update(&mut batch, &a_hash, d_a, d_a as u128)
+        .unwrap();
+    batch.commit().unwrap();
+    assert_eq!(chain.state_store.get_pool_value().unwrap(), d_a as u128);
+
+    let mut cb_b = coinbase_v1(1);
+    cb_b.outputs[0].script_pubkey = vec![0xb1];
+    let b_txids = vec![cb_b.txid()];
+    let block_b = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: g_hash,
+            merkle_root: compute_merkle_root(&b_txids),
+            timestamp: 1_700_000_050,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb_b)],
+    };
+    let b_hash = block_b.hash();
+    let cum_b = g_work + block_b.header.work();
+    chain.seed_block_for_test(block_b, 1, cum_b, false);
+
+    let cb_b2 = coinbase_v1(2);
+    let b2_txids = vec![cb_b2.txid()];
+    let block_b2 = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: b_hash,
+            merkle_root: compute_merkle_root(&b2_txids),
+            timestamp: 1_700_000_060,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb_b2)],
+    };
+    let b2_hash = block_b2.hash();
+    let cum_b2 = cum_b + block_b2.header.work();
+    chain.seed_block_for_test(block_b2, 2, cum_b2, false);
+
+    chain.reorganize(&a_hash, &b2_hash).unwrap();
+
+    assert_eq!(chain.state_store.get_pool_value().unwrap(), 0);
+    assert_eq!(chain.state_store.get_pool_delta(&a_hash).unwrap(), None);
+    assert_eq!(chain.state_store.get_pool_delta(&b_hash).unwrap(), Some(0));
+    assert_eq!(chain.state_store.get_pool_delta(&b2_hash).unwrap(), Some(0));
+}
+
+#[test]
+fn test_turnstile_underflow_rejects_block() {
+    use crate::consensus::block::create_genesis_block;
+    use crate::consensus::validation::{calculate_subsidy, ValidationError};
+
+    let mut chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let genesis = create_genesis_block(0x207f_ffff);
+    let g_hash = genesis.hash();
+    let g_work = genesis.header.work();
+    chain.seed_block_for_test(genesis, 0, g_work, true);
+
+    let kp = DilithiumKeypair::generate();
+    let v_in: u64 = 1_000_000;
+    let fee: u64 = 50_000;
+    let in_op = OutPoint {
+        txid: [9u8; 32],
+        vout: 0,
+    };
+    let (v2_tx, in_entry) = build_valid_v2(&kp, in_op, v_in, fee);
+    chain.utxo_store_v2.put_utxo(&in_op, &in_entry).unwrap();
+
+    let cb_a = coinbase_v1(1);
+    let a_txids = vec![cb_a.txid()];
+    let block_a = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: g_hash,
+            merkle_root: compute_merkle_root(&a_txids),
+            timestamp: 1_700_000_100,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb_a)],
+    };
+    let a_hash = block_a.hash();
+    let cum_a = g_work + block_a.header.work();
+    chain.seed_block_for_test(block_a, 1, cum_a, true);
+    chain.utxo_store.store_undo_data(&a_hash, &[]).unwrap();
+
+    let mut cb_b = coinbase_v1(1);
+    cb_b.outputs[0].value = calculate_subsidy(1) + fee;
+    cb_b.outputs[0].script_pubkey = vec![0xb1];
+    let b_txs = vec![TxKind::V1(cb_b), TxKind::V2(v2_tx)];
+    let b_txids: Vec<_> = b_txs.iter().map(|t| t.txid()).collect();
+    let block_b = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: g_hash,
+            merkle_root: compute_merkle_root(&b_txids),
+            timestamp: 1_700_000_050,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: b_txs,
+    };
+    let b_hash = block_b.hash();
+    let cum_b = g_work + block_b.header.work();
+    chain.seed_block_for_test(block_b, 1, cum_b, false);
+
+    let cb_b2 = coinbase_v1(2);
+    let b2_txids = vec![cb_b2.txid()];
+    let block_b2 = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: b_hash,
+            merkle_root: compute_merkle_root(&b2_txids),
+            timestamp: 1_700_000_060,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb_b2)],
+    };
+    let b2_hash = block_b2.hash();
+    let cum_b2 = cum_b + block_b2.header.work();
+    chain.seed_block_for_test(block_b2, 2, cum_b2, false);
+
+    assert_eq!(chain.state_store.get_pool_value().unwrap(), 0);
+    let res = chain.reorganize(&a_hash, &b2_hash);
+    assert_eq!(
+        res,
+        Err(ChainError::InvalidBlock(
+            ValidationError::TurnstileUnderflow
+        ))
+    );
+}

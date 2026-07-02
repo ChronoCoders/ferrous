@@ -41,6 +41,7 @@ pub enum ValidationError {
     V2RangeProofInvalid,
     V2BalanceInvalid,
     V2ImmatureCoinbase,
+    TurnstileUnderflow,
 }
 
 /// Validate block structure and consensus rules
