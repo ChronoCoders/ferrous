@@ -73,7 +73,12 @@ impl NetworkSecurity {
     }
 
     /// Check if connection maintains network diversity
-    pub fn can_accept_for_diversity(&self, ip: IpAddr, total_peers: usize) -> bool {
+    pub fn can_accept_for_diversity(
+        &self,
+        ip: IpAddr,
+        total_peers: usize,
+        allow_low_peer_diversity: bool,
+    ) -> bool {
         if total_peers == 0 {
             return true; // Always accept first peer
         }
@@ -87,7 +92,7 @@ impl NetworkSecurity {
             }
         }
 
-        if total_peers >= 8 {
+        if total_peers >= 8 || !allow_low_peer_diversity {
             let netgroup_count = self
                 .peers_by_netgroup
                 .get(&netgroup)
@@ -269,5 +274,23 @@ impl NetworkSecurity {
 impl Default for NetworkSecurity {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_diversity_strict_on_mainnet() {
+        let mut security = NetworkSecurity::new();
+        let existing: IpAddr = "1.2.3.4".parse().unwrap();
+        security.record_peer(1, existing);
+
+        let same_netgroup: IpAddr = "1.2.5.6".parse().unwrap();
+        let total_peers = 1;
+
+        assert!(security.can_accept_for_diversity(same_netgroup, total_peers, true));
+        assert!(!security.can_accept_for_diversity(same_netgroup, total_peers, false));
     }
 }

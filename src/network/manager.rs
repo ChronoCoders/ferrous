@@ -528,12 +528,17 @@ impl PeerManager {
 
             // Diversity check
             let is_regtest = magic == [0xfa, 0xbf, 0xb5, 0xda];
+            let is_mainnet = magic == crate::network::message::MAINNET_MAGIC;
+            let allow_low_peer_diversity = !is_mainnet;
             let security = security_clone.lock().unwrap();
             let total_peers = {
                 let peers = peers_clone.lock().unwrap();
                 peers.len()
             };
-            if !is_regtest && !is_trusted && !security.can_accept_for_diversity(ip, total_peers) {
+            if !is_regtest
+                && !is_trusted
+                && !security.can_accept_for_diversity(ip, total_peers, allow_low_peer_diversity)
+            {
                 log::warn!(
                     "inbound: rejected {} (diversity, total_peers={})",
                     ip,
