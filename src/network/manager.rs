@@ -1002,19 +1002,35 @@ impl PeerManager {
                                                 id,
                                                 msg.payload.len()
                                             );
-                                            if let Err(e) = block_tx.send((id, msg)) {
-                                                log::warn!(
-                                                    "dispatch: failed to enqueue block message from peer {}: {}",
-                                                    id, e
-                                                );
-                                            } else {
-                                                let stats_guard = stats_clone.lock().unwrap();
-                                                if let Some(stats) = &*stats_guard {
-                                                    stats.record_block_received();
+                                            match block_tx.try_send((id, msg)) {
+                                                Ok(()) => {
+                                                    let stats_guard = stats_clone.lock().unwrap();
+                                                    if let Some(stats) = &*stats_guard {
+                                                        stats.record_block_received();
+                                                    }
+                                                    let recovery_guard =
+                                                        recovery_clone.lock().unwrap();
+                                                    if let Some(recovery) = &*recovery_guard {
+                                                        recovery.on_new_block();
+                                                    }
                                                 }
-                                                let recovery_guard = recovery_clone.lock().unwrap();
-                                                if let Some(recovery) = &*recovery_guard {
-                                                    recovery.on_new_block();
+                                                Err(std::sync::mpsc::TrySendError::Full((
+                                                    _,
+                                                    dropped_msg,
+                                                ))) => {
+                                                    log::warn!(
+                                                        "dispatch: block channel full, dropping block from peer {} payload_len={}",
+                                                        id,
+                                                        dropped_msg.payload.len()
+                                                    );
+                                                }
+                                                Err(
+                                                    std::sync::mpsc::TrySendError::Disconnected(_),
+                                                ) => {
+                                                    log::warn!(
+                                                        "dispatch: block worker exited, dropping block from peer {}",
+                                                        id
+                                                    );
                                                 }
                                             }
                                             continue 'peer_loop;
@@ -1351,5 +1367,15 @@ mod tests {
         // We can verify limit logic by manually inserting peers if we exposed internals,
         // but since we don't, we rely on integration tests.
         // Assuming implementation is correct based on logic review.
+    }
+
+    #[test]
+    fn test_block_dispatch_channel_full_does_not_block() {
+        use std::sync::mpsc;
+        let (tx, _rx) = mpsc::sync_channel::<(u64, u8)>(2);
+        tx.try_send((1, 0)).unwrap();
+        tx.try_send((2, 0)).unwrap();
+        let result = tx.try_send((3, 0));
+        assert!(matches!(result, Err(mpsc::TrySendError::Full(_))));
     }
 }

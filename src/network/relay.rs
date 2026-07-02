@@ -17,6 +17,7 @@ pub struct BlockRelay {
     peer_manager: Arc<PeerManager>,
     announced_blocks: Arc<Mutex<HashSet<[u8; 32]>>>,
     mempool: Arc<NetworkMempool>,
+    pending_inv: Mutex<Option<(u64, [u8; 32])>>,
 }
 
 impl BlockRelay {
@@ -30,6 +31,7 @@ impl BlockRelay {
             peer_manager,
             announced_blocks: Arc::new(Mutex::new(HashSet::new())),
             mempool,
+            pending_inv: Mutex::new(None),
         }
     }
 
@@ -70,6 +72,7 @@ impl BlockRelay {
     // Handle received INV message
     pub fn handle_inv(&self, peer_id: u64, inv: &InvMessage) -> Result<(), String> {
         let mut trigger_sync = false;
+        let mut first_unknown_block: Option<[u8; 32]> = None;
         let mut to_request = Vec::new();
 
         {
@@ -79,6 +82,9 @@ impl BlockRelay {
                     INV_BLOCK => {
                         if !chain.has_block(&inv_vec.hash) {
                             trigger_sync = true;
+                            if first_unknown_block.is_none() {
+                                first_unknown_block = Some(inv_vec.hash);
+                            }
                         }
                     }
                     INV_TX => {
@@ -95,7 +101,11 @@ impl BlockRelay {
             let sync_guard = self.peer_manager.sync_manager();
             let sync = sync_guard.lock().unwrap();
             if let Some(sync) = &*sync {
-                if !sync.is_syncing() {
+                if sync.is_syncing() {
+                    if let Some(hash) = first_unknown_block {
+                        *self.pending_inv.lock().unwrap() = Some((peer_id, hash));
+                    }
+                } else {
                     let _ = sync.request_headers_force(peer_id);
                 }
             }
@@ -301,6 +311,19 @@ impl BlockRelay {
 
                     if !syncing {
                         self.announce_block(block_hash)?;
+                        let candidate = self.pending_inv.lock().unwrap().take();
+                        if let Some((cand_peer, cand_hash)) = candidate {
+                            let chain = self.chain.read().unwrap();
+                            let still_unknown = !chain.has_block(&cand_hash);
+                            drop(chain);
+                            if still_unknown {
+                                let sync_guard = self.peer_manager.sync_manager();
+                                let sync = sync_guard.lock().unwrap();
+                                if let Some(sync) = &*sync {
+                                    let _ = sync.request_headers_force(cand_peer);
+                                }
+                            }
+                        }
                     }
                     self.mempool.remove_block_transactions(&block.transactions);
                     self.mempool.purge_stale();
@@ -450,5 +473,43 @@ mod tests {
         // But we can check if calling announce again returns Ok
         // Actually announce_block returns Ok(()) if already announced.
         // We can't easily verify side effects without peers.
+    }
+
+    #[test]
+    fn test_inv_during_sync_recorded_as_pending() {
+        use crate::network::sync::SyncManager;
+
+        let temp_dir = tempdir().unwrap();
+        let params = Network::Regtest.params();
+        let chain = Arc::new(RwLock::new(
+            ChainState::new(params, temp_dir.path().to_str().unwrap()).unwrap(),
+        ));
+        let peer_manager = Arc::new(PeerManager::new(REGTEST_MAGIC, 10, 70015, 0, 0));
+        let mempool = Arc::new(NetworkMempool::new(chain.clone()));
+        let relay = Arc::new(BlockRelay::new(
+            chain.clone(),
+            peer_manager.clone(),
+            mempool,
+        ));
+        peer_manager.set_relay(relay.clone());
+
+        let sync = Arc::new(SyncManager::new(chain.clone(), peer_manager.clone()));
+        peer_manager.set_sync_manager(sync.clone());
+        let _ = sync.start_sync(0);
+
+        assert!(sync.is_syncing());
+
+        let unknown_hash = [0xbbu8; 32];
+        let inv = crate::network::protocol::InvMessage {
+            inventory: vec![crate::network::protocol::InvVector {
+                inv_type: crate::network::protocol::INV_BLOCK,
+                hash: unknown_hash,
+            }],
+        };
+
+        let _ = relay.handle_inv(0, &inv);
+
+        let pending = relay.pending_inv.lock().unwrap();
+        assert_eq!(*pending, Some((0u64, unknown_hash)));
     }
 }

@@ -15,9 +15,7 @@ use curve25519_dalek_ng::ristretto::CompressedRistretto;
 
 pub const MAX_BLOCK_WEIGHT: u64 = 40_000_000;
 pub const COINBASE_MATURITY: u64 = 100;
-/// Maximum number of seconds a block timestamp may exceed the node's wall-clock time.
-/// Exposed as a constant so tests and per-network config can reference it directly.
-pub const MAX_FUTURE_BLOCK_TIME: u64 = 7_200;
+pub use crate::consensus::params::MAX_FUTURE_BLOCK_TIME;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {

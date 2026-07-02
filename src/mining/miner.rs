@@ -3,6 +3,7 @@ use crate::consensus::chain::ChainState;
 use crate::consensus::difficulty::{calculate_next_target, u256_to_compact, DIFFICULTY_WINDOW};
 use crate::consensus::merkle::compute_merkle_root;
 use crate::consensus::params::ChainParams;
+use crate::consensus::params::MAX_FUTURE_BLOCK_TIME;
 use crate::consensus::transaction::{Transaction, TxInput, TxKind, TxOutput, Witness};
 use crate::consensus::utxo::OutPoint;
 use crate::consensus::validation::MAX_BLOCK_WEIGHT;
@@ -11,8 +12,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
-
-const MAX_FUTURE_OFFSET: u64 = 7200;
 
 /// Pre-solved block template — everything needed to run PoW, with no chain
 /// reference held. Build with `Miner::build_template`, solve with
@@ -110,7 +109,7 @@ pub fn next_block_timestamp(chain: &ChainState) -> Result<u64, MiningError> {
     let candidate = if nat > min_time { nat } else { min_time };
 
     let max_allowed = nat
-        .checked_add(MAX_FUTURE_OFFSET)
+        .checked_add(MAX_FUTURE_BLOCK_TIME)
         .ok_or(MiningError::InvalidTimestamp)?;
 
     if candidate > max_allowed {
@@ -231,7 +230,7 @@ mod tests {
     #[cfg_attr(not(target_os = "linux"), ignore)]
     fn next_timestamp_too_far_in_future() {
         let nat = 1_000_000_000u64;
-        let mtp = nat + MAX_FUTURE_OFFSET + 100;
+        let mtp = nat + MAX_FUTURE_BLOCK_TIME + 100;
 
         time::set_mock_time(Some(nat));
 

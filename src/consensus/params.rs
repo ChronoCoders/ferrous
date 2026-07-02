@@ -1,5 +1,7 @@
 use crate::consensus::block::U256;
 
+pub const MAX_FUTURE_BLOCK_TIME: u64 = 7_200;
+
 #[derive(Debug, Clone)]
 pub struct ChainParams {
     pub target_block_time: u64,
@@ -56,5 +58,19 @@ impl Network {
                 genesis_n_bits: 0x207f_ffff, // trivial — instant mining for tests
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MAX_FUTURE_BLOCK_TIME;
+
+    #[test]
+    fn test_max_future_block_time_single_source() {
+        assert_eq!(MAX_FUTURE_BLOCK_TIME, 7_200u64);
+        assert_eq!(
+            crate::consensus::validation::MAX_FUTURE_BLOCK_TIME,
+            MAX_FUTURE_BLOCK_TIME
+        );
     }
 }
