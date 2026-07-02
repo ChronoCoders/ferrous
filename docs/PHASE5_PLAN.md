@@ -17,6 +17,61 @@ implemented on top of `curve25519-dalek` primitives. This is the one unavoidable
 component and is the primary target for the **Phase 6 external audit**. Commitments (5a) and
 range proofs (5a) use established crates; only the ring-signature glue is bespoke.
 
+## External Review Findings (pre-audit)
+
+Independent technical review (2026-07-02). These are design/scoping/engineering findings to
+resolve before the Phase 6 external audit and before v2 activation. Ordered by severity.
+
+1. **CRITICAL (whitepaper + design): PQ/CT soundness contradiction.** The privacy layer is entirely
+   discrete-log crypto: Pedersen commitments, Bulletproofs range proofs, ECDH-encrypted amounts, and
+   the planned CLSAG rings. A DL break therefore enables (a) invisible supply inflation - Pedersen
+   commitments are only *computationally* binding, so a DL-capable adversary can open a commitment to
+   any value and forge amounts undetectably; and (b) retroactive amount decryption - the ECDH amount
+   ciphertexts on-chain today are a harvest-now-decrypt-later target. The terminal roadmap state is
+   PQ *ownership* (Dilithium) + *classical* supply binding + *classical* privacy. This must be stated
+   explicitly in the whitepaper rather than framed as a fully post-quantum chain. Efficient
+   lattice-based ring signatures and range proofs do not practically exist yet (PQ ring sigs run
+   50-100 KB+), so this is a stated-limitation item, not a near-term fix. Sequencing: whitepaper +
+   design note now; revisit the primitive choice only if/when PQ-sound CT primitives mature.
+
+2. **CRITICAL (consensus design, before v2 activation): turnstile / shielded-pool exit accounting.**
+   Track the net value entering the v1 to v2 shielded pool (Zcash-style turnstile) so that a
+   catastrophic CT-soundness failure is bounded to the shielded pool rather than the entire supply.
+   Currently the v1 to v2 funding bridge exists with no audited exit accounting: a CT inflation bug
+   would be unbounded. Spec-first, then enforce as a block-validation invariant (cumulative shielded
+   value in must always be >= shielded value out). Sequencing: spec before 5b CLSAG wiring; invariant
+   enforced at the same activation gate as v2.
+
+3. **HIGH (audit scoping / sequencing): do not audit balance logic CLSAG will delete.** The current
+   sum-to-zero balance check (`Σ C_in == Σ C_out + fee·G`, output blindings forced to sum to input
+   blindings via a derived change output) is replaced *wholesale* by CLSAG's per-input pseudo-output
+   commitments in 5b. Scoping the external audit to verify the 5a balance logic wastes budget on code
+   the CLSAG redesign removes. Stage the audit: consensus / PoW / difficulty / P2P first, CT after the
+   kernel/CLSAG design is final. Sequencing: fix the audit statement of work before engaging an
+   auditor.
+
+4. **HIGH (engineering, before audit): differential test harness.** Run the same transaction through
+   the mempool, block-apply, and reorg-sim validation paths and assert an identical accept/reject
+   verdict from each. This would have caught the session-21 v1-bridge-fallback bug class mechanically -
+   the `|| chain.is_utxo_unspent()` fallback was missing independently in `purge_stale`, the miner
+   template, and the reorg requeue, and was found serially by hand instead. Add alongside: fuzz every
+   wire decoder, and property-test `decode(encode(x)) == x` for all tx/block/message codecs.
+   Sequencing: before the audit, so the auditor reviews a differentially-tested validation surface.
+
+5. **LOW (note for auditors): RandomX epoch key is height-derived only.** `BlockHeader::epoch_key`
+   derives the RandomX VM key from block height alone, making the key chain-content-independent:
+   identical across forks at the same height, identical across any two Ferrous networks, and
+   precomputable arbitrarily far ahead. Monero deliberately keys the VM off historical block *content*.
+   Likely low severity for this design, but document it - auditors will ask. Sequencing: documentation
+   note now; no code change unless the audit escalates it.
+
+6. **MEDIUM (before mainnet): mainnet genesis is maximally 51%-able.** RandomX means zero-capex rental
+   attack hardware (any cloud CPU fleet), and a fresh CPU-PoW chain has no accumulated honest hashrate
+   at launch - unlike Monero, which survives on incumbent hashrate. Mitigation options: launch
+   checkpoints, a slow-start / premined-difficulty ramp, or an explicit accepted-risk statement. The
+   choice must be decided before launch, not after. Sequencing: decide during mainnet launch planning,
+   after the 6-node expansion and before genesis.
+
 ## Crate additions
 
 - `curve25519-dalek` 4.x — Ristretto255 group/scalar ops, `RistrettoPoint::from_uniform_bytes` for hash-to-point.
