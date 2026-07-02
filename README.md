@@ -6,7 +6,7 @@ Featuring a custom-built P2P networking stack with automatic partition recovery,
 
 ## Features
 
-- **Consensus**: RandomX Proof-of-Work with per-block difficulty adjustment (150s target).
+- **Consensus**: RandomX Proof-of-Work with LWMA-45 difficulty adjustment (±1% per-block clamp, 150s target).
 - **Networking**: Full P2P stack with headers-first sync, block relay, and inventory protocol.
 - **Storage**: Persistent blockchain state using RocksDB.
 - **Architecture**: Modular design separating consensus, networking, and storage logic.
@@ -81,7 +81,7 @@ curl -X POST http://127.0.0.1:8332 \
 
 ### Implemented
 
-- **Consensus**: RandomX proof-of-work (CPU-friendly, ASIC-resistant), per-block ±1% difficulty adjustment, 150s target.
+- **Consensus**: RandomX proof-of-work (CPU-friendly, ASIC-resistant), LWMA-45 difficulty adjustment (±1% per-block clamp), 150s target.
 - **Cryptography**: CRYSTALS-Dilithium (ML-DSA-65, NIST FIPS 204) signatures; bech32m P2DL addresses with BLAKE3 pubkey hashing. ECDSA/P2PKH fully removed.
 - **Core**: Block/Tx validation, Merkle roots, UTXO set management.
 - **Networking**:
