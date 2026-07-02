@@ -853,8 +853,8 @@ impl RpcServer {
             .map_err(|_| "Lock poisoned".to_string())?;
         let spent = self.mempool.spent_outpoints();
         let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
-        let sats = wallet.get_balance(&chain, &spent)?;
-        let balance = sats as f64 / 100_000_000f64;
+        let grain = wallet.get_balance(&chain, &spent)?;
+        let balance = grain as f64 / 100_000_000f64;
         let response = GetBalanceResponse { balance };
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
     }
@@ -893,7 +893,7 @@ impl RpcServer {
     /// Return the current set of unconfirmed transactions held in the mempool.
     /// Each entry carries enough detail for an explorer to render a pending-tx
     /// row without a second round-trip: txid, wire size, virtual size, input
-    /// and output counts, total output value, and fee (frsats).
+    /// and output counts, total output value, and fee (grain).
     fn getrawmempool(&self) -> Result<Value, String> {
         // Mempool snapshot first (its lock is released inside the call), then
         // chain.read() — never overlapping, consistent with the fe82288 order.
@@ -993,7 +993,7 @@ impl RpcServer {
             return Err("Amount must be positive".to_string());
         }
 
-        let sats = (amount * 100_000_000f64).round() as u64;
+        let grain = (amount * 100_000_000f64).round() as u64;
         let fee = 1000u64;
 
         // Build transaction under read lock, then submit to mempool.
@@ -1007,7 +1007,7 @@ impl RpcServer {
                 .map_err(|_| "Lock poisoned".to_string())?;
             let spent = self.mempool.spent_outpoints();
             let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
-            TransactionBuilder::create_transaction(&mut wallet, &chain, addr, sats, fee, &spent)
+            TransactionBuilder::create_transaction(&mut wallet, &chain, addr, grain, fee, &spent)
                 .map_err(|e| format!("Transaction creation failed: {}", e))?
         };
 
@@ -1220,13 +1220,13 @@ impl RpcServer {
             .map_err(|_| "Lock poisoned".to_string())?;
         let spent = self.mempool.spent_outpoints();
         let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
-        let balance_sats = wallet.get_balance(&chain, &spent)?;
+        let balance_grain = wallet.get_balance(&chain, &spent)?;
         let response = GetWalletInfoResponse {
             encrypted: wallet.is_encrypted(),
             has_seed: wallet.has_seed(),
             receive_addresses: wallet.receive_index(),
             change_addresses: wallet.change_index(),
-            balance_sats,
+            balance_grain,
         };
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
     }

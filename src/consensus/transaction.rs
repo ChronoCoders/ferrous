@@ -4,7 +4,7 @@ use crate::primitives::varint::{decode as decode_varint, encode as encode_varint
 use curve25519_dalek_ng::ristretto::CompressedRistretto;
 use serde::{Deserialize, Serialize};
 
-/// Maximum number of satoshis that can ever exist in the system.
+/// Maximum number of grain that can ever exist in the system.
 pub const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 
 const MAX_TX_INPUTS: usize = 1000;

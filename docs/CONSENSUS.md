@@ -55,7 +55,7 @@ Coinbase inputs are recognized by:
 
 `TxOutput`:
 
-- `value: u64` (satoshis)
+- `value: u64` (grain)
 - `script_pubkey: Vec<u8>` (locking script, e.g. P2PKH or P2WPKH)
 
 The total supply is bounded by `MAX_MONEY`:

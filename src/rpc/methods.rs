@@ -113,7 +113,7 @@ pub struct GetWalletInfoResponse {
     pub has_seed: bool,
     pub receive_addresses: u32,
     pub change_addresses: u32,
-    pub balance_sats: u64,
+    pub balance_grain: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -141,9 +141,9 @@ pub struct MempoolTx {
     pub vsize: usize,
     pub vin_count: usize,
     pub vout_count: usize,
-    /// Total output value in frsats.
+    /// Total output value in grain.
     pub output_value: u64,
-    /// Fee in frsats (Σ input UTXO values − Σ outputs); null if any input
+    /// Fee in grain (Σ input UTXO values − Σ outputs); null if any input
     /// is not found in the UTXO set.
     pub fee: Option<u64>,
 }

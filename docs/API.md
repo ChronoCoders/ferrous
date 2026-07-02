@@ -367,7 +367,7 @@ Returns information about the current wallet state.
     "has_seed": true,
     "receive_addresses": 1,
     "change_addresses": 0,
-    "balance_sats": 5000000000
+    "balance_grain": 5000000000
   },
   "id": 1
 }
@@ -379,7 +379,7 @@ Fields:
 - `has_seed`: Whether a BIP39 seed is present (enabling deterministic key derivation and Shamir backup).
 - `receive_addresses`: Number of receive addresses generated so far.
 - `change_addresses`: Number of change addresses generated so far.
-- `balance_sats`: Wallet balance in satoshis (frsats).
+- `balance_grain`: Wallet balance in grain (1 FRR = 100,000,000 grain).
 
 ## encryptwallet
 
