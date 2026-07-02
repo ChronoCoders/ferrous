@@ -1,6 +1,8 @@
 use crate::consensus::block::{Block, BlockHeader, U256};
 use crate::primitives::hash::Hash256;
-use crate::storage::{Database, CF_BLOCKS, CF_BLOCK_INDEX, CF_BLOCK_META, CF_HEADERS};
+use crate::storage::{
+    Database, DatabaseBatch, CF_BLOCKS, CF_BLOCK_INDEX, CF_BLOCK_META, CF_HEADERS,
+};
 use std::sync::Arc;
 
 const HEADER_HEIGHT_PREFIX: &[u8] = b"hh:";
@@ -69,12 +71,21 @@ impl BlockStore {
         height: u64,
         cumulative_work: U256,
     ) -> Result<(), String> {
-        let block_hash = block.header.hash();
-
-        use crate::primitives::serialize::Encode;
-        let block_bytes = block.encode();
-
         let mut batch = self.db.batch();
+        self.stage_store_block(&mut batch, block, height, cumulative_work)?;
+        batch.commit()
+    }
+
+    pub fn stage_store_block(
+        &self,
+        batch: &mut DatabaseBatch,
+        block: &Block,
+        height: u64,
+        cumulative_work: U256,
+    ) -> Result<(), String> {
+        use crate::primitives::serialize::Encode;
+        let block_hash = block.header.hash();
+        let block_bytes = block.encode();
         batch.put(CF_BLOCKS, &block_hash, &block_bytes)?;
 
         let header_bytes = block.header.encode();
@@ -88,8 +99,7 @@ impl BlockStore {
             cumulative_work,
         };
         batch.put(CF_BLOCK_META, &block_hash, &meta.to_bytes())?;
-
-        batch.commit()
+        Ok(())
     }
 
     /// Store block WITHOUT updating the canonical height index (CF_BLOCK_INDEX).

@@ -837,3 +837,397 @@ fn test_v2_fee_claimed_in_coinbase() {
         Err(ValidationError::CoinbaseRewardTooHigh)
     );
 }
+
+#[test]
+fn test_add_block_atomic_all_cfs() {
+    use crate::storage::ChainTip;
+
+    let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+
+    let pre_v1_op = OutPoint {
+        txid: [1u8; 32],
+        vout: 0,
+    };
+    let pre_v1_entry = UtxoEntry {
+        output: TxOutput {
+            value: 5000,
+            script_pubkey: vec![0x51],
+        },
+        coinbase: false,
+        height: 0,
+    };
+    chain
+        .utxo_store
+        .put_utxo(&pre_v1_op, &pre_v1_entry)
+        .unwrap();
+
+    let pre_v2_op = OutPoint {
+        txid: [2u8; 32],
+        vout: 0,
+    };
+    let pre_v2_entry = UtxoEntryV2 {
+        commitment: [3u8; 32],
+        script_pubkey: vec![0xaa, 0x20],
+        encrypted_amount: vec![],
+        ephemeral_pubkey: [4u8; 32],
+        coinbase: false,
+        height: 0,
+    };
+    chain
+        .utxo_store_v2
+        .put_utxo(&pre_v2_op, &pre_v2_entry)
+        .unwrap();
+
+    let new_v1_op = OutPoint {
+        txid: [10u8; 32],
+        vout: 0,
+    };
+    let new_v1_entry = UtxoEntry {
+        output: TxOutput {
+            value: 4000,
+            script_pubkey: vec![0x51],
+        },
+        coinbase: false,
+        height: 1,
+    };
+    let new_v2_op = OutPoint {
+        txid: [11u8; 32],
+        vout: 0,
+    };
+    let new_v2_entry = UtxoEntryV2 {
+        commitment: [12u8; 32],
+        script_pubkey: vec![0xaa, 0x20],
+        encrypted_amount: vec![1, 2, 3],
+        ephemeral_pubkey: [13u8; 32],
+        coinbase: false,
+        height: 1,
+    };
+
+    let created_v1 = vec![(new_v1_op, new_v1_entry.clone())];
+    let spent_v1 = vec![pre_v1_op];
+    let undo_v1 = vec![(pre_v1_op, pre_v1_entry.clone())];
+    let created_v2 = vec![(new_v2_op, new_v2_entry.clone())];
+    let spent_v2 = vec![pre_v2_op];
+    let undo_v2 = vec![(pre_v2_op, pre_v2_entry.clone())];
+
+    let cb = coinbase_v1(1);
+    let txids = vec![cb.txid()];
+    let block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: [0u8; 32],
+            merkle_root: compute_merkle_root(&txids),
+            timestamp: 1_700_000_000,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb)],
+    };
+    let block_hash = block.hash();
+    let cum_work = block.header.work();
+    let tip = ChainTip {
+        hash: block_hash,
+        height: 1,
+        cumulative_work: cum_work,
+    };
+
+    let mut batch = chain.db.batch();
+    chain
+        .utxo_store
+        .stage_apply_block(&mut batch, &created_v1, &spent_v1)
+        .unwrap();
+    chain
+        .utxo_store
+        .stage_undo_data(&mut batch, &block_hash, &undo_v1)
+        .unwrap();
+    chain
+        .utxo_store_v2
+        .stage_apply_block(&mut batch, &created_v2, &spent_v2)
+        .unwrap();
+    chain
+        .utxo_store_v2
+        .stage_undo_data(&mut batch, &block_hash, &undo_v2)
+        .unwrap();
+    chain
+        .block_store
+        .stage_store_block(&mut batch, &block, 1, cum_work)
+        .unwrap();
+    chain.state_store.stage_set_tip(&mut batch, &tip).unwrap();
+    batch.commit().unwrap();
+
+    assert_eq!(
+        chain.utxo_store.get_utxo(&new_v1_op).unwrap(),
+        Some(new_v1_entry)
+    );
+    assert_eq!(chain.utxo_store.get_utxo(&pre_v1_op).unwrap(), None);
+    assert_eq!(
+        chain.utxo_store_v2.get_utxo(&new_v2_op).unwrap(),
+        Some(new_v2_entry)
+    );
+    assert_eq!(chain.utxo_store_v2.get_utxo(&pre_v2_op).unwrap(), None);
+    assert_eq!(
+        chain.utxo_store.get_undo_data(&block_hash).unwrap(),
+        Some(undo_v1)
+    );
+    assert_eq!(
+        chain.utxo_store_v2.get_undo_data(&block_hash).unwrap(),
+        Some(undo_v2)
+    );
+    assert!(chain.block_store.get_block(&block_hash).unwrap().is_some());
+    assert!(chain.block_store.get_header(&block_hash).unwrap().is_some());
+    assert_eq!(
+        chain.block_store.get_hash_by_height(1).unwrap(),
+        Some(block_hash)
+    );
+    let meta = chain
+        .block_store
+        .get_block_meta(&block_hash)
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.height, 1);
+    assert_eq!(meta.cumulative_work, cum_work);
+    assert_eq!(chain.state_store.get_tip().unwrap(), Some(tip));
+}
+
+#[test]
+fn test_add_block_tip_coupled_to_utxo() {
+    use crate::storage::ChainTip;
+
+    let chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+
+    let pre_op = OutPoint {
+        txid: [1u8; 32],
+        vout: 0,
+    };
+    let pre_entry = UtxoEntry {
+        output: TxOutput {
+            value: 5000,
+            script_pubkey: vec![0x51],
+        },
+        coinbase: false,
+        height: 0,
+    };
+    chain.utxo_store.put_utxo(&pre_op, &pre_entry).unwrap();
+
+    let new_op = OutPoint {
+        txid: [10u8; 32],
+        vout: 0,
+    };
+    let new_entry = UtxoEntry {
+        output: TxOutput {
+            value: 4000,
+            script_pubkey: vec![0x51],
+        },
+        coinbase: false,
+        height: 5,
+    };
+
+    let cb = coinbase_v1(5);
+    let txids = vec![cb.txid()];
+    let block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: [7u8; 32],
+            merkle_root: compute_merkle_root(&txids),
+            timestamp: 1_700_000_500,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb)],
+    };
+    let block_hash = block.hash();
+    let cum_work = block.header.work();
+    let tip = ChainTip {
+        hash: block_hash,
+        height: 5,
+        cumulative_work: cum_work,
+    };
+
+    let mut batch = chain.db.batch();
+    chain
+        .utxo_store
+        .stage_apply_block(&mut batch, &[(new_op, new_entry.clone())], &[pre_op])
+        .unwrap();
+    chain
+        .utxo_store
+        .stage_undo_data(&mut batch, &block_hash, &[(pre_op, pre_entry)])
+        .unwrap();
+    chain
+        .block_store
+        .stage_store_block(&mut batch, &block, 5, cum_work)
+        .unwrap();
+    chain.state_store.stage_set_tip(&mut batch, &tip).unwrap();
+    batch.commit().unwrap();
+
+    let stored_tip = chain.state_store.get_tip().unwrap().unwrap();
+    assert_eq!(stored_tip.height, 5);
+    assert_eq!(stored_tip.hash, block_hash);
+    assert_eq!(chain.utxo_store.get_utxo(&pre_op).unwrap(), None);
+    assert_eq!(chain.utxo_store.get_utxo(&new_op).unwrap(), Some(new_entry));
+}
+
+#[test]
+fn test_stage_produces_identical_bytes() {
+    use crate::storage::{
+        ChainTip, CF_BLOCKS, CF_BLOCK_INDEX, CF_BLOCK_META, CF_CHAIN_STATE, CF_HEADERS, CF_UNDO,
+        CF_UNDO_V2, CF_UTXO, CF_UTXO_V2,
+    };
+
+    type V1Set = Vec<(OutPoint, UtxoEntry)>;
+    type V2Set = Vec<(OutPoint, UtxoEntryV2)>;
+
+    let build_inputs = || -> (V1Set, Vec<OutPoint>, V1Set, V2Set, Vec<OutPoint>, V2Set) {
+        let created_v1 = vec![(
+            OutPoint {
+                txid: [10u8; 32],
+                vout: 0,
+            },
+            UtxoEntry {
+                output: TxOutput {
+                    value: 4000,
+                    script_pubkey: vec![0x51],
+                },
+                coinbase: false,
+                height: 1,
+            },
+        )];
+        let spent_v1 = vec![OutPoint {
+            txid: [1u8; 32],
+            vout: 0,
+        }];
+        let undo_v1 = vec![(
+            OutPoint {
+                txid: [1u8; 32],
+                vout: 0,
+            },
+            UtxoEntry {
+                output: TxOutput {
+                    value: 5000,
+                    script_pubkey: vec![0x51],
+                },
+                coinbase: false,
+                height: 0,
+            },
+        )];
+        let created_v2 = vec![(
+            OutPoint {
+                txid: [11u8; 32],
+                vout: 0,
+            },
+            UtxoEntryV2 {
+                commitment: [12u8; 32],
+                script_pubkey: vec![0xaa, 0x20],
+                encrypted_amount: vec![1, 2, 3],
+                ephemeral_pubkey: [13u8; 32],
+                coinbase: false,
+                height: 1,
+            },
+        )];
+        let spent_v2 = vec![OutPoint {
+            txid: [2u8; 32],
+            vout: 0,
+        }];
+        let undo_v2 = vec![(
+            OutPoint {
+                txid: [2u8; 32],
+                vout: 0,
+            },
+            UtxoEntryV2 {
+                commitment: [3u8; 32],
+                script_pubkey: vec![0xaa, 0x20],
+                encrypted_amount: vec![],
+                ephemeral_pubkey: [4u8; 32],
+                coinbase: false,
+                height: 0,
+            },
+        )];
+        (created_v1, spent_v1, undo_v1, created_v2, spent_v2, undo_v2)
+    };
+
+    let cb = coinbase_v1(1);
+    let txids = vec![cb.txid()];
+    let block = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: [0u8; 32],
+            merkle_root: compute_merkle_root(&txids),
+            timestamp: 1_700_000_000,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb)],
+    };
+    let block_hash = block.hash();
+    let cum_work = block.header.work();
+    let tip = ChainTip {
+        hash: block_hash,
+        height: 1,
+        cumulative_work: cum_work,
+    };
+
+    let chain_a = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let (c1, s1, u1, c2, s2, u2) = build_inputs();
+    chain_a.utxo_store.apply_block(&c1, &s1).unwrap();
+    chain_a
+        .utxo_store
+        .store_undo_data(&block_hash, &u1)
+        .unwrap();
+    chain_a.utxo_store_v2.apply_block(&c2, &s2).unwrap();
+    chain_a
+        .utxo_store_v2
+        .store_undo_data(&block_hash, &u2)
+        .unwrap();
+    chain_a
+        .block_store
+        .store_block(&block, 1, cum_work)
+        .unwrap();
+    chain_a.state_store.set_tip(&tip).unwrap();
+
+    let chain_b = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let (c1, s1, u1, c2, s2, u2) = build_inputs();
+    let mut batch = chain_b.db.batch();
+    chain_b
+        .utxo_store
+        .stage_apply_block(&mut batch, &c1, &s1)
+        .unwrap();
+    chain_b
+        .utxo_store
+        .stage_undo_data(&mut batch, &block_hash, &u1)
+        .unwrap();
+    chain_b
+        .utxo_store_v2
+        .stage_apply_block(&mut batch, &c2, &s2)
+        .unwrap();
+    chain_b
+        .utxo_store_v2
+        .stage_undo_data(&mut batch, &block_hash, &u2)
+        .unwrap();
+    chain_b
+        .block_store
+        .stage_store_block(&mut batch, &block, 1, cum_work)
+        .unwrap();
+    chain_b.state_store.stage_set_tip(&mut batch, &tip).unwrap();
+    batch.commit().unwrap();
+
+    for cf in [
+        CF_UTXO,
+        CF_UTXO_V2,
+        CF_UNDO,
+        CF_UNDO_V2,
+        CF_BLOCKS,
+        CF_HEADERS,
+        CF_BLOCK_INDEX,
+        CF_BLOCK_META,
+        CF_CHAIN_STATE,
+    ] {
+        let mut a = chain_a.db.iter(cf).unwrap();
+        let mut b = chain_b.db.iter(cf).unwrap();
+        a.sort();
+        b.sort();
+        assert_eq!(
+            a, b,
+            "CF {} differs between committing and staged paths",
+            cf
+        );
+    }
+}

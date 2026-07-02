@@ -1,7 +1,7 @@
 use crate::consensus::utxo::{OutPoint, UtxoEntry, UtxoEntryV2};
 use crate::primitives::hash::Hash256;
 use crate::primitives::serialize::{Decode, Encode};
-use crate::storage::{Database, CF_UNDO, CF_UNDO_V2, CF_UTXO, CF_UTXO_V2};
+use crate::storage::{Database, DatabaseBatch, CF_UNDO, CF_UNDO_V2, CF_UTXO, CF_UTXO_V2};
 use std::sync::Arc;
 
 /// UTXO set storage interface
@@ -54,21 +54,26 @@ impl UtxoStore {
         spent: &[OutPoint],
     ) -> Result<(), String> {
         let mut batch = self.db.batch();
+        self.stage_apply_block(&mut batch, created, spent)?;
+        batch.commit()
+    }
 
-        // Add new UTXOs
+    pub fn stage_apply_block(
+        &self,
+        batch: &mut DatabaseBatch,
+        created: &[(OutPoint, UtxoEntry)],
+        spent: &[OutPoint],
+    ) -> Result<(), String> {
         for (outpoint, entry) in created {
             let key = Self::outpoint_key(outpoint);
             let value = Self::serialize_entry(entry)?;
             batch.put(CF_UTXO, &key, &value)?;
         }
-
-        // Remove spent UTXOs
         for outpoint in spent {
             let key = Self::outpoint_key(outpoint);
             batch.delete(CF_UTXO, &key)?;
         }
-
-        batch.commit()
+        Ok(())
     }
 
     /// Revert block from UTXO set (atomic)
@@ -100,9 +105,20 @@ impl UtxoStore {
         block_hash: &Hash256,
         spent_entries: &[(OutPoint, UtxoEntry)],
     ) -> Result<(), String> {
+        let mut batch = self.db.batch();
+        self.stage_undo_data(&mut batch, block_hash, spent_entries)?;
+        batch.commit()
+    }
+
+    pub fn stage_undo_data(
+        &self,
+        batch: &mut DatabaseBatch,
+        block_hash: &Hash256,
+        spent_entries: &[(OutPoint, UtxoEntry)],
+    ) -> Result<(), String> {
         let value = bincode::serialize(spent_entries)
             .map_err(|e| format!("Failed to serialize undo data: {}", e))?;
-        self.db.put(CF_UNDO, block_hash, &value)
+        batch.put(CF_UNDO, block_hash, &value)
     }
 
     pub fn get_undo_data(
@@ -200,13 +216,23 @@ impl UtxoStoreV2 {
         spent: &[OutPoint],
     ) -> Result<(), String> {
         let mut batch = self.db.batch();
+        self.stage_apply_block(&mut batch, created, spent)?;
+        batch.commit()
+    }
+
+    pub fn stage_apply_block(
+        &self,
+        batch: &mut DatabaseBatch,
+        created: &[(OutPoint, UtxoEntryV2)],
+        spent: &[OutPoint],
+    ) -> Result<(), String> {
         for (outpoint, entry) in created {
             batch.put(CF_UTXO_V2, &Self::outpoint_key(outpoint), &entry.encode())?;
         }
         for outpoint in spent {
             batch.delete(CF_UTXO_V2, &Self::outpoint_key(outpoint))?;
         }
-        batch.commit()
+        Ok(())
     }
 
     pub fn revert_block(
@@ -229,9 +255,20 @@ impl UtxoStoreV2 {
         block_hash: &Hash256,
         spent_entries: &[(OutPoint, UtxoEntryV2)],
     ) -> Result<(), String> {
+        let mut batch = self.db.batch();
+        self.stage_undo_data(&mut batch, block_hash, spent_entries)?;
+        batch.commit()
+    }
+
+    pub fn stage_undo_data(
+        &self,
+        batch: &mut DatabaseBatch,
+        block_hash: &Hash256,
+        spent_entries: &[(OutPoint, UtxoEntryV2)],
+    ) -> Result<(), String> {
         let value = bincode::serialize(spent_entries)
             .map_err(|e| format!("Failed to serialize v2 undo data: {}", e))?;
-        self.db.put(CF_UNDO_V2, block_hash, &value)
+        batch.put(CF_UNDO_V2, block_hash, &value)
     }
 
     pub fn get_undo_data(

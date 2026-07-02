@@ -868,7 +868,20 @@ impl ChainState {
                 (false, Vec::new())
             };
 
-            if !did_reorg {
+            if did_reorg {
+                self.block_store
+                    .store_block(&block, height, cumulative_work)
+                    .map_err(ChainError::DbError)?;
+
+                let new_tip = ChainTip {
+                    hash: block_hash,
+                    height,
+                    cumulative_work,
+                };
+                self.state_store
+                    .set_tip(&new_tip)
+                    .map_err(ChainError::DbError)?;
+            } else {
                 let (created_utxos, mut spent_utxos, mut spent_entries, v1_fees) =
                     self.apply_block_to_utxo(&block, height)?;
 
@@ -903,37 +916,41 @@ impl ChainState {
                 validate_coinbase_reward(coinbase, block_fees, height as u32)
                     .map_err(ChainError::InvalidBlock)?;
 
+                let new_tip = ChainTip {
+                    hash: block_hash,
+                    height,
+                    cumulative_work,
+                };
+
+                let mut batch = self.db.batch();
                 self.utxo_store
-                    .apply_block(&created_utxos, &spent_utxos)
+                    .stage_apply_block(&mut batch, &created_utxos, &spent_utxos)
                     .map_err(ChainError::DbError)?;
                 self.utxo_store
-                    .store_undo_data(&block_hash, &spent_entries)
+                    .stage_undo_data(&mut batch, &block_hash, &spent_entries)
                     .map_err(ChainError::DbError)?;
 
                 if !v2_created.is_empty() || !v2_spent.is_empty() {
                     self.utxo_store_v2
-                        .apply_block(&v2_created, &v2_spent)
+                        .stage_apply_block(&mut batch, &v2_created, &v2_spent)
                         .map_err(ChainError::DbError)?;
                 }
                 if !v2_spent_entries.is_empty() {
                     self.utxo_store_v2
-                        .store_undo_data(&block_hash, &v2_spent_entries)
+                        .stage_undo_data(&mut batch, &block_hash, &v2_spent_entries)
                         .map_err(ChainError::DbError)?;
                 }
+
+                self.block_store
+                    .stage_store_block(&mut batch, &block, height, cumulative_work)
+                    .map_err(ChainError::DbError)?;
+                self.state_store
+                    .stage_set_tip(&mut batch, &new_tip)
+                    .map_err(ChainError::DbError)?;
+
+                batch.commit().map_err(ChainError::DbError)?;
             }
 
-            self.block_store
-                .store_block(&block, height, cumulative_work)
-                .map_err(ChainError::DbError)?;
-
-            let new_tip = ChainTip {
-                hash: block_hash,
-                height,
-                cumulative_work,
-            };
-            self.state_store
-                .set_tip(&new_tip)
-                .map_err(ChainError::DbError)?;
             self.tip = Some(block_hash);
             return Ok(requeued_txs);
         } else {

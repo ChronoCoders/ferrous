@@ -1,6 +1,6 @@
 use crate::consensus::block::U256;
 use crate::primitives::hash::Hash256;
-use crate::storage::{Database, CF_CHAIN_STATE};
+use crate::storage::{Database, DatabaseBatch, CF_CHAIN_STATE};
 use std::sync::Arc;
 
 // Chain state keys
@@ -62,7 +62,11 @@ impl ChainStateStore {
     /// Set chain tip (atomic)
     pub fn set_tip(&self, tip: &ChainTip) -> Result<(), String> {
         let mut batch = self.db.batch();
+        self.stage_set_tip(&mut batch, tip)?;
+        batch.commit()
+    }
 
+    pub fn stage_set_tip(&self, batch: &mut DatabaseBatch, tip: &ChainTip) -> Result<(), String> {
         batch.put(CF_CHAIN_STATE, KEY_TIP_HASH, &tip.hash)?;
         batch.put(CF_CHAIN_STATE, KEY_TIP_HEIGHT, &tip.height.to_le_bytes())?;
         batch.put(
@@ -70,8 +74,7 @@ impl ChainStateStore {
             KEY_CUMULATIVE_WORK,
             &tip.cumulative_work.to_bytes_le(),
         )?;
-
-        batch.commit()
+        Ok(())
     }
 
     /// Get best header (for headers-first sync)
