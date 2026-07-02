@@ -108,6 +108,11 @@ pub struct GetMiningInfoResponse {
 }
 
 #[derive(serde::Serialize)]
+pub struct GetPoolInfoResponse {
+    pub pool_value: u128,
+}
+
+#[derive(serde::Serialize)]
 pub struct GetWalletInfoResponse {
     pub encrypted: bool,
     pub has_seed: bool,

@@ -804,6 +804,37 @@ Returns the hash of the current best block.
 }
 ```
 
+## getpoolinfo
+
+Returns the current shielded-pool value (turnstile accounting): the net grain that has entered the v2 (Confidential Amounts) pool via v1→v2 funding, minus v2 fees. Starts at 0 on a fresh chain.
+
+### Request
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getpoolinfo",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "pool_value": 0
+  },
+  "id": 1
+}
+```
+
+Fields:
+
+- `pool_value`: total grain currently held in the shielded pool (u128), bounding the blast radius of a CT-soundness break.
+
 ## stop
 
 Requests the server to shut down after responding.

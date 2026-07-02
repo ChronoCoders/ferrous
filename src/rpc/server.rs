@@ -279,6 +279,7 @@ impl RpcServer {
             "sendv2transaction" => self.sendv2transaction(params),
             "scanv2outputs" => self.scanv2outputs(),
             "getviewkey" => self.getviewkey(),
+            "getpoolinfo" => self.getpoolinfo(),
             "stop" => Ok(json!("stopping")),
             _ => return Err((-32601, "Method not found".to_string())),
         };
@@ -856,6 +857,13 @@ impl RpcServer {
         let grain = wallet.get_balance(&chain, &spent)?;
         let balance = grain as f64 / 100_000_000f64;
         let response = GetBalanceResponse { balance };
+        serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
+    }
+
+    fn getpoolinfo(&self) -> Result<Value, String> {
+        let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
+        let pool_value = chain.state_store.get_pool_value()?;
+        let response = GetPoolInfoResponse { pool_value };
         serde_json::to_value(response).map_err(|e| format!("Serialization error: {}", e))
     }
 
