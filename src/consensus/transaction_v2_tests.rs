@@ -1231,3 +1231,182 @@ fn test_stage_produces_identical_bytes() {
         );
     }
 }
+
+struct ReorgFixture {
+    chain: ChainState,
+    cb_a_op: OutPoint,
+    cb_b_op: OutPoint,
+    cb_b_entry: UtxoEntry,
+    cb_b2_op: OutPoint,
+    b_hash: [u8; 32],
+    b2_hash: [u8; 32],
+    cum_b2: crate::consensus::block::U256,
+}
+
+fn reorg_fixture() -> ReorgFixture {
+    use crate::consensus::block::create_genesis_block;
+
+    let mut chain = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let genesis = create_genesis_block(0x207f_ffff);
+    let g_hash = genesis.hash();
+    let g_work = genesis.header.work();
+    chain.seed_block_for_test(genesis, 0, g_work, true);
+
+    let mut cb_a = coinbase_v1(1);
+    cb_a.outputs[0].script_pubkey = vec![0xa1];
+    let cb_a_op = OutPoint {
+        txid: cb_a.txid(),
+        vout: 0,
+    };
+    let cb_a_entry = UtxoEntry {
+        output: cb_a.outputs[0].clone(),
+        coinbase: true,
+        height: 1,
+    };
+    let a_txids = vec![cb_a.txid()];
+    let block_a = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: g_hash,
+            merkle_root: compute_merkle_root(&a_txids),
+            timestamp: 1_700_000_100,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb_a)],
+    };
+    let a_hash = block_a.hash();
+    let cum_a = g_work + block_a.header.work();
+    chain.seed_block_for_test(block_a, 1, cum_a, true);
+    chain
+        .utxo_store
+        .apply_block(&[(cb_a_op, cb_a_entry)], &[])
+        .unwrap();
+    chain.utxo_store.store_undo_data(&a_hash, &[]).unwrap();
+
+    let mut cb_b = coinbase_v1(1);
+    cb_b.outputs[0].script_pubkey = vec![0xb1];
+    let cb_b_op = OutPoint {
+        txid: cb_b.txid(),
+        vout: 0,
+    };
+    let cb_b_entry = UtxoEntry {
+        output: cb_b.outputs[0].clone(),
+        coinbase: true,
+        height: 1,
+    };
+    let b_txids = vec![cb_b.txid()];
+    let block_b = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: g_hash,
+            merkle_root: compute_merkle_root(&b_txids),
+            timestamp: 1_700_000_050,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb_b)],
+    };
+    let b_hash = block_b.hash();
+    let cum_b = g_work + block_b.header.work();
+    chain.seed_block_for_test(block_b, 1, cum_b, false);
+
+    let cb_b2 = coinbase_v1(2);
+    let cb_b2_op = OutPoint {
+        txid: cb_b2.txid(),
+        vout: 0,
+    };
+    let b2_txids = vec![cb_b2.txid()];
+    let block_b2 = Block {
+        header: BlockHeader {
+            version: 1,
+            prev_block_hash: b_hash,
+            merkle_root: compute_merkle_root(&b2_txids),
+            timestamp: 1_700_000_060,
+            n_bits: 0x207f_ffff,
+            nonce: 0,
+        },
+        transactions: vec![TxKind::V1(cb_b2)],
+    };
+    let b2_hash = block_b2.hash();
+    let cum_b2 = cum_b + block_b2.header.work();
+    chain.seed_block_for_test(block_b2, 2, cum_b2, false);
+
+    chain.reorganize(&a_hash, &b2_hash).unwrap();
+
+    ReorgFixture {
+        chain,
+        cb_a_op,
+        cb_b_op,
+        cb_b_entry,
+        cb_b2_op,
+        b_hash,
+        b2_hash,
+        cum_b2,
+    }
+}
+
+#[test]
+fn test_reorg_single_batch() {
+    let f = reorg_fixture();
+
+    assert_eq!(f.chain.utxo_store.get_utxo(&f.cb_a_op).unwrap(), None);
+    assert!(f.chain.utxo_store.get_utxo(&f.cb_b_op).unwrap().is_some());
+    assert!(f.chain.utxo_store.get_utxo(&f.cb_b2_op).unwrap().is_some());
+
+    let undo_b = f
+        .chain
+        .utxo_store
+        .get_undo_data(&f.b_hash)
+        .unwrap()
+        .unwrap();
+    assert!(undo_b.is_empty());
+    let undo_b2 = f
+        .chain
+        .utxo_store
+        .get_undo_data(&f.b2_hash)
+        .unwrap()
+        .unwrap();
+    assert!(undo_b2.is_empty());
+
+    assert!(f.chain.block_store.get_block(&f.b_hash).unwrap().is_some());
+    assert!(f.chain.block_store.get_block(&f.b2_hash).unwrap().is_some());
+    assert_eq!(
+        f.chain.block_store.get_hash_by_height(1).unwrap(),
+        Some(f.b_hash)
+    );
+    assert_eq!(
+        f.chain.block_store.get_hash_by_height(2).unwrap(),
+        Some(f.b2_hash)
+    );
+
+    let tip = f.chain.state_store.get_tip().unwrap().unwrap();
+    assert_eq!(tip.hash, f.b2_hash);
+    assert_eq!(tip.height, 2);
+    assert_eq!(tip.cumulative_work, f.cum_b2);
+}
+
+#[test]
+fn test_reorg_encoder_unified() {
+    use crate::storage::CF_UTXO;
+
+    let f = reorg_fixture();
+
+    let mut key = Vec::with_capacity(36);
+    key.extend_from_slice(&f.cb_b_op.txid);
+    key.extend_from_slice(&f.cb_b_op.vout.to_le_bytes());
+
+    let reorg_bytes = f.chain.db.get(CF_UTXO, &key).unwrap();
+    assert!(reorg_bytes.is_some());
+
+    let chain2 = ChainState::new_in_memory(Network::Regtest.params()).unwrap();
+    let mut batch = chain2.db.batch();
+    chain2
+        .utxo_store
+        .stage_apply_block(&mut batch, &[(f.cb_b_op, f.cb_b_entry.clone())], &[])
+        .unwrap();
+    batch.commit().unwrap();
+    let ref_bytes = chain2.db.get(CF_UTXO, &key).unwrap();
+
+    assert_eq!(reorg_bytes, ref_bytes);
+}

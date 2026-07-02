@@ -83,21 +83,26 @@ impl UtxoStore {
         restored: &[(OutPoint, UtxoEntry)],
     ) -> Result<(), String> {
         let mut batch = self.db.batch();
+        self.stage_revert_block(&mut batch, created, restored)?;
+        batch.commit()
+    }
 
-        // Remove UTXOs created by this block
+    pub fn stage_revert_block(
+        &self,
+        batch: &mut DatabaseBatch,
+        created: &[OutPoint],
+        restored: &[(OutPoint, UtxoEntry)],
+    ) -> Result<(), String> {
         for outpoint in created {
             let key = Self::outpoint_key(outpoint);
             batch.delete(CF_UTXO, &key)?;
         }
-
-        // Restore UTXOs spent by this block
         for (outpoint, entry) in restored {
             let key = Self::outpoint_key(outpoint);
             let value = Self::serialize_entry(entry)?;
             batch.put(CF_UTXO, &key, &value)?;
         }
-
-        batch.commit()
+        Ok(())
     }
 
     pub fn store_undo_data(
@@ -241,13 +246,23 @@ impl UtxoStoreV2 {
         restored: &[(OutPoint, UtxoEntryV2)],
     ) -> Result<(), String> {
         let mut batch = self.db.batch();
+        self.stage_revert_block(&mut batch, created, restored)?;
+        batch.commit()
+    }
+
+    pub fn stage_revert_block(
+        &self,
+        batch: &mut DatabaseBatch,
+        created: &[OutPoint],
+        restored: &[(OutPoint, UtxoEntryV2)],
+    ) -> Result<(), String> {
         for outpoint in created {
             batch.delete(CF_UTXO_V2, &Self::outpoint_key(outpoint))?;
         }
         for (outpoint, entry) in restored {
             batch.put(CF_UTXO_V2, &Self::outpoint_key(outpoint), &entry.encode())?;
         }
-        batch.commit()
+        Ok(())
     }
 
     pub fn store_undo_data(

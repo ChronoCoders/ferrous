@@ -8,11 +8,9 @@ use crate::consensus::validation::{
     validate_transaction_v2_inner, ResolvedV2Input, ValidationError, COINBASE_MATURITY,
 };
 use crate::primitives::hash::Hash256;
-use crate::primitives::serialize::Encode;
 use crate::script::engine::{validate_p2dl, ScriptContext};
 use crate::storage::{
     BlockStore, ChainStateStore, ChainTip, Database, UtxoStore, UtxoStoreV2, CF_UNDO, CF_UNDO_V2,
-    CF_UTXO, CF_UTXO_V2,
 };
 use log::info;
 use lru::LruCache;
@@ -285,20 +283,6 @@ impl ChainState {
         Ok(())
     }
 
-    // Compact 36-byte key for a UTXO outpoint (must match UtxoStore's encoding).
-    fn utxo_key(op: &OutPoint) -> Vec<u8> {
-        let mut key = Vec::with_capacity(36);
-        key.extend_from_slice(&op.txid);
-        key.extend_from_slice(&op.vout.to_le_bytes());
-        key
-    }
-
-    // Serialize a UtxoEntry (must match UtxoStore's encoding).
-    fn utxo_val(entry: &UtxoEntry) -> Result<Vec<u8>, ChainError> {
-        bincode::serialize(entry)
-            .map_err(|e| ChainError::DbError(format!("UTXO serialize failed: {}", e)))
-    }
-
     pub(crate) fn reorganize(
         &mut self,
         old_tip: &Hash256,
@@ -349,6 +333,19 @@ impl ChainState {
 
         let old_height = block_height(&self.blocks, &self.block_store, &old_curr);
         let new_height = block_height(&self.blocks, &self.block_store, &new_curr);
+
+        let new_tip_work = self
+            .blocks
+            .peek(new_tip)
+            .map(|d| d.cumulative_work)
+            .or_else(|| {
+                self.block_store
+                    .get_block_meta(new_tip)
+                    .ok()
+                    .flatten()
+                    .map(|m| m.cumulative_work)
+            })
+            .ok_or(ChainError::BlockNotFound)?;
 
         while block_height(&self.blocks, &self.block_store, &old_curr) > new_height {
             old_chain.push(old_curr);
@@ -500,7 +497,9 @@ impl ChainState {
 
         struct ReconnectEntry {
             block_hash: Hash256,
+            block: Block,
             height: u64,
+            cumulative_work: U256,
             created: Vec<(OutPoint, UtxoEntry)>,
             spent: Vec<OutPoint>,
             undo_data: Vec<(OutPoint, UtxoEntry)>,
@@ -512,8 +511,8 @@ impl ChainState {
         let mut reconnect_entries: Vec<ReconnectEntry> = Vec::with_capacity(new_chain.len());
 
         for hash in new_chain.iter().rev() {
-            let (block, height) = if let Some(d) = self.blocks.peek(hash) {
-                (d.block.clone(), d.height)
+            let (block, height, block_work) = if let Some(d) = self.blocks.peek(hash) {
+                (d.block.clone(), d.height, d.cumulative_work)
             } else {
                 let b = self
                     .block_store
@@ -527,7 +526,7 @@ impl ChainState {
                     .ok_or_else(|| {
                         ChainError::DbError(format!("Missing block meta for {}", hex::encode(hash)))
                     })?;
-                (b, meta.height)
+                (b, meta.height, meta.cumulative_work)
             };
 
             let (created, mut spent, mut undo, fees) =
@@ -578,7 +577,9 @@ impl ChainState {
 
             reconnect_entries.push(ReconnectEntry {
                 block_hash: *hash,
+                block,
                 height,
+                cumulative_work: block_work,
                 created,
                 spent,
                 undo_data: undo,
@@ -593,84 +594,55 @@ impl ChainState {
         let mut batch = self.db.batch();
 
         for entry in &disconnect_entries {
-            // Delete UTXOs that were created by each old block.
-            for op in &entry.created_outpoints {
-                batch
-                    .delete(CF_UTXO, &Self::utxo_key(op))
-                    .map_err(ChainError::DbError)?;
-            }
-            // Restore UTXOs that were spent by each old block.
-            for (op, utxo_entry) in &entry.undo_data {
-                batch
-                    .put(CF_UTXO, &Self::utxo_key(op), &Self::utxo_val(utxo_entry)?)
-                    .map_err(ChainError::DbError)?;
-            }
-            // Remove the undo record for this old block.
+            self.utxo_store
+                .stage_revert_block(&mut batch, &entry.created_outpoints, &entry.undo_data)
+                .map_err(ChainError::DbError)?;
             batch
                 .delete(CF_UNDO, &entry.block_hash)
                 .map_err(ChainError::DbError)?;
-            for op in &entry.created_outpoints_v2 {
-                batch
-                    .delete(CF_UTXO_V2, &Self::utxo_key(op))
-                    .map_err(ChainError::DbError)?;
-            }
-            for (op, v2_entry) in &entry.undo_data_v2 {
-                batch
-                    .put(CF_UTXO_V2, &Self::utxo_key(op), &v2_entry.encode())
-                    .map_err(ChainError::DbError)?;
-            }
+            self.utxo_store_v2
+                .stage_revert_block(&mut batch, &entry.created_outpoints_v2, &entry.undo_data_v2)
+                .map_err(ChainError::DbError)?;
             batch
                 .delete(CF_UNDO_V2, &entry.block_hash)
                 .map_err(ChainError::DbError)?;
         }
 
         for entry in &reconnect_entries {
-            // Remove UTXOs spent by each new block.
-            for op in &entry.spent {
-                batch
-                    .delete(CF_UTXO, &Self::utxo_key(op))
-                    .map_err(ChainError::DbError)?;
-            }
-            // Create UTXOs produced by each new block.
-            for (op, utxo_entry) in &entry.created {
-                batch
-                    .put(CF_UTXO, &Self::utxo_key(op), &Self::utxo_val(utxo_entry)?)
-                    .map_err(ChainError::DbError)?;
-            }
-            // Store the undo record for each new block.
-            let undo_bytes = bincode::serialize(&entry.undo_data)
-                .map_err(|e| ChainError::DbError(format!("undo serialize: {}", e)))?;
-            batch
-                .put(CF_UNDO, &entry.block_hash, &undo_bytes)
+            self.utxo_store
+                .stage_apply_block(&mut batch, &entry.created, &entry.spent)
                 .map_err(ChainError::DbError)?;
-            for op in &entry.spent_v2 {
-                batch
-                    .delete(CF_UTXO_V2, &Self::utxo_key(op))
-                    .map_err(ChainError::DbError)?;
-            }
-            for (op, v2_entry) in &entry.created_v2 {
-                batch
-                    .put(CF_UTXO_V2, &Self::utxo_key(op), &v2_entry.encode())
-                    .map_err(ChainError::DbError)?;
-            }
+            self.utxo_store
+                .stage_undo_data(&mut batch, &entry.block_hash, &entry.undo_data)
+                .map_err(ChainError::DbError)?;
+            self.utxo_store_v2
+                .stage_apply_block(&mut batch, &entry.created_v2, &entry.spent_v2)
+                .map_err(ChainError::DbError)?;
             if !entry.undo_data_v2.is_empty() {
-                let undo_bytes_v2 = bincode::serialize(&entry.undo_data_v2)
-                    .map_err(|e| ChainError::DbError(format!("v2 undo serialize: {}", e)))?;
-                batch
-                    .put(CF_UNDO_V2, &entry.block_hash, &undo_bytes_v2)
+                self.utxo_store_v2
+                    .stage_undo_data(&mut batch, &entry.block_hash, &entry.undo_data_v2)
                     .map_err(ChainError::DbError)?;
             }
+            self.block_store
+                .stage_store_block(
+                    &mut batch,
+                    &entry.block,
+                    entry.height,
+                    entry.cumulative_work,
+                )
+                .map_err(ChainError::DbError)?;
         }
+
+        let tip_state = ChainTip {
+            hash: *new_tip,
+            height: new_height,
+            cumulative_work: new_tip_work,
+        };
+        self.state_store
+            .stage_set_tip(&mut batch, &tip_state)
+            .map_err(ChainError::DbError)?;
 
         batch.commit().map_err(ChainError::DbError)?;
-
-        // Update the canonical height index after the batch commits.
-        // This is idempotent and can be repaired by recover_from_storage on restart.
-        for entry in &reconnect_entries {
-            self.block_store
-                .update_height_index(entry.height, &entry.block_hash)
-                .map_err(ChainError::DbError)?;
-        }
 
         // Collect non-coinbase transactions from disconnected blocks whose
         // inputs are still unspent on the new chain.
@@ -868,20 +840,7 @@ impl ChainState {
                 (false, Vec::new())
             };
 
-            if did_reorg {
-                self.block_store
-                    .store_block(&block, height, cumulative_work)
-                    .map_err(ChainError::DbError)?;
-
-                let new_tip = ChainTip {
-                    hash: block_hash,
-                    height,
-                    cumulative_work,
-                };
-                self.state_store
-                    .set_tip(&new_tip)
-                    .map_err(ChainError::DbError)?;
-            } else {
+            if !did_reorg {
                 let (created_utxos, mut spent_utxos, mut spent_entries, v1_fees) =
                     self.apply_block_to_utxo(&block, height)?;
 
