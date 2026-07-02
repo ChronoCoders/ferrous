@@ -87,16 +87,16 @@ impl NetworkSecurity {
             }
         }
 
-        // Check netgroup percentage
-        let netgroup_count = self
-            .peers_by_netgroup
-            .get(&netgroup)
-            .map(|v| v.len())
-            .unwrap_or(0);
-        let percentage = (netgroup_count as f32 + 1.0) / (total_peers as f32 + 1.0);
-
-        if percentage > MAX_NETGROUP_PERCENTAGE {
-            return false;
+        if total_peers >= 8 {
+            let netgroup_count = self
+                .peers_by_netgroup
+                .get(&netgroup)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            let percentage = (netgroup_count as f32 + 1.0) / (total_peers as f32 + 1.0);
+            if percentage > MAX_NETGROUP_PERCENTAGE {
+                return false;
+            }
         }
 
         // Ensure minimum subnet diversity (only enforce after 10+ peers)
