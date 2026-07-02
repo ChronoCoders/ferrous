@@ -729,10 +729,7 @@ impl ChainState {
         Ok(requeued)
     }
 
-    pub fn add_block(
-        &mut self,
-        block: Block,
-    ) -> Result<Vec<TxKind>, ChainError> {
+    pub fn add_block(&mut self, block: Block) -> Result<Vec<TxKind>, ChainError> {
         let block_hash = block.hash();
 
         // Skip only if the block is already stored in the DB (canonical or side-chain).
