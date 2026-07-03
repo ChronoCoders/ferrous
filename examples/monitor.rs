@@ -1217,6 +1217,37 @@ fn rpc_batch(local_port: u16, requests: Value, auth: Option<&str>) -> Result<Vec
     }
 }
 
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+fn dechunk(body: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while pos < body.len() {
+        let line_end = find_subslice(&body[pos..], b"\r\n")?;
+        let size_line = std::str::from_utf8(&body[pos..pos + line_end]).ok()?;
+        let size_hex = size_line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_hex, 16).ok()?;
+        pos += line_end + 2;
+        if size == 0 {
+            break;
+        }
+        if pos + size > body.len() {
+            return None;
+        }
+        out.extend_from_slice(&body[pos..pos + size]);
+        pos += size;
+        if body[pos..].starts_with(b"\r\n") {
+            pos += 2;
+        }
+    }
+    Some(out)
+}
+
 fn http_post_json(local_port: u16, body: &str, auth: Option<&str>) -> Result<Value, String> {
     let mut stream =
         TcpStream::connect_timeout(&local_socket_addr(local_port), Duration::from_secs(5))
@@ -1247,10 +1278,9 @@ fn http_post_json(local_port: u16, body: &str, auth: Option<&str>) -> Result<Val
         .read_to_end(&mut resp_bytes)
         .map_err(|e| format!("{}", e))?;
 
-    let resp_str = String::from_utf8_lossy(&resp_bytes);
-    let mut parts = resp_str.splitn(2, "\r\n\r\n");
-    let header = parts.next().unwrap_or("");
-    let body = parts.next().unwrap_or("");
+    let sep = find_subslice(&resp_bytes, b"\r\n\r\n")
+        .ok_or_else(|| "Malformed HTTP response (no header terminator)".to_string())?;
+    let header = String::from_utf8_lossy(&resp_bytes[..sep]);
 
     if header.contains("401") {
         return Err("HTTP 401 Unauthorized (cookie mismatch or missing)".to_string());
@@ -1262,6 +1292,19 @@ fn http_post_json(local_port: u16, body: &str, auth: Option<&str>) -> Result<Val
         ));
     }
 
+    let raw_body = &resp_bytes[sep + 4..];
+    let decoded;
+    let body_bytes: &[u8] = if header
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        decoded = dechunk(raw_body).ok_or_else(|| "Malformed chunked response".to_string())?;
+        &decoded
+    } else {
+        raw_body
+    };
+
+    let body = std::str::from_utf8(body_bytes).map_err(|e| format!("UTF-8 error: {:?}", e))?;
     serde_json::from_str(body).map_err(|e| format!("JSON parse error: {:?}", e))
 }
 
