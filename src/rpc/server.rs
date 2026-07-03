@@ -961,6 +961,7 @@ impl RpcServer {
                 vout_count,
                 output_value,
                 fee,
+                kind: tx.rpc_kind().to_string(),
             });
         }
 
@@ -1141,6 +1142,7 @@ impl RpcServer {
                         VerboseTx {
                             txid: hex::encode(tx.txid()),
                             is_coinbase,
+                            kind: if is_coinbase { "coinbase" } else { "transfer" }.to_string(),
                             vin,
                             vout,
                         }

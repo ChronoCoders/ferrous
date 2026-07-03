@@ -59,6 +59,7 @@ pub struct VerboseTxOutput {
 pub struct VerboseTx {
     pub txid: String,
     pub is_coinbase: bool,
+    pub kind: String,
     pub vin: Vec<VerboseTxInput>,
     pub vout: Vec<VerboseTxOutput>,
 }
@@ -151,6 +152,7 @@ pub struct MempoolTx {
     /// Fee in grain (Σ input UTXO values − Σ outputs); null if any input
     /// is not found in the UTXO set.
     pub fee: Option<u64>,
+    pub kind: String,
 }
 
 #[derive(serde::Serialize)]

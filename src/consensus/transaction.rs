@@ -668,6 +668,17 @@ impl TxKind {
         }
     }
 
+    pub fn rpc_kind(&self) -> &'static str {
+        if self.is_coinbase() {
+            "coinbase"
+        } else {
+            match self {
+                TxKind::V1(_) => "transfer",
+                TxKind::V2(_) => "confidential",
+            }
+        }
+    }
+
     pub fn input_outpoints(&self) -> Vec<(Hash256, u32)> {
         match self {
             TxKind::V1(tx) => tx

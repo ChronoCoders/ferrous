@@ -1647,3 +1647,99 @@ fn test_turnstile_underflow_rejects_block() {
         ))
     );
 }
+
+#[test]
+fn test_rpc_kind_labels_and_serialization() {
+    let coinbase = TxKind::V1(Transaction {
+        version: 1,
+        inputs: vec![TxInput {
+            prev_txid: [0u8; 32],
+            prev_index: 0xFFFF_FFFF,
+            script_sig: vec![],
+            sequence: 0xFFFF_FFFF,
+        }],
+        outputs: vec![TxOutput {
+            value: 50,
+            script_pubkey: vec![0x51],
+        }],
+        witnesses: vec![],
+        locktime: 0,
+    });
+    assert!(coinbase.is_coinbase());
+    assert_eq!(coinbase.rpc_kind(), "coinbase");
+
+    let transfer = TxKind::V1(Transaction {
+        version: 1,
+        inputs: vec![TxInput {
+            prev_txid: [7u8; 32],
+            prev_index: 0,
+            script_sig: vec![],
+            sequence: 0xFFFF_FFFF,
+        }],
+        outputs: vec![TxOutput {
+            value: 50,
+            script_pubkey: vec![0x51],
+        }],
+        witnesses: vec![],
+        locktime: 0,
+    });
+    assert!(!transfer.is_coinbase());
+    assert_eq!(transfer.rpc_kind(), "transfer");
+
+    let confidential = TxKind::V2(TransactionV2 {
+        version: TX_VERSION_V2,
+        inputs: vec![TxInputV2 {
+            prev_txid: [9u8; 32],
+            prev_index: 1,
+            script_sig: vec![],
+            sequence: 0xFFFF_FFFF,
+        }],
+        outputs: vec![TxOutputV2 {
+            commitment: commit(500, &BlindingFactor([1u8; 32])),
+            range_proof: RangeProof(vec![4, 5, 6, 7]),
+            script_pubkey: vec![0xaa, 0x20],
+            encrypted_amount: vec![8, 9],
+            ephemeral_pubkey: [3u8; 32],
+        }],
+        fee: 11,
+        locktime: 0,
+    });
+    assert!(!confidential.is_coinbase());
+    assert_eq!(confidential.rpc_kind(), "confidential");
+
+    let mempool_tx = crate::rpc::methods::MempoolTx {
+        txid: "aa".to_string(),
+        size: 10,
+        vsize: 10,
+        vin_count: 1,
+        vout_count: 1,
+        output_value: 0,
+        fee: Some(11),
+        kind: confidential.rpc_kind().to_string(),
+    };
+    assert!(serde_json::to_string(&mempool_tx)
+        .unwrap()
+        .contains("\"kind\":\"confidential\""));
+
+    let verbose_coinbase = crate::rpc::methods::VerboseTx {
+        txid: "bb".to_string(),
+        is_coinbase: true,
+        kind: "coinbase".to_string(),
+        vin: vec![],
+        vout: vec![],
+    };
+    assert!(serde_json::to_string(&verbose_coinbase)
+        .unwrap()
+        .contains("\"kind\":\"coinbase\""));
+
+    let verbose_transfer = crate::rpc::methods::VerboseTx {
+        txid: "cc".to_string(),
+        is_coinbase: false,
+        kind: "transfer".to_string(),
+        vin: vec![],
+        vout: vec![],
+    };
+    assert!(serde_json::to_string(&verbose_transfer)
+        .unwrap()
+        .contains("\"kind\":\"transfer\""));
+}

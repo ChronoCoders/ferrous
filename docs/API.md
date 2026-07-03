@@ -28,6 +28,7 @@ Implemented methods:
 - `getmininginfo`
 - `mineblocks`
 - `getblock`
+- `getrawmempool`
 - `getblockhash`
 - `getbestblockhash`
 - `getnewaddress`
@@ -694,6 +695,19 @@ Fields:
 - `bits`: Difficulty target in compact hex format.
 - `tx`: Array of hex-encoded transaction `txid`s in the block.
 
+### Verbose response
+
+When called with a second boolean parameter set to `true` (`"params": ["000000...", true]`), the response additionally includes `n_tx`, `size`, `miner`, and a `transactions` array of decoded transactions. The array currently expands v1 transactions only; v2 (confidential) transactions are still counted in `n_tx` and listed in `tx`, but are not expanded here. Each `transactions` entry:
+
+- `txid`: Hex-encoded transaction id.
+- `is_coinbase`: `true` for the block's coinbase transaction.
+- `kind`: Real transaction kind, derived from the coinbase check and the internal `TxKind` (not inferred from output values). One of:
+  - `"coinbase"`: the block's coinbase transaction.
+  - `"transfer"`: a v1 transparent transaction.
+  - `"confidential"`: reserved for v2 (Ring CT) transactions. Does not currently appear here because v2 transactions are not yet expanded in the verbose list.
+- `vin`: Array of inputs (`{txid, vout, coinbase}`).
+- `vout`: Array of transparent outputs (`{value_frr, address}`).
+
 ### Errors
 
 - If `params` is missing or malformed:
@@ -704,6 +718,68 @@ Fields:
   - `code = -32603`, `message = "Invalid hash length"`
 - If the block is not found:
   - `code = -32603`, `message = "Block not found"`
+
+## getrawmempool
+
+Returns the current mempool: all pending (unconfirmed) transactions with per-transaction detail.
+
+### Request
+
+`params` is an empty array.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "getrawmempool",
+  "params": [],
+  "id": 1
+}
+```
+
+### Response
+
+`result` is a `GetRawMempoolResponse`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "count": 1,
+    "total_size": 5410,
+    "transactions": [
+      {
+        "txid": "acfe...",
+        "size": 5410,
+        "vsize": 5411,
+        "vin_count": 1,
+        "vout_count": 2,
+        "output_value": 4999999000,
+        "fee": 1000,
+        "kind": "transfer"
+      }
+    ]
+  },
+  "id": 1
+}
+```
+
+Fields:
+
+- `count`: Number of transactions in the mempool.
+- `total_size`: Sum of the base sizes (bytes) of all mempool transactions.
+- `transactions`: Array of pending transactions. Each entry:
+  - `txid`: Hex-encoded transaction id.
+  - `size`: Base size in bytes.
+  - `vsize`: Virtual size (BIP141 weight units divided by 4, rounded up).
+  - `vin_count`: Number of inputs.
+  - `vout_count`: Number of outputs.
+  - `output_value`: Total transparent output value in grain. Always `0` for confidential (v2) transactions, whose amounts are hidden.
+  - `fee`: Fee in grain, or `null` if an input UTXO could not be resolved.
+  - `kind`: Real transaction kind, derived from the internal `TxKind` (not inferred from output values). One of:
+    - `"transfer"`: a v1 transparent transaction.
+    - `"confidential"`: a v2 (Ring CT) transaction.
+
+    Coinbase transactions never appear in the mempool, so `"coinbase"` does not occur here.
 
 ## getpeerinfo
 
