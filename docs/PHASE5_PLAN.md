@@ -145,10 +145,12 @@ Hide **amounts**; sender and recipient remain visible. Smallest self-contained p
   key**. So 5a front-loads part of the dual-key wallet work: the address format gains a
   Ristretto view key alongside the Dilithium spend authority. (Full one-time *stealth* output
   keys are deferred to 5c.)
-- **Pedersen commitments** `C = xG + aH`. `H` derived nothing-up-my-sleeve from `G`
-  (hash-to-point). Blinding factor `x` derived deterministically from the wallet seed.
+- **Pedersen commitments** `commit(v, x) = v·G + x·H` — value `v` on the Ristretto basepoint
+  `G = RISTRETTO_BASEPOINT_POINT`, blinding `x` on `H`. `H` is a nothing-up-my-sleeve hash-to-point
+  of the domain tag `"Ferrous/H"` (independent of `G`, not derived from it). Blinding factor `x`
+  derived deterministically from the wallet seed. (Matches `src/crypto/commitments.rs`.)
 - **Aggregated Bulletproofs** range proof over all outputs, proving each amount ∈ [0, 2⁶⁴).
-- **Balance check** `Σ C_in − Σ C_out − fee·H = 0` (commitment-homomorphic; fee is public).
+- **Balance check** `Σ C_in − Σ C_out − fee·G = 0` (commitment-homomorphic; the public fee rides on `G` with zero blinding, summed into the coinbase exactly as v1).
 - **Tx output** carries `{commitment, encrypted_amount}`; **input** references a committed UTXO.
 - UTXO set stores `commitment` (per `PRIVACY.md` `UtxoEntry`).
 - Spend authorization still Dilithium; **no ring yet** — input still names its real predecessor.
@@ -272,12 +274,17 @@ scoping BLOCKING-2.
   blindings to match a non-zero input blinding sum. Until generalized, v2 UTXOs are a **roach motel** —
   fundable (once the bridge lands) but unspendable by the wallet. (Consensus `verify_balance` already
   supports arbitrary input commitments; this is purely a wallet-builder gap.)
-- **NOTE — generator convention is swapped vs this document.** The code commits **value on the
-  Ristretto basepoint `G`, blinding on `H`** (`commit(v,x) = v·G + x·H`; `verify_balance` checks
-  `Σ in == Σ out + fee·G`). This document's 5a text (line ~93/96) writes `C = xG + aH` and
-  `Σ C_in − Σ C_out − fee·H = 0` (amount on `H`). The implementation is internally consistent and
-  sound (BLOCKING-1 confirmed), but the **plan/`PRIVACY.md` text must be reconciled to the code**
-  before 5b/CLSAG commitment-to-zero math is written against the wrong generator.
+- **DONE (2026-07-03) — generator convention reconciled to the code.** The code is the source of
+  truth: it commits **value on the Ristretto basepoint `G`, blinding on `H`** — `commit(v,x) = v·G +
+  x·H` (`src/crypto/commitments.rs:36-55`: `pedersen_gens` sets `B = RISTRETTO_BASEPOINT_POINT`,
+  `B_blinding = h_generator()`; `commit` maps value→`B`, blinding→`B_blinding`), and `verify_balance`
+  checks `Σ in == Σ out + fee·G` (`commitments.rs:57-80`: `fee_point = fee · RISTRETTO_BASEPOINT_POINT`).
+  `H` is a nothing-up-my-sleeve hash-to-point of the domain tag `"Ferrous/H"` (`commitments.rs:24-34`),
+  independent of `G`. This document's 5a text and `PRIVACY.md` previously wrote `C = xG + aH` and
+  `fee·H` (amount on `H`, generators swapped); both are now corrected to `v·G + x·H` and `fee·G`. All
+  commitment/generator formulas across the docs now agree with the code. This unblocks the 5b/CLSAG
+  commitment-to-zero and per-input pseudo-output math, which MUST be written against
+  `value·G + blinding·H` / `fee·G`.
 - **Pre-mainnet — mempool admits funding txs spending an immature coinbase.** Maturity is enforced
   in the consensus apply path (`collect_v2_utxo_changes_inner`: `height < entry.height +
   COINBASE_MATURITY` → `ImmatureCoinbase`), but `validate_transaction_v2` (the mempool path) does not

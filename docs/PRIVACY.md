@@ -25,9 +25,10 @@ This ensures that even if a quantum computer breaks the privacy layer (EC-based)
 
 ### 2. Commitments (Hiding Amounts)
 - **Algorithm**: Pedersen Commitments over Ristretto255 (`curve25519-dalek`).
-  - `C = xG + aH`
+  - `C = commit(v, x) = v·G + x·H` — value `v` on the Ristretto basepoint `G`, blinding `x` on the independent generator `H`.
+  - `G = RISTRETTO_BASEPOINT_POINT`; `H` is a nothing-up-my-sleeve hash-to-point of the domain tag `"Ferrous/H"` (independent of `G`, not derived from it). Matches `src/crypto/commitments.rs` (`pedersen_gens`/`h_generator`/`commit`).
 - **Blinding**: Deterministic derivation from wallet seed.
-- **Balance Check**: `Sum(In) - Sum(Out) - Fee = 0`.
+- **Balance Check**: `Sum(C_in) - Sum(C_out) - fee·G = 0` — the public fee rides on `G` with zero blinding, summed into the coinbase exactly as v1 (`verify_balance` in `commitments.rs`).
 
 ### 3. Range Proofs (Hiding Amounts)
 - **Algorithm**: Bulletproofs (aggregated), Ristretto255. (Amended from Bulletproofs+ on 2026-06-01 — use the reviewed `bulletproofs` crate; see `PHASE5_PLAN.md`.)
