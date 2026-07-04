@@ -46,7 +46,7 @@ Privacy transactions will be introduced via a new version (`version = 2`).
 ### Inputs
 - **prev_out**: Reference to a standard or stealth UTXO.
 - **ring_members**: List of 10 decoy references + 1 real input.
-- **pseudo_commitment**: Commitment to the input amount for the ring signature.
+- **pseudo_commitment**: Per-input **pseudo-output** commitment `C'_i = v_i·G + x'_i·H` (same value as the real input, fresh spender-chosen blinding). Balance is enforced on the pseudo-outputs (`Σ C'_i = Σ C_out + fee·G`, fee public); CLSAG signs the commitment-to-zero `C_real − C'_i = (x_real − x'_i)·H` at the real ring index. Excess model decided 2026-07-03 (Monero RingCT / CLSAG, per-input pseudo-outputs) — see `PHASE5_PLAN.md` BLOCKING-2 resolution.
 
 ### Outputs
 - **stealth_address**: One-time destination key `P = H(rA)G + B`.

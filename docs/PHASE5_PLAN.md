@@ -170,19 +170,22 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
 
 ## 5b Prerequisites (must resolve before wiring v2 into consensus)
 
-- **BLOCKING-1 — `fee_commitment` is unsound.** `validate_transaction_v2` checks
-  `Σ in == Σ out + fee_commitment` where `fee_commitment` is an arbitrary attacker-supplied
-  Ristretto point with no range proof and no proof its blinding (H) component is zero. With
-  inputs committed at blinding 0, the equation is satisfiable for any output values — the fee's
-  value-generator coefficient is whatever the attacker picks (including negative ⇒ inflation).
-  Fix: use a **public `fee: u64` ⇒ `fee·G`** (zero blinding), summed into the coinbase exactly as
-  v1. `verify_balance(.., fee: u64)` already implements this correctly; `verify_balance_committed`
-  with an unconstrained `fee_commitment` must not be carried into consensus. A full CT design
-  requires an explicit excess / commitment-to-zero kernel and a range-proofed fee.
-- **BLOCKING-2 — input-blinding-zero excess undefined.** Because 5a spends public v1 UTXOs
-  (blinding 0), the only place the output blinding sum can be absorbed is the fee term. 5b must
-  define where the output blinding sum lives (a real CT excess/kernel, or a change-output
-  construction) and **prove it commits to zero** in the value generator.
+- **DONE (2026-07-03) — BLOCKING-1: fee is a public `fee·G`; unsound `fee_commitment` removed.**
+  The original `validate_transaction_v2` checked `Σ in == Σ out + fee_commitment` with an
+  attacker-supplied Ristretto `fee_commitment` (no range proof, no proof its `H` component is zero
+  ⇒ the attacker sets the fee's value-generator coefficient, including negative ⇒ inflation).
+  Resolved: consensus now uses `verify_balance(inputs, outputs, tx.fee)` with a **public `u64` fee**
+  ⇒ `fee_point = fee·G` (`src/crypto/commitments.rs:57-80`). The unsound
+  `verify_balance_committed` / `fee_commitment` path is **removed** (grep-confirmed absent from
+  `src/`). The public v2 fee folds into the coinbase and the turnstile `pool_delta` subtracts
+  `Σ v2_fees`, both live-verified on-chain (blocks 129 and 185). CLSAG-era confirmation now decided:
+  the fee stays a **public `u64` ⇒ `fee·G`** in the kernel (not hidden or committed) — see the
+  BLOCKING-2 resolution below (sub-decision 4).
+- **DONE (2026-07-03) — BLOCKING-2: excess model decided (per-input pseudo-outputs, Monero RingCT).**
+  Ring-less spend is generalized (`Σx_out = Σx_in` change-output construction, `spend_v2_transaction`)
+  and the ringed excess model is settled as Monero-style per-input pseudo-outputs with a
+  commitment-to-zero. Full decision, rationale, and the five settled sub-decisions are recorded in the
+  5a-activation section below (the reworded "roach motel" note).
 - **N1/N2 — batch range-proof verification + cached gens.** `validate_transaction_v2` verifies
   range proofs one-by-one and rebuilds `BulletproofGens::new(64,1)` on every call. Before consensus
   exposure: use Bulletproofs **batched/aggregated** verification (the range proof is ~73% of v2
@@ -267,13 +270,38 @@ scoping BLOCKING-2.
   `build_funding_tx` (wallet) produces a single-v1-input → single-v2-output (blinding 0) conversion tx.
   rust-reviewer: APPROVE (no inflation path; reorg atomic + symmetric). Activation still gated on the
   spend-builder generalization below.
-- **BLOCKING — v2 spend builder hardcodes `Σx_out = 0`.** `build_v2_transaction` sets the change
-  blinding to `−x_payment`, which balances only because v1 inputs are at blinding 0 (`Σx_in = 0`).
-  This is sound for v1-funded sends but does not generalize: spending a *v2* UTXO (real non-zero
-  blinding) requires `Σx_out = Σx_in`, and the builder has no path to select v2 UTXOs or set output
-  blindings to match a non-zero input blinding sum. Until generalized, v2 UTXOs are a **roach motel** —
-  fundable (once the bridge lands) but unspendable by the wallet. (Consensus `verify_balance` already
-  supports arbitrary input commitments; this is purely a wallet-builder gap.)
+- **DONE (2026-07-03) — BLOCKING-2: ring-less spend generalized; ringed excess model decided.**
+  *Ring-less spend (was the "roach motel"):* the earlier note claimed `build_v2_transaction`
+  hardcodes `Σx_out = 0`, leaving v2 UTXOs fundable but unspendable. **Stale** —
+  `spend_v2_transaction` (`src/wallet/builder.rs:232-320`, commit `e8515a2`) sums the real input
+  blindings and sets `change_blind = Σx_in − x_payment` ⇒ **`Σx_out = Σx_in`**, so v2 UTXOs with
+  non-zero blindings are spendable. This is a **change-output construction**: the `H` (blinding)
+  terms cancel and the balance reduces to `Σ C_in − Σ C_out − fee·G = 0`. Sound for the current
+  ring-less v2. (`build_funding_tx` and the exact-value path of `build_v2_transaction` remain the
+  blinding-0 / OsRng-balanced special cases of the same identity.)
+  *Ringed excess model (the actual BLOCKING-2 decision):* the change-output construction cannot
+  survive a ring — under CLSAG the real input commitment is hidden among decoys, so the balance
+  check must use a per-input **pseudo-output** the spender controls, not the real UTXO commitment.
+  **DECISION: per-input pseudo-output commitments, Monero RingCT / CLSAG style** — NOT an explicit
+  Grin / Mimblewimble kernel excess, and NOT continued change-output absorption (a ring breaks it).
+  **Rationale:** architectural consistency — Ferrous follows the Monero model end-to-end (CLSAG,
+  ring size 11, key images `I = x·H_p(P)`, stealth addresses), and choosing CLSAG inherently means
+  pseudo-outputs. Grin's kernel-excess is a different paradigm (Mimblewimble, no UTXOs) incompatible
+  with the UTXO + ring + stealth architecture. Monero RingCT + CLSAG is a battle-tested reference.
+  **Five settled sub-decisions:**
+  1. **Excess model:** each input gets a pseudo-output commitment `C'_i = v_i·G + x'_i·H`.
+  2. **Pseudo-output blinding:** Monero "last pseudo-output" method — the final pseudo-output
+     blinding `x'_last = Σx_out − Σ(other x'_i)`, so `Σx'_i − Σx_out` commits to zero; the other
+     `x'_i` are random.
+  3. **What CLSAG signs:** the commitment-to-zero key `C_real − C'_i = (x_real − x'_i)·H` at the real
+     ring index, alongside the key image `I = x·H_p(P)`.
+  4. **Fee placement:** public `u64 ⇒ fee·G` in the balance equation (consistent with BLOCKING-1);
+     no hidden fee.
+  5. **Range proofs:** real outputs are range-proofed (Bulletproofs); pseudo-outputs are **not**
+     range-proofed (they re-commit already-proven input values, per Monero); the aggregate still
+     balances via the commitment-to-zero.
+  This is the fixed foundation for the CLSAG signing/verification spec (the next task). The CLSAG
+  algorithm itself is intentionally NOT written here.
 - **DONE (2026-07-03) — generator convention reconciled to the code.** The code is the source of
   truth: it commits **value on the Ristretto basepoint `G`, blinding on `H`** — `commit(v,x) = v·G +
   x·H` (`src/crypto/commitments.rs:36-55`: `pedersen_gens` sets `B = RISTRETTO_BASEPOINT_POINT`,
