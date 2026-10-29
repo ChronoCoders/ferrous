@@ -1,3 +1,10 @@
 #!/usr/bin/env bash
 cd "$(git rev-parse --show-toplevel)" || exit 2
+# gate.sh checks the working tree, so its result describes the pushed commits only
+# when tracked files match HEAD.
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    git status --short --untracked-files=no
+    echo "uncommitted changes to tracked files; commit or stash them before pushing"
+    exit 1
+fi
 exec ./gate.sh
