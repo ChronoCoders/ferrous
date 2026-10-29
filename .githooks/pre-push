@@ -1,6 +1,39 @@
 #!/usr/bin/env bash
 cd "$(git rev-parse --show-toplevel)" || exit 2
-# gate.sh checks the working tree, so its result describes the pushed commits only
+# A push carries exactly one new commit and it is HEAD, so gate.sh, which checks the
+# working tree, has checked every commit that leaves this machine. Force-push, tag
+# push and ref deletion are manual operator actions.
+
+refuse() {
+    echo "pre-push refused: $1"
+    exit 1
+}
+
+is_zero() {
+    [[ $1 =~ ^0+$ ]]
+}
+
+mapfile -t refs
+[ "${#refs[@]}" -eq 1 ] || refuse "exactly one ref per push, got ${#refs[@]}"
+read -r local_ref local_sha remote_ref remote_sha <<<"${refs[0]}"
+! is_zero "$local_sha" || refuse "ref deletion of $remote_ref"
+case "$local_ref $remote_ref" in
+*refs/tags/*) refuse "tag push of $remote_ref" ;;
+esac
+[ "$local_sha" = "$(git rev-parse HEAD)" ] || refuse "pushed commit $local_sha is not HEAD"
+if is_zero "$remote_sha"; then
+    base=$(git rev-parse -q --verify refs/remotes/origin/main) ||
+        refuse "new branch $remote_ref and origin/main not found"
+else
+    git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null ||
+        refuse "non-fast-forward: $remote_ref is at $remote_sha"
+    base=$remote_sha
+fi
+count=$(git rev-list --count "$base..$local_sha") ||
+    refuse "cannot count commits in $base..$local_sha"
+[ "$count" -eq 1 ] || refuse "exactly one new commit per push, got $count in $base..$local_sha"
+
+# gate.sh checks the working tree, so its result describes the pushed commit only
 # when tracked files match HEAD.
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     git status --short --untracked-files=no
