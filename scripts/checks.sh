@@ -6,7 +6,7 @@
 EM_DASH=$'\xe2\x80\x94'
 EN_DASH=$'\xe2\x80\x93'
 BANNED_NAME_RE='c[l]aude'
-LOCAL_ONLY_PATH_RE='(^|/)c[l]aude\.md$|^\.c[l]aude/|^private/'
+LOCAL_ONLY_PATH_RE='(^|/)c[l]aude\.md$|^\.c[l]aude/|^private/|^\.cargo/config\.toml$'
 COMMIT_SUBJECT_RE='^(feat|fix|docs|test|refactor|chore)\([a-z0-9_./-]+\): [^ ].*$'
 
 check_tracked_dashes() {
