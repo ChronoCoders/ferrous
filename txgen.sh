@@ -1,7 +1,7 @@
 #!/bin/bash
-# txgen.sh — Automatic real transaction generator for Ferrous testnet
+# txgen.sh: Automatic real transaction generator for Ferrous testnet
 #
-# Sends a random amount (1–10 FRR) to DEST_ADDR every INTERVAL seconds
+# Sends a random amount (1-10 FRR) to DEST_ADDR every INTERVAL seconds
 # once the chain reaches coinbase maturity (>100 blocks).
 #
 # Usage:

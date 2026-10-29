@@ -375,7 +375,7 @@ pub fn create_genesis_block(genesis_n_bits: u32) -> Block {
         0x1F0A_EC33 => Some(172),
         0x1F05_D34E => Some(3432),
         0x1F10_CDD9 => Some(515),
-        0x207f_ffff => Some(0), // regtest trivial — nonce 0 always works
+        0x207f_ffff => Some(0), // regtest trivial: nonce 0 always works
         _ => None,
     };
 

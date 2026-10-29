@@ -38,7 +38,7 @@ impl Network {
                 max_target: crate::consensus::difficulty::MAINNET_MAX_TARGET,
                 difficulty_adjustment: true,
                 allow_min_difficulty_blocks: false,
-                // Bitcoin mainnet difficulty-1 (0x1d00ffff) — very hard, as intended.
+                // Bitcoin mainnet difficulty-1 (0x1d00ffff): very hard, as intended.
                 genesis_n_bits: 0x1d00_ffff,
             },
             Network::Testnet => ChainParams {
@@ -55,7 +55,7 @@ impl Network {
                 max_target: crate::consensus::difficulty::REGTEST_MAX_TARGET,
                 difficulty_adjustment: false,
                 allow_min_difficulty_blocks: true,
-                genesis_n_bits: 0x207f_ffff, // trivial — instant mining for tests
+                genesis_n_bits: 0x207f_ffff, // trivial: instant mining for tests
             },
         }
     }

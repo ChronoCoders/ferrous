@@ -33,7 +33,7 @@ const PBKDF2_ITERS: u32 = 210_000;
 // header bytes before ciphertext: 4+1+1+32+12+8 = 58
 const HEADER_LEN: usize = 58;
 
-// Legacy ECDSA-era payload — keys stored as fixed [u8; 32].
+// Legacy ECDSA-era payload: keys stored as fixed [u8; 32].
 // Used only for loading v0.02 wallets and migrating them to V3.
 #[derive(Serialize, Deserialize)]
 struct WalletPayloadV2 {
@@ -43,7 +43,7 @@ struct WalletPayloadV2 {
     change_index: u32,
 }
 
-// Current Dilithium-era payload — keys stored as Vec<u8> (32-byte seed).
+// Current Dilithium-era payload: keys stored as Vec<u8> (32-byte seed).
 #[derive(Serialize, Deserialize)]
 struct WalletPayloadV3 {
     seed_entropy: Option<[u8; 32]>,
@@ -56,7 +56,7 @@ struct WalletPayloadV3 {
 
 #[derive(Debug, Clone)]
 pub struct PrivateKey {
-    inner: Vec<u8>, // Dilithium signing key seed — invariant: inner.len() == 32
+    inner: Vec<u8>, // Dilithium signing key seed, invariant: inner.len() == 32
 }
 
 impl PrivateKey {

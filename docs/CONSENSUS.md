@@ -207,8 +207,8 @@ Scripts are executed by `execute_script` in [engine.rs](file:///c:/ferrous/src/s
 
 Supported features:
 
-- Push operations: direct pushes (1–75 bytes) and `OP_PUSHDATA1/2/4`.
-- Small integer constants: `OP_0`, `OP_1NEGATE`, `OP_1`–`OP_16`.
+- Push operations: direct pushes (1-75 bytes) and `OP_PUSHDATA1/2/4`.
+- Small integer constants: `OP_0`, `OP_1NEGATE`, `OP_1`-`OP_16`.
 - Stack operations: `OP_DUP`, `OP_DROP`.
 - Hashing: `OP_HASH160`.
 - Comparisons: `OP_EQUAL`, `OP_EQUALVERIFY`.

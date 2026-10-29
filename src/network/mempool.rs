@@ -180,7 +180,7 @@ impl NetworkMempool {
     }
 
     /// Evict any mempool transaction whose inputs are no longer in the UTXO set.
-    /// Must be called with no chain lock held — acquires chain.read() internally.
+    /// Must be called with no chain lock held (acquires chain.read() internally).
     /// This is a no-op when there has been no reorg; on reorg it removes transactions
     /// whose inputs were on the disconnected chain and no longer exist.
     pub fn purge_stale(&self) {

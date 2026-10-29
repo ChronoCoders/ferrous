@@ -9,7 +9,7 @@ pub const MAINNET_TARGET_BLOCK_TIME: u64 = 150;
 /// mean for exponential PoW times); linearly weighting recent intervals makes
 /// the controller mean-seeking at the 150 s target.
 pub const DIFFICULTY_WINDOW: usize = 45;
-/// Mainnet: RandomX conservative launch target — 10 leading zero bits.
+/// Mainnet: RandomX conservative launch target: 10 leading zero bits.
 /// Big-endian: 0x003FFFFF...FFFF (2^246 - 1). Easier than testnet at launch;
 /// the ±1% per-block difficulty algorithm tightens toward the actual hashrate.
 pub const MAINNET_MAX_TARGET: U256 = U256([
@@ -19,14 +19,14 @@ pub const MAINNET_MAX_TARGET: U256 = U256([
 
 /// Testnet: RandomX calibrated for 40 H/s combined at 150 s block time.
 /// target = floor(2^256 / (40 × 150)) = floor(2^256 / 6000).
-/// Big-endian: 0x000AEC33E1F67152... — requires 12 leading zero bits.
+/// Big-endian: 0x000AEC33E1F67152..., requires 12 leading zero bits.
 /// compact(TESTNET_MAX_TARGET) = 0x1F0AEC33 (genesis_n_bits in params.rs).
 pub const TESTNET_MAX_TARGET: U256 = U256([
     0x71, 0xF6, 0xE1, 0x33, 0xEC, 0x0A, 0x90, 0x7B, 0xCD, 0x85, 0xA4, 0x29, 0x15, 0x67, 0x1F, 0x3E,
     0xC3, 0xAE, 0x00, 0xB9, 0xD7, 0x5C, 0x48, 0x9A, 0x52, 0x71, 0xF6, 0xE1, 0x33, 0xEC, 0x0A, 0x00,
 ]);
 
-/// Regtest: near-trivial (n_bits 0x207fffff) — instant block generation for tests.
+/// Regtest: near-trivial (n_bits 0x207fffff), instant block generation for tests.
 pub const REGTEST_MAX_TARGET: U256 = U256([
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
     0xFF, 0x7F,
@@ -112,7 +112,7 @@ pub fn calculate_next_target(
     // Timestamps may legitimately decrease (block only needs to be > MTP, not > prev).
     // Per-interval saturating_sub: a backward step contributes a 0 interval; an
     // all-0 LWMA falls below min_timespan and gets clamped to target/4, producing
-    // a 1% difficulty increase — correct Bitcoin-like behaviour.
+    // a 1% difficulty increase (correct Bitcoin-like behaviour).
     let mut actual_timespan = if window_timestamps.len() < 2 {
         current_timestamp.saturating_sub(prev_header.timestamp)
     } else {

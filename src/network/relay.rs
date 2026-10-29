@@ -43,7 +43,7 @@ impl BlockRelay {
             return Ok(()); // Already announced
         }
 
-        // Prune when full — old entries are no longer useful (peers already have those blocks).
+        // Prune when full: old entries are no longer useful (peers already have those blocks).
         // Worst case: we re-announce a pruned hash, which the peer silently ignores.
         if announced.len() >= MAX_ANNOUNCED_BLOCKS {
             announced.clear();
@@ -391,7 +391,7 @@ impl BlockRelay {
     ///
     /// All txids are sent in a single INV (one message, not one per tx) to avoid
     /// tripping the per-peer INV rate limiter. The mempool lock is released before
-    /// the send; no chain lock is taken. Best-effort — failures are logged only.
+    /// the send; no chain lock is taken. Best-effort: failures are logged only.
     pub fn reconcile_mempool_to_peer(&self, peer_id: u64) {
         let inventory: Vec<InvVector> = self
             .mempool

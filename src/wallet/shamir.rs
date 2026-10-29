@@ -2,7 +2,7 @@ use rand::RngCore;
 
 // GF(256) arithmetic with irreducible polynomial x^8 + x^4 + x^3 + x + 1 (0x11b, AES field).
 // Generator element: 0x03 (= x+1, primitive root of GF(256)* for this polynomial).
-// Note: 0x02 has order 51 under this polynomial, NOT 255 — it is not a generator.
+// Note: 0x02 has order 51 under this polynomial, NOT 255: it is not a generator.
 
 // Compile-time GF(256) multiply used only for building the EXP/LOG tables.
 const fn gf_mul_const(a: u32, b: u32) -> u32 {

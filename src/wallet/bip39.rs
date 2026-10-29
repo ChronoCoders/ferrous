@@ -51,7 +51,7 @@ pub fn entropy_to_mnemonic(entropy: &[u8]) -> Result<String, String> {
                 let bit_in_byte = 7 - (bit_pos % 8);
                 (entropy[byte_idx] >> bit_in_byte) & 1
             } else {
-                // Checksum bit — always read from MSB of hash[0]: bit 7, 6, 5, ...
+                // Checksum bit, always read from MSB of hash[0]: bit 7, 6, 5, ...
                 let cs_bit = bit_pos - bit_len;
                 (checksum_byte >> (7 - cs_bit)) & 1
             };

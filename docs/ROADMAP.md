@@ -22,7 +22,7 @@
 
 ## Phase 4: Post-Quantum Cryptography
 - RPC authentication (required before any non-loopback exposure)
-- CRYSTALS-Dilithium (NIST FIPS 204) — replaces ECDSA
+- CRYSTALS-Dilithium (NIST FIPS 204): replaces ECDSA
 - New address format for Dilithium public keys
 - Block/mempool size policy redesign (Dilithium sigs 2.4-4.6KB)
 - Hard fork coordination
@@ -32,7 +32,7 @@
 - Bulletproofs+ range proofs
 - Pedersen commitments
 - Key image storage and double-spend prevention
-- Only after Dilithium is stable — never simultaneously
+- Only after Dilithium is stable, never simultaneously
 
 ## Phase 6: Mainnet Launch
 - Independent security audit

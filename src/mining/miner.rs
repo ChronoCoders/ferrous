@@ -13,7 +13,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Pre-solved block template — everything needed to run PoW, with no chain
+/// Pre-solved block template: everything needed to run PoW, with no chain
 /// reference held. Build with `Miner::build_template`, solve with
 /// `Miner::solve_template`.
 #[derive(Clone)]
@@ -451,7 +451,7 @@ impl Miner {
     }
 
     /// Build a block template from the current chain tip. Reads chain state and
-    /// returns immediately — does NOT run PoW. Callers should release any chain
+    /// returns immediately (does NOT run PoW). Callers should release any chain
     /// lock before calling `solve_template`.
     pub fn build_template(
         &self,
@@ -472,7 +472,7 @@ impl Miner {
 
     // Fee for a candidate tx (Σ input UTXO values − Σ output values), or None
     // if any input is unspendable at `height` (missing UTXO, immature coinbase,
-    // or outputs exceed inputs) — such a tx would fail block validation and
+    // or outputs exceed inputs): such a tx would fail block validation and
     // must not be included in the template.
     fn tx_fee(chain: &ChainState, tx: &Transaction, height: u64) -> Option<u64> {
         use crate::consensus::utxo::OutPoint;
@@ -581,7 +581,7 @@ impl Miner {
         })
     }
 
-    /// Run PoW on a pre-built template. Does not access chain state — safe to
+    /// Run PoW on a pre-built template. Does not access chain state: safe to
     /// call without holding any chain lock.
     pub fn solve_template(
         &self,

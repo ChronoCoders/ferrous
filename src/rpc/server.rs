@@ -92,7 +92,7 @@ impl RpcServer {
             if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
-            // Acquire a slot — block the accept loop until one is free.
+            // Acquire a slot: block the accept loop until one is free.
             {
                 let (lock, cvar) = &*semaphore;
                 let mut count = lock.lock().unwrap();
@@ -737,12 +737,12 @@ impl RpcServer {
                     .build_template(&chain, Vec::new())
                     .map_err(|e| format!("Template build failed: {:?}", e))?
             };
-            // Phase 2: PoW — no chain lock.
+            // Phase 2: PoW (no chain lock).
             let (header, txs) = self
                 .miner
                 .solve_template(template)
                 .map_err(|e| format!("Mining failed: {:?}", e))?;
-            // Phase 3: commit — write lock briefly.
+            // Phase 3: commit (write lock briefly).
             {
                 use crate::consensus::block::Block;
                 let mut chain = self
@@ -805,12 +805,12 @@ impl RpcServer {
                     .build_template_to(&chain, Vec::new(), script.clone())
                     .map_err(|e| format!("Template build failed: {:?}", e))?
             };
-            // Phase 2: PoW — no chain lock.
+            // Phase 2: PoW (no chain lock).
             let (header, txs) = self
                 .miner
                 .solve_template(template)
                 .map_err(|e| format!("Mining failed: {:?}", e))?;
-            // Phase 3: commit — write lock briefly.
+            // Phase 3: commit (write lock briefly).
             {
                 use crate::consensus::block::Block;
                 let mut chain = self
@@ -904,7 +904,7 @@ impl RpcServer {
     /// and output counts, total output value, and fee (grain).
     fn getrawmempool(&self) -> Result<Value, String> {
         // Mempool snapshot first (its lock is released inside the call), then
-        // chain.read() — never overlapping, consistent with the fe82288 order.
+        // chain.read(), never overlapping, consistent with the fe82288 order.
         let txs = self.mempool.get_all_transactions();
         let chain = self.chain.read().map_err(|_| "Lock poisoned".to_string())?;
 
@@ -1007,7 +1007,7 @@ impl RpcServer {
 
         // Build transaction under read lock, then submit to mempool.
         // The background mining loop pulls from the mempool and includes
-        // it in the next block — no PoW in the RPC handler, so the RPC
+        // it in the next block: no PoW in the RPC handler, so the RPC
         // server stays responsive.
         let tx = {
             let mut wallet = self
@@ -1655,7 +1655,7 @@ mod auth_tests {
 
     #[test]
     fn base64_decode_missing_prefix_fails() {
-        // "Digest ..." is not "Basic ..." — check_auth would reject it.
+        // "Digest ..." is not "Basic ...": check_auth would reject it.
         // Test that stripping "Basic " prefix on a non-Basic header returns None.
         let value = "Digest dXNlcjpwYXNz";
         let result = value.strip_prefix("Basic ");

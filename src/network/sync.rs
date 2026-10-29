@@ -38,7 +38,7 @@ type LocatorEntry = ([u8; 32], u64);
 type Locator = Vec<LocatorEntry>;
 
 // ---------------------------------------------------------------------------
-// BlockDownloadQueue — work-stealing parallel block fetcher
+// BlockDownloadQueue: work-stealing parallel block fetcher
 // ---------------------------------------------------------------------------
 
 /// Tracks which block hashes still need to be downloaded, which are currently
@@ -276,7 +276,7 @@ impl SyncManager {
             .unwrap_or(0) as u32
     }
 
-    /// Non-blocking variant — returns 0 if the chain write lock is currently
+    /// Non-blocking variant: returns 0 if the chain write lock is currently
     /// held.  Used in the inbound handshake thread where blocking on
     /// chain.read() would delay the handshake by up to the lock-hold duration
     /// (e.g. a burst of add_block calls by the dispatch worker).  The height
@@ -319,7 +319,7 @@ impl SyncManager {
             .get(&block_hash)
             .copied()?;
 
-        // Remove from in-flight (unconditional — keeps accounting correct for stale/duplicate).
+        // Remove from in-flight (unconditional, keeps accounting correct for stale/duplicate).
         self.download_queue
             .lock()
             .unwrap()
@@ -335,7 +335,7 @@ impl SyncManager {
                     total_height,
                 } => (*next_apply_height, active_peers.clone(), *total_height),
                 _ => {
-                    // Arrived before we transitioned to DownloadingBlocks — buffer it.
+                    // Arrived before we transitioned to DownloadingBlocks: buffer it.
                     self.block_buffer.lock().unwrap().insert(height, block);
                     return Some((vec![], vec![]));
                 }
@@ -343,12 +343,12 @@ impl SyncManager {
         };
 
         if height < next_apply_height {
-            // Stale/duplicate — already applied.
+            // Stale/duplicate: already applied.
             return Some((vec![], vec![]));
         }
 
         if height > next_apply_height {
-            // Out-of-order — buffer it.
+            // Out-of-order: buffer it.
             let buf_len = {
                 let mut buf = self.block_buffer.lock().unwrap();
                 buf.insert(height, block);
@@ -375,7 +375,7 @@ impl SyncManager {
         let expected_hash = self.peer_header_map.lock().unwrap().get(&height).copied();
         if expected_hash != Some(block_hash) {
             log::warn!(
-                "SyncManager: hash mismatch at height {}: expected {} got {} — discarding",
+                "SyncManager: hash mismatch at height {}: expected {} got {}, discarding",
                 height,
                 expected_hash
                     .map(hex::encode)
@@ -400,7 +400,7 @@ impl SyncManager {
             if let Some(ep) = expected_prev {
                 if block.header.prev_block_hash != ep {
                     log::warn!(
-                        "SyncManager: prev_hash mismatch at height {} — discarding and re-requesting",
+                        "SyncManager: prev_hash mismatch at height {}, discarding and re-requesting",
                         height
                     );
                     let expected_hash = self.peer_header_map.lock().unwrap().get(&height).copied();
@@ -475,7 +475,7 @@ impl SyncManager {
                             if exp != Some(b.header.hash()) {
                                 log::warn!(
                                     "SyncManager: buffered block hash mismatch at height \
-                                     {} — stopping drain",
+                                     {}, stopping drain",
                                     current_height
                                 );
                                 break;
@@ -719,7 +719,7 @@ impl SyncManager {
     // Public API
     // -----------------------------------------------------------------------
 
-    // Legacy notification — kept for API compatibility.
+    // Legacy notification, kept for API compatibility.
     pub fn block_received(&self, _hash: [u8; 32]) {}
 
     pub fn start_sync(&self, peer_id: u64) -> Result<(), String> {
@@ -768,7 +768,7 @@ impl SyncManager {
             }
         }
 
-        // Not currently syncing — start fresh.
+        // Not currently syncing: start fresh.
         self.reset_sync_state();
 
         let chain = self.chain.read().unwrap();
@@ -874,7 +874,7 @@ impl SyncManager {
             // start_sync would no-op, and the node would silently solo-mine a fork.
             let mut state = self.sync_state.lock().unwrap();
             if matches!(*state, SyncState::DownloadingHeaders { .. }) {
-                log::warn!("SyncManager: headers error from peer {} — resetting sync state to Idle for retry", peer_id);
+                log::warn!("SyncManager: headers error from peer {}, resetting sync state to Idle for retry", peer_id);
                 *state = SyncState::Idle;
             }
         }
@@ -1175,7 +1175,7 @@ impl SyncManager {
 
             // ts_window: newest-first, ending at prev_header. Walk by prev_block_hash
             // so the window matches recent_timestamps_ending_at exactly (genesis once,
-            // true fork ancestry — not the canonical height index).
+            // true fork ancestry, not the canonical height index).
             if ts_window.is_empty() {
                 ts_window.push_back(prev_header);
                 let mut walk_hash = prev_header.prev_block_hash;

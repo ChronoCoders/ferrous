@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ferrous node health monitor — runs every 5 minutes via nohup
+# Ferrous node health monitor: runs every 5 minutes via nohup
 # Logs block height, best hash, peer count, and difficulty to sync_log.txt
 
 RPC="http://127.0.0.1:8332"

@@ -80,7 +80,7 @@ struct NodeUpdate {
     stats: NodeStats,
 }
 
-/// Minimal RFC 4648 Base64 encoder — no external crate required.
+/// Minimal RFC 4648 Base64 encoder: no external crate required.
 fn base64_encode(input: &str) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = input.as_bytes();
@@ -134,7 +134,7 @@ fn read_cookie_via_ssh(remote_ip: &str) -> Option<String> {
 }
 
 fn spawn_ssh_tunnel(remote_ip: &str, local_port: u16) -> Option<Child> {
-    // Skip spawn if the port is already forwarding — avoids "Address already in use" noise.
+    // Skip spawn if the port is already forwarding (avoids "Address already in use" noise).
     if is_port_reachable(local_port) {
         return None;
     }
@@ -807,7 +807,7 @@ fn poll_node(
         }
     }
 
-    // getmininginfo — difficulty and hashrate come from here
+    // getmininginfo: difficulty and hashrate come from here
     match rpc_call(local_port, "getmininginfo", Value::Array(vec![]), auth) {
         Ok(v) => {
             stats.difficulty = v
@@ -881,14 +881,14 @@ fn poll_node(
         }
     }
 
-    // Recent blocks — only refresh when height changes, non-blocking failures kept separate
+    // Recent blocks: only refresh when height changes, non-blocking failures kept separate
     let need_refresh = match prior {
         Some((prev, _)) => prev.blocks != stats.blocks || prev.recent_blocks.is_empty(),
         None => true,
     };
 
     if need_refresh {
-        // Try to fetch recent blocks — failure here does NOT make node OFFLINE
+        // Try to fetch recent blocks: failure here does NOT make node OFFLINE
         match fetch_recent_blocks(local_port, stats.blocks, 10, auth) {
             Ok((recent, txs)) => {
                 stats.recent_blocks = recent;

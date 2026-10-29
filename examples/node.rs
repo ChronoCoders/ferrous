@@ -73,7 +73,7 @@ struct Args {
 /// The address and its key live in the wallet; the chosen address string is
 /// cached in `<datadir>/<network>/mining_address` so the same address is reused
 /// on every restart instead of minting a fresh one each boot. The cache is
-/// honoured only while the wallet still holds the matching key — if the wallet
+/// honoured only while the wallet still holds the matching key. If the wallet
 /// was wiped independently, a new address is generated and re-cached. The cache
 /// file is removed together with the chain data on a testnet reset
 /// (`rm -rf data/*`), which is intended: a fresh chain may use a fresh address.
@@ -149,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load or generate the RPC cookie for HTTP Basic Auth ("cookie:<hex-token>").
     // Reuse the existing cookie on restart so clients do not need to re-read it.
     // Only generate a new cookie if the file does not exist.
-    // Failure to read or write is fatal — the node must not start with an unreadable credential.
+    // Failure to read or write is fatal: the node must not start with an unreadable credential.
     let cookie_path = std::path::PathBuf::from(format!("{}/.rpc.cookie", args.datadir));
     let rpc_cookie: String = if cookie_path.exists() {
         std::fs::read_to_string(&cookie_path)
@@ -381,7 +381,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use ferrous_node::consensus::block::Block;
                 use ferrous_node::mining::miner::BlockTemplate;
 
-                // Phase 1: build template with read lock — fast (<1ms), no PoW.
+                // Phase 1: build template with read lock, fast (<1ms), no PoW.
                 // Pull pending transactions from the mempool so sendtoaddress
                 // transactions are included in the next mined block.
                 // Read lock is released before PoW starts so RPC, sync, and
@@ -401,7 +401,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
 
-                // Phase 2: run PoW — no chain lock held.
+                // Phase 2: run PoW (no chain lock held).
                 let (header, txs) = match miner_mine.solve_template(template) {
                     Ok(solved) => solved,
                     Err(e) => {
@@ -411,7 +411,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
 
-                // Phase 3: commit with write lock — brief (~add_block duration).
+                // Phase 3: commit with write lock, brief (~add_block duration).
                 let result = {
                     let mut chain_guard = chain_mine.write().unwrap();
                     chain_guard.add_block(Block {
@@ -437,7 +437,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Err(ChainError::UtxoError(UtxoError::ScriptValidationFailed)) => {
                         eprintln!(
-                            "Mining error (add_block): ScriptValidationFailed — clearing mempool"
+                            "Mining error (add_block): ScriptValidationFailed, clearing mempool"
                         );
                         // purge_stale only checks UTXO existence, not script validity.
                         // A transaction with a valid UTXO but invalid script will loop
@@ -447,7 +447,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Err(e) => {
                         eprintln!("Mining error (add_block): {:?}", e);
-                        // Purge stale mempool entries — a reorg may have
+                        // Purge stale mempool entries: a reorg may have
                         // invalidated transactions in the template we just tried.
                         mempool_mine.purge_stale();
                         std::thread::sleep(std::time::Duration::from_secs(1));

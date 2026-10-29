@@ -233,7 +233,7 @@ impl ChainState {
             // Invariant 1: stored key must match the block's actual hash.
             if block_hash != *hash {
                 return Err(format!(
-                    "Recovery: hash mismatch — stored key {} but block hashes to {}",
+                    "Recovery: hash mismatch: stored key {} but block hashes to {}",
                     hex::encode(hash),
                     hex::encode(block_hash)
                 ));
@@ -618,7 +618,7 @@ impl ChainState {
         }
         let pool_final = pool_running as u128;
 
-        // ── Phase 3: all validation passed — commit all changes atomically ───
+        // ── Phase 3: all validation passed, commit all changes atomically ───
 
         let mut batch = self.db.batch();
 
@@ -1335,7 +1335,7 @@ impl ChainState {
     }
 
     pub fn get_block_hash(&self, height: u64) -> Option<Hash256> {
-        // Use canonical DB index directly — avoids walking the cache.
+        // Use canonical DB index directly (avoids walking the cache).
         self.block_store.get_hash_by_height(height).ok().flatten()
     }
 
@@ -1365,7 +1365,7 @@ impl ChainState {
             }
             current_height = current_height.saturating_sub(step);
 
-            // Use CF_BLOCK_INDEX (canonical chain) — NOT get_header_hash_by_height
+            // Use CF_BLOCK_INDEX (canonical chain), NOT get_header_hash_by_height
             // which reads CF_HEADERS first.  CF_HEADERS is overwritten by
             // store_headers_batch on every sync session, so after syncing from a
             // divergent peer the height keys there point to that peer's hashes,

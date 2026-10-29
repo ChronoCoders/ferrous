@@ -80,9 +80,9 @@ Wallet management and transaction building:
 - [bip39.rs](file:///c:/ferrous/src/wallet/bip39.rs): BIP39 entropy/mnemonic/seed derivation. Converts 256-bit entropy to a 24-word mnemonic and derives a 64-byte seed via PBKDF2-HMAC-SHA512 (2048 iterations).
 - [bip39_wordlist.rs](file:///c:/ferrous/src/wallet/bip39_wordlist.rs): The 2048-word BIP39 English wordlist.
 - [shamir.rs](file:///c:/ferrous/src/wallet/shamir.rs): GF(256) Shamir's Secret Sharing. Splits arbitrary byte secrets into M-of-N shares using polynomial evaluation over GF(256) with irreducible polynomial 0x11b.
-- [keys.rs](file:///c:/ferrous/src/wallet/keys.rs): `KeyStore` — persistent key storage in binary FERR v2 format. Encrypts with ChaCha20-Poly1305 AEAD keyed by PBKDF2-HMAC-SHA512 (210,000 iterations). Derives keys from BIP39 seed via SHA-512. Migrates old CSV wallets on load. Atomic writes via tmp+rename.
+- [keys.rs](file:///c:/ferrous/src/wallet/keys.rs): `KeyStore`: persistent key storage in binary FERR v2 format. Encrypts with ChaCha20-Poly1305 AEAD keyed by PBKDF2-HMAC-SHA512 (210,000 iterations). Derives keys from BIP39 seed via SHA-512. Migrates old CSV wallets on load. Atomic writes via tmp+rename.
 - [address.rs](file:///c:/ferrous/src/wallet/address.rs): Base58Check address encoding/decoding. P2PKH script construction and address recovery from script pubkeys.
-- [manager.rs](file:///c:/ferrous/src/wallet/manager.rs): `Wallet` — high-level wallet interface. Wraps `KeyStore` with UTXO queries, balance calculation, and address generation. UTXOs returned sorted descending by value for greedy coin selection.
+- [manager.rs](file:///c:/ferrous/src/wallet/manager.rs): `Wallet`: high-level wallet interface. Wraps `KeyStore` with UTXO queries, balance calculation, and address generation. UTXOs returned sorted descending by value for greedy coin selection.
 - [builder.rs](file:///c:/ferrous/src/wallet/builder.rs): Transaction construction. Selects coins (largest-first), builds outputs, signs inputs with ECDSA, generates change address via dedicated change derivation path.
 
 ### primitives
@@ -217,7 +217,7 @@ The node uses a simplified concurrency model relying on `std::sync`:
 - `ChainState` is protected by a global `RwLock`, shared between RPC, Mining, and Networking threads. Read-heavy operations (RPC queries, block template construction) hold a read lock; write operations (block application, reorgs) hold a write lock.
 - `PeerManager` uses internal `Mutex` locks for its peer map and component references (`Relay`, `Sync`, `Discovery`).
 - Background threads:
-  - **RPC Server**: One thread per request — `run()` spawns a new thread per incoming request so that long-running calls (e.g. `mineblocks` PoW, ~150s) do not block concurrent requests.
+  - **RPC Server**: One thread per request: `run()` spawns a new thread per incoming request so that long-running calls (e.g. `mineblocks` PoW, ~150s) do not block concurrent requests.
   - **P2P Listener**: One thread accepting connections.
   - **Peer Threads**: Short-lived handshake threads (one per new connection, exits after handshake completes). All post-handshake message reading is done by a single central message-handler loop in `PeerManager` that polls all connected peers.
   - **Maintenance Threads**: Separate threads for `PeerDiscovery` (30s loop) and `KeepaliveManager` (60s loop).

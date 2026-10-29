@@ -122,7 +122,7 @@ impl PeerConnection {
         let (msg, consumed) = NetworkMessage::decode(&self.buffer[..total_len])
             .map_err(|e| format!("Failed to decode message: {:?}", e))?;
 
-        // Validate network magic — reject and disconnect peers on any mismatch.
+        // Validate network magic: reject and disconnect peers on any mismatch.
         if !msg.verify_magic(&self.magic) {
             return Err(format!(
                 "Invalid magic bytes: expected {:?}, got {:?}",

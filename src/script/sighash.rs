@@ -101,7 +101,7 @@ pub fn compute_sighash(
     // sighash_type (u8)
     message.push(SIGHASH_ALL);
 
-    // Compute tagged hash — V2 domain-separates Dilithium txs from legacy ECDSA history
+    // Compute tagged hash: V2 domain-separates Dilithium txs from legacy ECDSA history
     Ok(tagged_hash("FerrousSighashV2", &message))
 }
 

@@ -574,7 +574,7 @@ mod tests {
         let naive = commit(amount, &BlindingFactor([0u8; 32]));
         assert_ne!(
             tx.outputs[0].commitment, naive,
-            "payment commitment must not equal value·G — blinding must be non-zero"
+            "payment commitment must not equal value·G: blinding must be non-zero"
         );
 
         let input_commitments = vec![commit(utxo_value, &BlindingFactor([0u8; 32]))];

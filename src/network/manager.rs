@@ -244,7 +244,7 @@ impl PeerManager {
                 let timeout = Duration::from_secs(20 * 60);
 
                 // Collect dead peers while holding the lock, then release
-                // before cleanup — same lock-ordering rule as disconnect_peer.
+                // before cleanup (same lock-ordering rule as disconnect_peer).
                 let dead: Vec<(u64, std::net::IpAddr, bool)> = {
                     let mut peers_guard = peers.lock().unwrap();
                     let keys: Vec<u64> = peers_guard.keys().cloned().collect();
@@ -285,7 +285,7 @@ impl PeerManager {
                         })
                         .collect()
                 };
-                // peers lock released — safe to acquire all cleanup locks.
+                // peers lock released: safe to acquire all cleanup locks.
                 for (id, ip, inbound) in dead {
                     log::warn!("disconnecting inactive peer {}", id);
                     let sync = {
@@ -402,7 +402,7 @@ impl PeerManager {
                         let mut security = security_clone.lock().unwrap();
                         security.record_peer(id, ip);
 
-                        // Trigger sync — clone Arc out from wrapper lock before calling
+                        // Trigger sync: clone Arc out from wrapper lock before calling
                         // start_sync, which may block on send_to_peer (30s write timeout).
                         // Holding the wrapper lock during start_sync would block any
                         // concurrent inbound handshake thread waiting for the same lock.
@@ -557,7 +557,7 @@ impl PeerManager {
                     .values()
                     .any(|p| p.addr.ip() == ip);
                 if already_connected {
-                    log::warn!("inbound: rejected {} (duplicate — already connected)", ip);
+                    log::warn!("inbound: rejected {} (duplicate, already connected)", ip);
                     return;
                 }
             }
@@ -629,7 +629,7 @@ impl PeerManager {
                         let mut security = security_inner.lock().unwrap();
                         security.record_peer(id, ip);
 
-                        // Trigger sync — clone Arc out from wrapper lock before calling
+                        // Trigger sync: clone Arc out from wrapper lock before calling
                         // start_sync (same reason as outbound path above).
                         let sync_opt = {
                             let g = sync_manager_inner.lock().unwrap();
@@ -649,7 +649,7 @@ impl PeerManager {
                         }
                     }
                     Err(e) => {
-                        log::debug!("inbound [{}]: handshake error — {}", ip, e);
+                        log::debug!("inbound [{}]: handshake error: {}", ip, e);
                         log::warn!("Inbound handshake failed from {}: {}", ip, e);
                     }
                 }
@@ -1050,7 +1050,7 @@ impl PeerManager {
                                                         id,
                                                         e
                                                     );
-                                                    // Severe violation — ban and fully clean up.
+                                                    // Severe violation: ban and fully clean up.
                                                     let mut peers = peers_clone.lock().unwrap();
                                                     if let Some(peer) = peers.get_mut(&id) {
                                                         peer.add_ban_score(20);
@@ -1281,7 +1281,7 @@ impl PeerManager {
 
     pub fn broadcast(&self, message: &NetworkMessage) -> Result<(), String> {
         // Collect dead peers while holding peers lock, then release before
-        // acquiring batcher/cache/security — same lock-ordering rule as the
+        // acquiring batcher/cache/security, same lock-ordering rule as the
         // disconnect path in start_message_handler.
         let dead_peers: Vec<(u64, std::net::IpAddr, bool)> = {
             let mut peers = self.peers.lock().unwrap();
@@ -1296,7 +1296,7 @@ impl PeerManager {
                 .filter_map(|id| peers.remove(&id).map(|p| (id, p.addr.ip(), p.inbound)))
                 .collect()
         };
-        // peers lock released — safe to acquire batcher/cache/security.
+        // peers lock released: safe to acquire batcher/cache/security.
         for (id, ip, inbound) in dead_peers {
             self.dos_protection
                 .lock()
@@ -1313,13 +1313,13 @@ impl PeerManager {
     pub fn broadcast_inventory(&self, item: InvVector) {
         let hash = item.hash;
         // Collect eligible peer IDs under peers lock, then release before
-        // acquiring cache/batcher — consistent with the disconnect path which
+        // acquiring cache/batcher, consistent with the disconnect path which
         // releases peers before acquiring batcher then cache.
         let peer_ids: Vec<u64> = {
             let peers = self.peers.lock().unwrap();
             peers.keys().copied().collect()
         };
-        // peers lock released — acquire batcher then cache, matching the
+        // peers lock released: acquire batcher then cache, matching the
         // disconnect/cleanup paths which also take batcher before cache.
         let mut batcher = self.batcher.lock().unwrap();
         let mut cache = self.broadcast_cache.lock().unwrap();

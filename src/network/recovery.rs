@@ -71,7 +71,7 @@ impl RecoveryManager {
 
     // Returns how many seconds ago the chain tip block was produced.
     // Uses try_read() so it never blocks the caller.  Returns 0 on lock
-    // contention (treat as "recently updated" — don't falsely trigger).
+    // contention (treat as "recently updated", don't falsely trigger).
     fn tip_age_secs(&self) -> u64 {
         if let Ok(chain) = self.chain.try_read() {
             if let Ok(Some(tip)) = chain.get_tip() {
@@ -119,8 +119,8 @@ impl RecoveryManager {
     }
 
     // Check if node is partitioned from network.
-    // All conditions use the chain tip timestamp — the ground truth for when
-    // the chain last advanced — rather than an on_new_block() callback, which
+    // All conditions use the chain tip timestamp (the ground truth for when
+    // the chain last advanced) rather than an on_new_block() callback, which
     // is not called by all mining paths (e.g. mineblocks RPC) and which
     // would falsely age a solo-mining node that has no peers.
     pub fn check_partition(&self) -> bool {
@@ -160,7 +160,7 @@ impl RecoveryManager {
         false
     }
 
-    // Attempt network recovery — rate-limited to once per 30s to prevent thrash.
+    // Attempt network recovery, rate-limited to once per 30s to prevent thrash.
     pub fn recover(&self) -> Result<(), String> {
         let mut state = self
             .state
@@ -169,7 +169,7 @@ impl RecoveryManager {
 
         if state.last_recover_call.elapsed() < Duration::from_secs(30) {
             log::debug!(
-                "recover() skipped — rate-limited (last call {:.1}s ago)",
+                "recover() skipped: rate-limited (last call {:.1}s ago)",
                 state.last_recover_call.elapsed().as_secs_f64()
             );
             return Ok(());
@@ -308,7 +308,7 @@ impl RecoveryManager {
         }
     }
 
-    /// No-op — retained for API compatibility.  last_block_age is now derived
+    /// No-op, retained for API compatibility.  last_block_age is now derived
     /// from the chain tip timestamp directly; callers that previously notified
     /// the recovery manager of new blocks no longer need to do so.
     pub fn on_new_block(&self) {}

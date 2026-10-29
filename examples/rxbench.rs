@@ -1,5 +1,5 @@
 /// Standalone RandomX throughput benchmark.
-/// Measures sustained H/s with the thread_local VM — no reinit overhead.
+/// Measures sustained H/s with the thread_local VM (no reinit overhead).
 /// Usage: cargo run --release --example rxbench
 #[cfg(target_os = "linux")]
 fn main() {

@@ -1,4 +1,4 @@
-# Phase 5 — Ring CT Implementation Plan
+# Phase 5: Ring CT Implementation Plan
 
 Status: **Planning** (2026-06-01). Builds on `PRIVACY.md` (the design spec). This document
 is the *sequenced implementation plan* and records the foundational decisions.
@@ -8,9 +8,9 @@ is the *sequenced implementation plan* and records the foundational decisions.
 | Decision | Choice | Rationale |
 |---|---|---|
 | EC group | **Ristretto255** via `curve25519-dalek` 4.x | Mature, widely used; prime-order group avoids Ed25519 cofactor pitfalls; the Bulletproofs ecosystem is built on it. |
-| Range proofs | **Bulletproofs** (original, not BP+) | Use the reviewed `bulletproofs` crate (Ristretto). Amends the `PRIVACY.md` "Bulletproofs+" to plain BP — slightly larger proofs, far lower crypto risk. |
+| Range proofs | **Bulletproofs** (original, not BP+) | Use the reviewed `bulletproofs` crate (Ristretto). Amends the `PRIVACY.md` "Bulletproofs+" to plain BP: slightly larger proofs, far lower crypto risk. |
 | Delivery | **Staged: 5a → 5b → 5c** | Each stage is small, testable, reviewable, and independently deployable. Avoids one giant unreviewable change. |
-| Authorization | Unchanged: **Dilithium signs the tx body** | Hybrid model from `PRIVACY.md` — funds stay PQ-safe even if the EC privacy layer is broken. |
+| Authorization | Unchanged: **Dilithium signs the tx body** | Hybrid model from `PRIVACY.md`: funds stay PQ-safe even if the EC privacy layer is broken. |
 
 **Custom-crypto flag:** there is no turnkey audited Rust **CLSAG** crate. CLSAG (5b) must be
 implemented on top of `curve25519-dalek` primitives. This is the one unavoidable hand-rolled
@@ -74,15 +74,15 @@ resolve before the Phase 6 external audit and before v2 activation. Ordered by s
 
 ## Crate additions
 
-- `curve25519-dalek` 4.x — Ristretto255 group/scalar ops, `RistrettoPoint::from_uniform_bytes` for hash-to-point.
-- `bulletproofs` 4.x — aggregated range proofs over Ristretto.
-- `merlin` — transcripts (required by `bulletproofs`).
+- `curve25519-dalek` 4.x: Ristretto255 group/scalar ops, `RistrettoPoint::from_uniform_bytes` for hash-to-point.
+- `bulletproofs` 4.x: aggregated range proofs over Ristretto.
+- `merlin`: transcripts (required by `bulletproofs`).
 - Cleanup: **remove the dangling `secp256k1`** dependency from `Cargo.toml` (no longer referenced in `src/`).
 
 ## Prerequisite (before 5a code): size & verification-cost model
 
-A v2 tx (11-member ring + BP range proof + Dilithium sig) is ~**8–15 KB**. At
-`MAX_BLOCK_WEIGHT = 40M` that is ~2,600–5,000 tx/block by size, but **verification cost**
+A v2 tx (11-member ring + BP range proof + Dilithium sig) is ~**8-15 KB**. At
+`MAX_BLOCK_WEIGHT = 40M` that is ~2,600-5,000 tx/block by size, but **verification cost**
 (ring sig + range proof per tx) is the real throughput ceiling, not bytes. Deliverable:
 a benchmark (`examples/`) measuring per-tx verify time, and a recalibrated block/mempool
 policy. **Must complete before building 5a.** (The project notes flag this as a hard prerequisite.)
@@ -90,7 +90,7 @@ policy. **Must complete before building 5a.** (The project notes flag this as a 
 ### Results (DONE 2026-06-13, `examples/verify_bench.rs`, commit `53c39c5`)
 
 Benchmark is dev-deps-only (`curve25519-dalek` 4, `curve25519-dalek-ng` 4 +
-`bulletproofs` 4 + `merlin` 3) — it does **not** ship in the node binary. No consensus
+`bulletproofs` 4 + `merlin` 3): it does **not** ship in the node binary. No consensus
 code touched. Measured on seed4 (Vultr 1 vCPU, single-thread, RandomX miner paused so
 timings aren't skewed by core contention). v1, Ristretto, and Bulletproofs figures are
 real measurements; CLSAG is an estimate built from the measured size-2 multiexp primitive
@@ -111,32 +111,32 @@ real measurements; CLSAG is an estimate built from the measured size-2 multiexp 
 | v2 tx verify (2in/2out, est.) | 7.89 ms → 127 tx/s |
 
 Cost composition of the 6.50 ms v2 tx: **range proof 4.77 ms (73%)**, CLSAG 1.39 ms (21%),
-Dilithium 0.34 ms (5%). v2 is **~18× slower to verify than v1** (154 vs 2 844 tx/s) — the
+Dilithium 0.34 ms (5%). v2 is **~18× slower to verify than v1** (154 vs 2 844 tx/s): the
 headline DoS/throughput shift.
 
 ### Policy decision: keep `MAX_BLOCK_WEIGHT = 40M` for the v2 launch
 
-At 40M with v2 tx ≈ 8–15 KB (weight = 4×size), a block holds ~650–1 220 v2 tx and verifies
-in **4–8 s** on the 1-vCPU reference node — ~3–5% of the 150 s interval, leaving ~19–35×
+At 40M with v2 tx ≈ 8-15 KB (weight = 4×size), a block holds ~650-1 220 v2 tx and verifies
+in **4-8 s** on the 1-vCPU reference node, ~3-5% of the 150 s interval, leaving ~19-35×
 realtime headroom for IBD. **Size is the binding constraint, not verification.** The
 verification ceiling at a 15 s/block budget (10% of interval) is ~2 308 tx ≈ **113M weight
-units**, far above 40M — so no weight increase is warranted, and 40M must **not** exceed
+units**, far above 40M, so no weight increase is warranted, and 40M must **not** exceed
 ~113M on this hardware without the optimizations below.
 
 Three levers to fix before/with 5a:
-1. **Witness discount (decision pending)** — if ring sigs + range proofs ride in the witness
+1. **Witness discount (decision pending)**: if ring sigs + range proofs ride in the witness
    (weight 1× not 4×), the same 40M admits ~3 250 v2 tx/block but block-verify rises to ~21 s
    (still < interval, less IBD headroom). This discount choice directly sets the real cap and
    must be decided when the v2 wire format is fixed in 5a.
-2. **Batch range-proof verification** — the range proof is 73% of per-tx cost; Bulletproofs
+2. **Batch range-proof verification**: the range proof is 73% of per-tx cost; Bulletproofs
    verifies a whole block's proofs together far cheaper than per-tx. Highest-value validation
    optimization; implement for block validation.
-3. **Parallel verify** — figures are single-thread/1-vCPU; rayon over inputs/txs + the planned
+3. **Parallel verify**: figures are single-thread/1-vCPU; rayon over inputs/txs + the planned
    4-vCPU mainnet nodes ≈ 4× the ceiling.
 
 ---
 
-## Stage 5a — Confidential Amounts
+## Stage 5a: Confidential Amounts
 
 Hide **amounts**; sender and recipient remain visible. Smallest self-contained privacy win.
 
@@ -145,7 +145,7 @@ Hide **amounts**; sender and recipient remain visible. Smallest self-contained p
   key**. So 5a front-loads part of the dual-key wallet work: the address format gains a
   Ristretto view key alongside the Dilithium spend authority. (Full one-time *stealth* output
   keys are deferred to 5c.)
-- **Pedersen commitments** `commit(v, x) = v·G + x·H` — value `v` on the Ristretto basepoint
+- **Pedersen commitments** `commit(v, x) = v·G + x·H`: value `v` on the Ristretto basepoint
   `G = RISTRETTO_BASEPOINT_POINT`, blinding `x` on `H`. `H` is a nothing-up-my-sleeve hash-to-point
   of the domain tag `"Ferrous/H"` (independent of `G`, not derived from it). Blinding factor `x`
   derived deterministically from the wallet seed. (Matches `src/crypto/commitments.rs`.)
@@ -153,24 +153,24 @@ Hide **amounts**; sender and recipient remain visible. Smallest self-contained p
 - **Balance check** `Σ C_in − Σ C_out − fee·G = 0` (commitment-homomorphic; the public fee rides on `G` with zero blinding, summed into the coinbase exactly as v1).
 - **Tx output** carries `{commitment, encrypted_amount}`; **input** references a committed UTXO.
 - UTXO set stores `commitment` (per `PRIVACY.md` `UtxoEntry`).
-- Spend authorization still Dilithium; **no ring yet** — input still names its real predecessor.
+- Spend authorization still Dilithium; **no ring yet**: input still names its real predecessor.
 - **Deliverable:** confidential-amount transactions verified end-to-end; reviewer + audit-of-glue.
 
 ### 5a status (2026-06-14)
 
 Types, commitment scheme, range proofs, `validate_transaction_v2`, wire format, and tests
 landed in `7c3618a` (4 tests + 65 prior = 69 pass). v2 is **not wired** into block validation,
-mempool, UTXO storage, or the network decode path — it is referenced only within its own module.
+mempool, UTXO storage, or the network decode path. It is referenced only within its own module.
 rust-reviewed on `7c3618a`: the crypto plumbing (generator threading, commit/prove/verify
 consistency, range-proof binding, sighash field coverage, wire round-trip) is correct; the items
 below were raised as **hard prerequisites before 5b wires any v2 path into consensus**. The v1
-decode unbounded-allocation DoS (shared latent pattern) was fixed separately — `MAX_TX_INPUTS` /
+decode unbounded-allocation DoS (shared latent pattern) was fixed separately: `MAX_TX_INPUTS` /
 `MAX_TX_OUTPUTS` / `MAX_WITNESS_ITEMS` caps (1000) now bound every attacker-controlled count in
 `Transaction::decode`, `Witness::decode`, and `TransactionV2::decode`.
 
 ## 5b Prerequisites (must resolve before wiring v2 into consensus)
 
-- **DONE (2026-07-03) — BLOCKING-1: fee is a public `fee·G`; unsound `fee_commitment` removed.**
+- **DONE (2026-07-03) - BLOCKING-1: fee is a public `fee·G`; unsound `fee_commitment` removed.**
   The original `validate_transaction_v2` checked `Σ in == Σ out + fee_commitment` with an
   attacker-supplied Ristretto `fee_commitment` (no range proof, no proof its `H` component is zero
   ⇒ the attacker sets the fee's value-generator coefficient, including negative ⇒ inflation).
@@ -179,25 +179,25 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
   `verify_balance_committed` / `fee_commitment` path is **removed** (grep-confirmed absent from
   `src/`). The public v2 fee folds into the coinbase and the turnstile `pool_delta` subtracts
   `Σ v2_fees`, both live-verified on-chain (blocks 129 and 185). CLSAG-era confirmation now decided:
-  the fee stays a **public `u64` ⇒ `fee·G`** in the kernel (not hidden or committed) — see the
+  the fee stays a **public `u64` ⇒ `fee·G`** in the kernel (not hidden or committed). See the
   BLOCKING-2 resolution below (sub-decision 4).
-- **DONE (2026-07-03) — BLOCKING-2: excess model decided (per-input pseudo-outputs, Monero RingCT).**
+- **DONE (2026-07-03) - BLOCKING-2: excess model decided (per-input pseudo-outputs, Monero RingCT).**
   Ring-less spend is generalized (`Σx_out = Σx_in` change-output construction, `spend_v2_transaction`)
   and the ringed excess model is settled as Monero-style per-input pseudo-outputs with a
   commitment-to-zero. Full decision, rationale, and the five settled sub-decisions are recorded in the
   5a-activation section below (the reworded "roach motel" note).
-- **N1/N2 — batch range-proof verification + cached gens.** `validate_transaction_v2` verifies
+- **N1/N2 - batch range-proof verification + cached gens.** `validate_transaction_v2` verifies
   range proofs one-by-one and rebuilds `BulletproofGens::new(64,1)` on every call. Before consensus
   exposure: use Bulletproofs **batched/aggregated** verification (the range proof is ~73% of v2
   verify cost per the benchmark) and cache the generators in a `OnceLock` (as `h_generator` does).
   Also bound output count / total proof bytes per tx.
-- **DONE (N7) — unambiguous v1/v2 discriminator.** Resolved by the leading-u32 version field:
+- **DONE (N7) - unambiguous v1/v2 discriminator.** Resolved by the leading-u32 version field:
   `TX_VERSION_V2 = 3`, `TxKind::decode` routes `version == 3` to `TransactionV2` and everything else to
   `Transaction`; v1 `check_structure` rejects `version == 0` and `version > 2`, and v2 `check_structure`
-  requires `version == 3`. Version 3 is exclusively v2, 1–2 exclusively v1. The shared decode paths
+  requires `version == 3`. Version 3 is exclusively v2, 1-2 exclusively v1. The shared decode paths
   introduced in Step 4 (mempool `add_transaction`, RPC `sendrawtransaction`, P2P `TxMessage`) all
   dispatch through `TxKind::decode`, so the discriminator is unambiguous.
-- **DONE — `BlockMessage` carries `Vec<TxKind>` (block-level v2 propagation).** `BlockMessage.transactions`
+- **DONE - `BlockMessage` carries `Vec<TxKind>` (block-level v2 propagation).** `BlockMessage.transactions`
   changed from `Vec<Transaction>` to `Vec<TxKind>`; `BlockMessage::encode` serializes each `TxKind`
   (v1 bytes byte-identical) and `decode` routes through `TxKind::decode` (version 3 ⇒ v2). `relay`
   `handle_getdata`/`handle_block`/orphan-store now build `Block` directly from `BlockMessage.transactions`
@@ -206,52 +206,52 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
   invariant). The remaining gate before v2 *activation* is the miner template / mempool selection deciding
   to mine v2 txs into blocks (already wired in Step 4) plus the consensus BLOCKING-1/BLOCKING-2 fee/excess
   items above.
-- **Pre-mainnet — `add_block` v1+v2 apply is not a single atomic batch.** The non-reorg apply path does
+- **Pre-mainnet - `add_block` v1+v2 apply is not a single atomic batch.** The non-reorg apply path does
   separate RocksDB commits (`utxo_store.apply_block`, `store_undo_data`, `utxo_store_v2.apply_block`,
   `utxo_store_v2.store_undo_data`, `store_block`, `set_tip`); a crash between them can leave the v1 and
   v2 UTXO sets partially applied. Same non-atomicity already present for v1, but the second CF widens
   the window. Fold the whole `add_block` apply into one `DatabaseBatch` (as `reorganize` already does)
   before mainnet.
-- **Pre-mainnet — v2 crypto verify under the chain write lock.** `collect_v2_utxo_changes` (in
+- **Pre-mainnet - v2 crypto verify under the chain write lock.** `collect_v2_utxo_changes` (in
   `add_block`) and the reorg sim run Bulletproof + Dilithium verification while the chain write lock is
   held; a v2-heavy block lengthens lock-hold time and is a DoS surface. Combine with the existing
   reorg-Dilithium and `handle_headers` lock-hold items in the pre-mainnet lock-hold-time pass.
-- **DONE — exact-value send no longer leaks the amount.** `build_v2_transaction` previously forced the
+- **DONE - exact-value send no longer leaks the amount.** `build_v2_transaction` previously forced the
   payment-output blinding to 0 when there was no change (exact-value send), making the commitment
   `amount·G` (amount trivially recoverable by computing `k·G` for candidate `k`). Resolved: the builder
   now **always emits a change output** (zero-value when the inputs cover the spend exactly), and the
   exact-value path derives the balancing scalar from `OsRng` (`random_balancing_scalar`) rather than
-  zero — the payment blinding is set to its negation, so `x_payment` is always random/non-zero, the
+  zero: the payment blinding is set to its negation, so `x_payment` is always random/non-zero, the
   zero-value change output carries the balancing scalar, and `Σ x_out = 0` still holds with v1 inputs at
   blinding 0. The payment commitment is therefore never `amount·G` (test
   `test_v2_exact_value_send_blinding_nonzero`). NOTE: a full CT excess/kernel is still the long-term
   model (a zero-value balancing output is a stopgap that leaks the presence of an exact-value send via
   output count); the kernel work remains BLOCKING-2 below.
-- **Pre-mainnet — `decrypt_amount` is unauthenticated alone (document as invariant).** The amount
+- **Pre-mainnet - `decrypt_amount` is unauthenticated alone (document as invariant).** The amount
   ciphertext is XOR over a BLAKE3 keystream with no MAC, so `decrypt_amount` returns a `(value,
   blinding)` for any 40-byte input. Authentication is delegated entirely to the commitment-opening
   check (`commit(value, blinding) == output.commitment`) performed by `scan_v2_outputs`. Every future
   caller of `decrypt_amount` MUST perform the same commitment-opening check before trusting the
   result; document this as a hard invariant before mainnet.
-- **DONE (`42bf89d`) — intra-block v2 double-spend guard added in `collect_v2_utxo_changes`.** Two v2
+- **DONE (`42bf89d`) - intra-block v2 double-spend guard added in `collect_v2_utxo_changes`.** Two v2
   transactions spending the same outpoint within a single block both passed the `get_utxo().is_none()`
   DB check (the outpoint stays unspent in the DB until the end-of-block commit) and the
   `UtxoStoreV2::apply_block` delete is idempotent, so the double-spend was silently accepted. Resolved
   in `42bf89d`: a block-level `HashSet<OutPoint>` (`spent_in_block`) checked before the CF_UTXO_V2
   lookup now rejects duplicates with `UtxoError::UtxoAlreadySpent` (test
   `test_v2_intrablock_double_spend_rejected`).
-- **DONE (`42bf89d`) — `MAX_ENCRYPTED_AMOUNT = 80` now enforced at decode, not only validation.** It
+- **DONE (`42bf89d`) - `MAX_ENCRYPTED_AMOUNT = 80` now enforced at decode, not only validation.** It
   was enforced only in `check_structure` (reached via `validate_block`/`validate_transaction_v2`),
   with the decode path protected only by the global 32 MiB `Vec<u8>` cap + EOF check. Resolved in
   `42bf89d`: `TxOutputV2::decode` rejects `encrypted_amount.len() > MAX_ENCRYPTED_AMOUNT` with
   `DecodeError::InvalidData` (test `test_encrypted_amount_decode_cap`).
-- **DONE — v1 block-level cross-tx double-spend guard added.** Previously `seen_outpoints` in
+- **DONE - v1 block-level cross-tx double-spend guard added.** Previously `seen_outpoints` in
   `apply_block_to_utxo_inner` was per-tx, so two v1 txs in the same block spending the same UTXO were
   both accepted (each tx's `get_utxo` succeeded against the not-yet-mutated DB, and
   `UtxoStore::apply_block` batches an idempotent delete per outpoint). Resolved: a block-level
   `HashSet<OutPoint>` (`spent_in_block`) declared once before the tx loop in
-  `apply_block_to_utxo_inner` — shared by the live `apply_block_to_utxo` and reorg-sim
-  `apply_block_to_utxo_sim` paths — rejects duplicates with `UtxoError::UtxoAlreadySpent` before the
+  `apply_block_to_utxo_inner` (shared by the live `apply_block_to_utxo` and reorg-sim
+  `apply_block_to_utxo_sim` paths) rejects duplicates with `UtxoError::UtxoAlreadySpent` before the
   UTXO lookup; the redundant per-tx set was removed (test `test_v1_intrablock_double_spend_rejected`).
 
 ## 5a Activation Prerequisites (before confidential-amount v2 can go live)
@@ -259,20 +259,20 @@ decode unbounded-allocation DoS (shared latent pattern) was fixed separately —
 These gate turning v2 on, independent of the 5b CLSAG work above. Surfaced 2026-06-16 while
 scoping BLOCKING-2.
 
-- **DONE (2026-06-16) — v1→v2 funding bridge.** Previously `CF_UTXO_V2` was unspawnable (no genesis
+- **DONE (2026-06-16) - v1→v2 funding bridge.** Previously `CF_UTXO_V2` was unspawnable (no genesis
   v2 output, no conversion tx, and `validate_transaction_v2_inner` looked inputs up only in
   `CF_UTXO_V2`), so no v2 tx could ever validate on-chain. Resolved: a `TransactionV2` may now spend a
-  transparent v1 UTXO — `validate_transaction_v2_inner` resolves each input to `ResolvedV2Input::{V2,V1}`
+  transparent v1 UTXO: `validate_transaction_v2_inner` resolves each input to `ResolvedV2Input::{V2,V1}`
   (v1 → input commitment `commit(value, 0) = value·G` since the value is public), and the spend-side
   accounting deletes the spent v1 UTXO from `CF_UTXO`, writes its undo to `CF_UNDO`, enforces coinbase
   maturity, and guards (combined `HashSet`) against a v1 UTXO being spent by both a v1 tx and a funding
-  tx in the same block — in both the live `add_block` path and the atomic reorg reconnect path.
+  tx in the same block, in both the live `add_block` path and the atomic reorg reconnect path.
   `build_funding_tx` (wallet) produces a single-v1-input → single-v2-output (blinding 0) conversion tx.
   rust-reviewer: APPROVE (no inflation path; reorg atomic + symmetric). Activation still gated on the
   spend-builder generalization below.
-- **DONE (2026-07-03) — BLOCKING-2: ring-less spend generalized; ringed excess model decided.**
+- **DONE (2026-07-03) - BLOCKING-2: ring-less spend generalized; ringed excess model decided.**
   *Ring-less spend (was the "roach motel"):* the earlier note claimed `build_v2_transaction`
-  hardcodes `Σx_out = 0`, leaving v2 UTXOs fundable but unspendable. **Stale** —
+  hardcodes `Σx_out = 0`, leaving v2 UTXOs fundable but unspendable. **Stale**:
   `spend_v2_transaction` (`src/wallet/builder.rs:232-320`, commit `e8515a2`) sums the real input
   blindings and sets `change_blind = Σx_in − x_payment` ⇒ **`Σx_out = Σx_in`**, so v2 UTXOs with
   non-zero blindings are spendable. This is a **change-output construction**: the `H` (blinding)
@@ -280,17 +280,17 @@ scoping BLOCKING-2.
   ring-less v2. (`build_funding_tx` and the exact-value path of `build_v2_transaction` remain the
   blinding-0 / OsRng-balanced special cases of the same identity.)
   *Ringed excess model (the actual BLOCKING-2 decision):* the change-output construction cannot
-  survive a ring — under CLSAG the real input commitment is hidden among decoys, so the balance
+  survive a ring: under CLSAG the real input commitment is hidden among decoys, so the balance
   check must use a per-input **pseudo-output** the spender controls, not the real UTXO commitment.
-  **DECISION: per-input pseudo-output commitments, Monero RingCT / CLSAG style** — NOT an explicit
+  **DECISION: per-input pseudo-output commitments, Monero RingCT / CLSAG style**, NOT an explicit
   Grin / Mimblewimble kernel excess, and NOT continued change-output absorption (a ring breaks it).
-  **Rationale:** architectural consistency — Ferrous follows the Monero model end-to-end (CLSAG,
+  **Rationale:** architectural consistency. Ferrous follows the Monero model end-to-end (CLSAG,
   ring size 11, key images `I = x·H_p(P)`, stealth addresses), and choosing CLSAG inherently means
   pseudo-outputs. Grin's kernel-excess is a different paradigm (Mimblewimble, no UTXOs) incompatible
   with the UTXO + ring + stealth architecture. Monero RingCT + CLSAG is a battle-tested reference.
   **Five settled sub-decisions:**
   1. **Excess model:** each input gets a pseudo-output commitment `C'_i = v_i·G + x'_i·H`.
-  2. **Pseudo-output blinding:** Monero "last pseudo-output" method — the final pseudo-output
+  2. **Pseudo-output blinding:** Monero "last pseudo-output" method. The final pseudo-output
      blinding `x'_last = Σx_out − Σ(other x'_i)`, so `Σx'_i − Σx_out` commits to zero; the other
      `x'_i` are random.
   3. **What CLSAG signs:** the commitment-to-zero key `C_real − C'_i = (x_real − x'_i)·H` at the real
@@ -302,8 +302,8 @@ scoping BLOCKING-2.
      balances via the commitment-to-zero.
   This is the fixed foundation for the CLSAG signing/verification spec (the next task). The CLSAG
   algorithm itself is intentionally NOT written here.
-- **DONE (2026-07-03) — generator convention reconciled to the code.** The code is the source of
-  truth: it commits **value on the Ristretto basepoint `G`, blinding on `H`** — `commit(v,x) = v·G +
+- **DONE (2026-07-03) - generator convention reconciled to the code.** The code is the source of
+  truth: it commits **value on the Ristretto basepoint `G`, blinding on `H`**: `commit(v,x) = v·G +
   x·H` (`src/crypto/commitments.rs:36-55`: `pedersen_gens` sets `B = RISTRETTO_BASEPOINT_POINT`,
   `B_blinding = h_generator()`; `commit` maps value→`B`, blinding→`B_blinding`), and `verify_balance`
   checks `Σ in == Σ out + fee·G` (`commitments.rs:57-80`: `fee_point = fee · RISTRETTO_BASEPOINT_POINT`).
@@ -313,28 +313,28 @@ scoping BLOCKING-2.
   commitment/generator formulas across the docs now agree with the code. This unblocks the 5b/CLSAG
   commitment-to-zero and per-input pseudo-output math, which MUST be written against
   `value·G + blinding·H` / `fee·G`.
-- **Pre-mainnet — mempool admits funding txs spending an immature coinbase.** Maturity is enforced
+- **Pre-mainnet - mempool admits funding txs spending an immature coinbase.** Maturity is enforced
   in the consensus apply path (`collect_v2_utxo_changes_inner`: `height < entry.height +
   COINBASE_MATURITY` → `ImmatureCoinbase`), but `validate_transaction_v2` (the mempool path) does not
   check it, so such a tx is admitted to the mempool and only rejected at block apply. No corruption or
   inflation risk (apply rejects it); consistent with v1 mempool behavior. Add the maturity check to
   `validate_transaction_v2` before mainnet.
-- **Pre-mainnet — disconnected funding tx is dropped from the reorg requeue.** `reorganize` only
+- **Pre-mainnet - disconnected funding tx is dropped from the reorg requeue.** `reorganize` only
   requeues disconnected `TxKind::V1` non-coinbase txs (`TxKind::V2(_) => continue`), so a funding tx
   in a disconnected block is dropped rather than re-mined onto the new chain. Liveness gap (the tx
-  must be re-submitted), not a safety issue (no double-spend, no corruption — its v1 input is restored
+  must be re-submitted), not a safety issue (no double-spend, no corruption: its v1 input is restored
   by the disconnect undo). Address before mainnet.
 
-## Stage 5b — Sender Privacy (CLSAG + key images)
+## Stage 5b: Sender Privacy (CLSAG + key images)
 
 - **CLSAG ring signatures**, ring size 11, decoys via gamma distribution over output age.
 - **Key images** `I = x·H_p(P)`, stored in a new `CF_KEYIMAGE` column family.
 - **Double-spend detection moves to the key-image set** for v2 inputs (replaces UTXO-spent
   semantics). Mempool + consensus reject duplicate key images.
 - Input gains `{ring_members, pseudo_commitment}`; witness gains `ring_signature`.
-- **This is the bespoke-crypto stage** — CLSAG implemented on dalek primitives; heaviest review.
+- **This is the bespoke-crypto stage**: CLSAG implemented on dalek primitives; heaviest review.
 
-## Stage 5c — Recipient Privacy (stealth addresses)
+## Stage 5c: Recipient Privacy (stealth addresses)
 
 - **One-time output keys** `P = H(rA)G + B` (Monero-style stealth).
 - **Wallet output scanning**: view key scans every output to detect received funds; spend key
@@ -351,17 +351,17 @@ scoping BLOCKING-2.
 
 Tx v2 is a flag-day wire/consensus change. A reset is acceptable on testnet (decided in
 the project notes). Each stage can ride its own reset, or 5a/5b/5c can accumulate behind a v2 activation
-height — to be decided when 5a stabilizes.
+height, to be decided when 5a stabilizes.
 
 ## Risks (carried from the project notes Ring CT risk summary)
 
-1. **Tx size explosion** — modeled in the prerequisite step; block/mempool policy recalibrated.
-2. **Verification cost / DoS surface** — cheapest-first verify order; per-tx verify benchmark gates policy.
-3. **UTXO growth** — commitments + key images grow the set; pruning strategy needed before mainnet.
-4. **Bespoke CLSAG** — external audit in Phase 6 is mandatory before mainnet.
-5. **Wallet migration** — dual-key model and new address format; flag-day reset on testnet.
+1. **Tx size explosion**: modeled in the prerequisite step; block/mempool policy recalibrated.
+2. **Verification cost / DoS surface**: cheapest-first verify order; per-tx verify benchmark gates policy.
+3. **UTXO growth**: commitments + key images grow the set; pruning strategy needed before mainnet.
+4. **Bespoke CLSAG**: external audit in Phase 6 is mandatory before mainnet.
+5. **Wallet migration**: dual-key model and new address format; flag-day reset on testnet.
 
 ## Open items to decide as 5a stabilizes
 - Whether stages share one v2 activation or each gets its own testnet reset.
-- Encrypted-amount scheme details (ECDH KDF, domain separation) — fix during 5a.
+- Encrypted-amount scheme details (ECDH KDF, domain separation): fix during 5a.
 - Pruning strategy for the key-image set and committed UTXOs (before Phase 6).
