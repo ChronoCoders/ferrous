@@ -76,9 +76,11 @@ cargo_test() {
 }
 
 # cargo audit lists vulnerabilities before warnings, so a log tail can miss the one that
-# failed the step. This ends the log with one line per advisory. A block runs from one
-# "Crate:" line to the next; it is a warning when it has a "Warning:" line (unmaintained,
-# unsound, yanked) and a vulnerability when it has none.
+# failed the step. This ends the log with one line per advisory: warnings first, then
+# vulnerabilities, then the count, so however many warnings there are, the vulnerability
+# lines stay in the tail a failing step prints. A block runs from one "Crate:" line to the
+# next; it is a warning when it has a "Warning:" line (unmaintained, unsound, yanked) and a
+# vulnerability when it has none.
 cargo_audit() {
     local out rc summary vulns reported
     out=$(cargo audit --color never 2>&1)
@@ -87,15 +89,21 @@ cargo_audit() {
     summary=$(printf '%s\n' "$out" | awk '
         function flush() {
             if (crate == "") return
-            if (kind == "") { printf "vulnerability: %s %s %s\n", id, crate, version; v++ }
-            else { printf "warning: %s %s %s %s\n", id, crate, version, kind; w++ }
+            if (kind == "") vl[++v] = sprintf("vulnerability: %s %s %s", id, crate, version)
+            else wl[++w] = sprintf("warning: %s %s %s %s", id, crate, version, kind)
             crate = ""
         }
         /^Crate:/ { flush(); crate = $2; version = "none"; id = "none"; kind = "" }
         /^Version:/ { version = $2 }
         /^ID:/ { id = $2 }
         /^Warning:/ { kind = $2 }
-        END { flush(); printf "audit: %d vulnerabilities, %d warnings\n", v, w }')
+        END {
+            flush()
+            for (i = 1; i <= w; i++) print wl[i]
+            for (i = 1; i <= v; i++) print vl[i]
+            printf "audit: %d %s, %d %s\n", v, (v == 1 ? "vulnerability" : "vulnerabilities"),
+                w, (w == 1 ? "warning" : "warnings")
+        }')
     printf '%s\n' "$summary"
     vulns=$(printf '%s\n' "$summary" | grep -c '^vulnerability: ')
     reported=$(printf '%s\n' "$out" | sed -n -E 's/^error: ([0-9]+) vulnerabilit(y|ies) found!$/\1/p')
