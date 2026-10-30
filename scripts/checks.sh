@@ -5,6 +5,7 @@
 
 EM_DASH=$'\xe2\x80\x94'
 EN_DASH=$'\xe2\x80\x93'
+CR=$'\r'
 BANNED_NAME_RE='c[l]aude'
 LOCAL_ONLY_PATH_RE='(^|/)c[l]aude\.md$|^\.c[l]aude/|^private/|(^|/)\.cargo/config(\.toml)?$'
 COMMIT_SUBJECT_RE='^(feat|fix|docs|test|refactor|chore)\([a-z0-9_./-]+\): [^ ].*$'
@@ -12,6 +13,13 @@ COMMIT_SUBJECT_RE='^(feat|fix|docs|test|refactor|chore)\([a-z0-9_./-]+\): [^ ].*
 check_tracked_dashes() {
     if git grep -n -I -F -e "$EM_DASH" -e "$EN_DASH" -- .; then
         echo "em or en dash found in tracked files"
+        return 1
+    fi
+}
+
+check_tracked_line_endings() {
+    if git grep -n -I -F -e "$CR" -- .; then
+        echo "CR found in tracked files"
         return 1
     fi
 }

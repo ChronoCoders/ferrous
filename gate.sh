@@ -22,11 +22,20 @@ step() {
     LAST_LOG="$LOG_DIR/$STEP_COUNT.log"
     if "$@" >"$LAST_LOG" 2>&1; then
         echo "PASS $name"
+        LAST_PASSED=1
     else
         echo "FAIL $name"
         tail -n 40 "$LAST_LOG" | sed 's/^/    /'
         FAILED=1
+        LAST_PASSED=0
     fi
+}
+
+# Prints lines matching a pattern from the last step's log. A failing step already
+# printed its log tail, so this prints only after a pass and never repeats a line.
+step_summary() {
+    [ "$LAST_PASSED" -eq 1 ] || return 0
+    grep -E "$1" "$LAST_LOG" | sed 's/^/    /'
 }
 
 banned_name() {
@@ -66,14 +75,49 @@ cargo_test() {
     fi
 }
 
+# cargo audit lists vulnerabilities before warnings, so a log tail can miss the one that
+# failed the step. This ends the log with one line per advisory. A block runs from one
+# "Crate:" line to the next; it is a warning when it has a "Warning:" line (unmaintained,
+# unsound, yanked) and a vulnerability when it has none.
+cargo_audit() {
+    local out rc summary vulns reported
+    out=$(cargo audit --color never 2>&1)
+    rc=$?
+    printf '%s\n' "$out"
+    summary=$(printf '%s\n' "$out" | awk '
+        function flush() {
+            if (crate == "") return
+            if (kind == "") { printf "vulnerability: %s %s %s\n", id, crate, version; v++ }
+            else { printf "warning: %s %s %s %s\n", id, crate, version, kind; w++ }
+            crate = ""
+        }
+        /^Crate:/ { flush(); crate = $2; version = "none"; id = "none"; kind = "" }
+        /^Version:/ { version = $2 }
+        /^ID:/ { id = $2 }
+        /^Warning:/ { kind = $2 }
+        END { flush(); printf "audit: %d vulnerabilities, %d warnings\n", v, w }')
+    printf '%s\n' "$summary"
+    vulns=$(printf '%s\n' "$summary" | grep -c '^vulnerability: ')
+    reported=$(printf '%s\n' "$out" | sed -n -E 's/^error: ([0-9]+) vulnerabilit(y|ies) found!$/\1/p')
+    if [ "$vulns" -ne "${reported:-0}" ]; then
+        echo "audit output could not be parsed: $vulns vulnerability blocks," \
+            "cargo audit reports ${reported:-0}"
+        return 1
+    fi
+    [ "$rc" -eq 0 ] || return 1
+    [ "$vulns" -eq 0 ]
+}
+
 step "cargo fmt --check" cargo fmt --check
 step "cargo clippy --all-targets -- -D warnings" cargo clippy --all-targets -- -D warnings
 step "cargo test" cargo_test
-grep '^tests: ' "$LAST_LOG" | sed 's/^/    /'
+step_summary '^tests: '
 step "cargo build --release --example node" cargo build --release --example node
-step "cargo audit" cargo audit --color never
-grep -E '^(Crate|Version|Warning|Title|ID):' "$LAST_LOG" | sed 's/^/    /'
+step "cargo audit" cargo_audit
+# The ID pattern keeps cargo audit's own "warning: N allowed warnings found" line out.
+step_summary '^(vulnerability: |warning: ([A-Z]+-[0-9A-Za-z-]+|none) |audit: )'
 step "dash check (tracked files)" check_tracked_dashes
+step "line endings (tracked files)" check_tracked_line_endings
 step "banned name (tracked files, commit messages since origin/main)" banned_name
 step "crate attributes (src/lib.rs)" check_crate_attributes
 
