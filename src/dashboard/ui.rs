@@ -9,7 +9,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame, Terminal,
+    DefaultTerminal, Frame, Terminal,
 };
 use std::io;
 use std::sync::mpsc::Receiver;
@@ -57,10 +57,7 @@ impl Dashboard {
         res
     }
 
-    fn run_app<B: ratatui::backend::Backend>(
-        &mut self,
-        terminal: &mut Terminal<B>,
-    ) -> io::Result<()> {
+    fn run_app(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         loop {
             self.system.refresh_cpu();
 
@@ -92,7 +89,7 @@ impl Dashboard {
                 Constraint::Min(10),   // Recent blocks
                 Constraint::Length(1), // Footer
             ])
-            .split(f.size());
+            .split(f.area());
 
         self.render_header(f, chunks[0]);
         self.render_cpu(f, chunks[1]);

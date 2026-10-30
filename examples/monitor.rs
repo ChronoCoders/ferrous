@@ -9,7 +9,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame, Terminal,
+    DefaultTerminal, Frame, Terminal,
 };
 use serde_json::{json, Value};
 use std::{
@@ -262,8 +262,8 @@ fn main() -> io::Result<()> {
     res
 }
 
-fn run_app<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
+fn run_app(
+    terminal: &mut DefaultTerminal,
     rx: &mpsc::Receiver<NodeUpdate>,
     seed1: &mut NodeStats,
     seed4: &mut NodeStats,
@@ -301,7 +301,7 @@ fn render(f: &mut Frame, seed1: &NodeStats, seed4: &NodeStats, last_updated_at: 
             Constraint::Length(7),
             Constraint::Length(1),
         ])
-        .split(f.size());
+        .split(f.area());
 
     render_nodes_row(f, chunks[0], seed1, seed4);
     render_blocks_table(f, chunks[1], seed1, seed4);
