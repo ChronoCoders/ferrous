@@ -31,7 +31,7 @@ This ensures that even if a quantum computer breaks the privacy layer (EC-based)
 - **Balance Check**: `Sum(C_in) - Sum(C_out) - fee·G = 0`. The public fee rides on `G` with zero blinding, summed into the coinbase exactly as v1 (`verify_balance` in `commitments.rs`).
 
 ### 3. Range Proofs (Hiding Amounts)
-- **Algorithm**: Bulletproofs (aggregated), Ristretto255. (Amended from Bulletproofs+ on 2026-06-01: use the reviewed `bulletproofs` crate; see `PHASE5_PLAN.md`.)
+- **Algorithm**: Bulletproofs (aggregated), Ristretto255. (Amended from Bulletproofs+ on 2026-06-01: use the reviewed `bulletproofs` crate.)
 - **Function**: Proves that committed values are positive [0, 2^64) without revealing them.
 
 ### 4. Post-Quantum Authorization (Security)
@@ -46,7 +46,7 @@ Privacy transactions will be introduced via a new version (`version = 2`).
 ### Inputs
 - **prev_out**: Reference to a standard or stealth UTXO.
 - **ring_members**: List of 10 decoy references + 1 real input.
-- **pseudo_commitment**: Per-input **pseudo-output** commitment `C'_i = v_i·G + x'_i·H` (same value as the real input, fresh spender-chosen blinding). Balance is enforced on the pseudo-outputs (`Σ C'_i = Σ C_out + fee·G`, fee public); CLSAG signs the commitment-to-zero `C_real − C'_i = (x_real − x'_i)·H` at the real ring index. Excess model decided 2026-07-03 (Monero RingCT / CLSAG, per-input pseudo-outputs). See `PHASE5_PLAN.md` BLOCKING-2 resolution.
+- **pseudo_commitment**: Per-input **pseudo-output** commitment `C'_i = v_i·G + x'_i·H` (same value as the real input, fresh spender-chosen blinding). Balance is enforced on the pseudo-outputs (`Σ C'_i = Σ C_out + fee·G`, fee public); CLSAG signs the commitment-to-zero `C_real − C'_i = (x_real − x'_i)·H` at the real ring index. Excess model decided 2026-07-03 (Monero RingCT / CLSAG, per-input pseudo-outputs).
 
 ### Outputs
 - **stealth_address**: One-time destination key `P = H(rA)G + B`.
