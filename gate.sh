@@ -5,9 +5,16 @@
 cd "$(git rev-parse --show-toplevel)" || exit 2
 . scripts/checks.sh
 
-# An empty RUSTC_WRAPPER overrides any build.rustc-wrapper in local cargo config,
-# so the gate never depends on sccache or another locally installed wrapper.
-export RUSTC_WRAPPER=
+# The gate uses sccache only when it works, so its result never depends on sccache being
+# installed. An exported RUSTC_WRAPPER, set or empty, overrides any build.rustc-wrapper in
+# local cargo config.
+if sccache --version >/dev/null 2>&1; then
+    export RUSTC_WRAPPER=sccache
+    echo "sccache: on"
+else
+    export RUSTC_WRAPPER=
+    echo "sccache: off"
+fi
 
 LOG_DIR=$(mktemp -d)
 trap 'rm -rf "$LOG_DIR"' EXIT
