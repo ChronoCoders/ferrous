@@ -5,7 +5,7 @@ use curve25519_dalek_ng::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek_ng::scalar::Scalar;
 use curve25519_dalek_ng::traits::Identity;
 use merlin::Transcript;
-use rand::RngCore;
+use rand::{CryptoRng, RngCore};
 use sha2::{Digest, Sha512};
 use std::sync::OnceLock;
 
@@ -83,15 +83,24 @@ pub fn generate_range_proof(
     value: u64,
     blinding: &BlindingFactor,
 ) -> Result<RangeProof, CommitmentError> {
+    generate_range_proof_with_rng(value, blinding, &mut rand::thread_rng())
+}
+
+pub(super) fn generate_range_proof_with_rng<R: RngCore + CryptoRng>(
+    value: u64,
+    blinding: &BlindingFactor,
+    rng: &mut R,
+) -> Result<RangeProof, CommitmentError> {
     let pc_gens = pedersen_gens();
     let mut transcript = Transcript::new(TRANSCRIPT_LABEL);
-    let (proof, _commitment) = BpRangeProof::prove_single(
+    let (proof, _commitment) = BpRangeProof::prove_single_with_rng(
         bp_gens(),
         &pc_gens,
         &mut transcript,
         value,
         &scalar_of(blinding),
         RANGE_BITS,
+        rng,
     )
     .map_err(|_| CommitmentError::ProofGeneration)?;
     Ok(RangeProof(proof.to_bytes()))
@@ -131,8 +140,22 @@ pub fn encrypt_amount(
     blinding: &BlindingFactor,
     recipient_view_pubkey: &RistrettoPoint,
 ) -> (Vec<u8>, [u8; 32]) {
+    encrypt_amount_with_rng(
+        value,
+        blinding,
+        recipient_view_pubkey,
+        &mut rand::thread_rng(),
+    )
+}
+
+pub(super) fn encrypt_amount_with_rng<R: RngCore + CryptoRng>(
+    value: u64,
+    blinding: &BlindingFactor,
+    recipient_view_pubkey: &RistrettoPoint,
+    rng: &mut R,
+) -> (Vec<u8>, [u8; 32]) {
     let mut wide = [0u8; 64];
-    rand::thread_rng().fill_bytes(&mut wide);
+    rng.fill_bytes(&mut wide);
     let ephemeral_scalar = Scalar::from_bytes_mod_order_wide(&wide);
     let ephemeral_pubkey = ephemeral_scalar * RISTRETTO_BASEPOINT_POINT;
     let shared = (ephemeral_scalar * recipient_view_pubkey).compress();
@@ -184,6 +207,19 @@ pub fn decrypt_amount(
 mod tests {
     use super::*;
     use crate::wallet::keys::derive_view_key;
+
+    #[test]
+    fn golden_pedersen_generators() {
+        let gens = pedersen_gens();
+        assert_eq!(
+            hex::encode(gens.B.compress().as_bytes()),
+            "e2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76"
+        );
+        assert_eq!(
+            hex::encode(gens.B_blinding.compress().as_bytes()),
+            "26f6bfdaa7723b3ca6def534739755e645338f4a2db5c84615af3a93e37fd818"
+        );
+    }
 
     #[test]
     fn test_ecdh_encrypt_decrypt_roundtrip() {

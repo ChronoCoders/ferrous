@@ -55,6 +55,7 @@ randomx-rs = "1.4"
 
 [dev-dependencies]
 criterion = "0.5"
+rand_chacha = "0.3"
 
 [dev-dependencies.curve25519-dalek]
 version = "4"
