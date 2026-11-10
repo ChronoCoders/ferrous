@@ -116,3 +116,124 @@ check_commit_message() {
     fi
     return $rc
 }
+
+# Every lockfile source is crates.io or a pinned ChronoCoders git commit; every git dependency in
+# the manifest is pinned to a full rev; no [patch] or [replace] can redirect a crates.io name; and
+# git-sourced packages get the advisory check that cargo audit skips for git sources. Arguments:
+# manifest path, lockfile path, so the check can run on fixtures.
+check_git_dependencies() {
+    python3 -I - "$1" "$2" <<'PY'
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import tomllib
+
+CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index"
+GIT_BASE = re.compile(r"^https://github\.com/ChronoCoders/[A-Za-z0-9._-]+$")
+FULL_REV = re.compile(r"^[0-9a-f]{40}$")
+DEP_TABLES = ("dependencies", "dev-dependencies", "build-dependencies",
+              "dev_dependencies", "build_dependencies")
+
+manifest_path, lock_path = sys.argv[1], sys.argv[2]
+problems = []
+
+
+def git_source_problem(source):
+    url = source[len("git+"):]
+    url, _, fragment = url.partition("#")
+    base, has_query, query = url.partition("?")
+    if not GIT_BASE.match(base):
+        return f"host or owner is not github.com/ChronoCoders: {base}"
+    if not has_query:
+        return "no ?rev= query"
+    key, _, value = query.partition("=")
+    if key in ("branch", "tag"):
+        return f"pinned by {key}, not rev"
+    if key != "rev" or "&" in value:
+        return f"query is not a single rev: {query}"
+    if not FULL_REV.match(value):
+        return f"rev is not 40 lowercase hex: {value}"
+    if fragment != value:
+        return f"fragment {fragment or '(none)'} differs from rev {value}"
+    return None
+
+
+with open(lock_path, "rb") as f:
+    lock = tomllib.load(f)
+git_packages = []
+for pkg in lock.get("package", []):
+    source = pkg.get("source")
+    if source is None or source == CRATES_IO:
+        continue
+    where = f"Cargo.lock {pkg['name']} {pkg['version']}"
+    if not source.startswith("git+"):
+        problems.append(f"{where}: registry is not crates.io: {source}")
+        continue
+    problem = git_source_problem(source)
+    if problem:
+        problems.append(f"{where}: {problem}")
+    git_packages.append((pkg["name"], pkg["version"], source))
+
+with open(manifest_path, "rb") as f:
+    manifest = tomllib.load(f)
+for section in ("patch", "replace"):
+    if section in manifest:
+        problems.append(f"Cargo.toml has a [{section}] section: {sorted(manifest[section])}")
+tables = [(name, manifest.get(name, {})) for name in DEP_TABLES]
+for cfg, target in manifest.get("target", {}).items():
+    tables += [(f"target.{cfg}.{name}", target.get(name, {})) for name in DEP_TABLES]
+tables.append(("workspace.dependencies", manifest.get("workspace", {}).get("dependencies", {})))
+for table, deps in tables:
+    for dep, spec in deps.items():
+        if not isinstance(spec, dict) or "git" not in spec:
+            continue
+        where = f"Cargo.toml [{table}] {dep}"
+        for key in ("branch", "tag"):
+            if key in spec:
+                problems.append(f"{where}: pinned by {key}")
+        if not FULL_REV.match(str(spec.get("rev", ""))):
+            problems.append(f"{where}: rev is not 40 lowercase hex: {spec.get('rev', '(none)')}")
+
+# cargo audit matches advisories only for crates.io sources. A copy of the lockfile with the git
+# sources rewritten to crates.io lets its own matcher check the git packages by name and version.
+if git_packages:
+    with open(lock_path) as f:
+        text = f.read()
+    text = re.sub(r'(?m)^source = "git\+[^"]*"$', f'source = "{CRATES_IO}"', text)
+    with tempfile.NamedTemporaryFile("w", suffix=".lock", delete=False) as tmp:
+        tmp.write(text)
+    try:
+        run = subprocess.run(["cargo", "audit", "--json", "--file", tmp.name],
+                             capture_output=True, text=True)
+    finally:
+        os.unlink(tmp.name)
+    try:
+        report = json.loads(run.stdout)
+    except json.JSONDecodeError:
+        print(run.stderr.strip())
+        problems.append("cargo audit produced no report for the git packages")
+        report = None
+    if report is not None:
+        wanted = {(name, version) for name, version, _ in git_packages}
+        findings = [("vulnerability", v) for v in report["vulnerabilities"]["list"]]
+        findings += [(kind, w) for kind, ws in report["warnings"].items() for w in ws]
+        for kind, finding in findings:
+            pkg = finding["package"]
+            if (pkg["name"], pkg["version"]) in wanted:
+                advisory = (finding.get("advisory") or {}).get("id", "no advisory id")
+                problems.append(f"git package {pkg['name']} {pkg['version']}: {kind} {advisory}")
+
+for problem in problems:
+    print(problem)
+if problems:
+    sys.exit(1)
+if git_packages:
+    listed = ", ".join(f"{name} {version} ({source})" for name, version, source in git_packages)
+    print(f"git dependencies: {len(git_packages)}: {listed}")
+else:
+    print("git dependencies: none")
+PY
+}

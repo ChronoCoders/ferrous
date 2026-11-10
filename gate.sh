@@ -135,6 +135,8 @@ step "dash check (tracked files)" check_tracked_dashes
 step "line endings (tracked files)" check_tracked_line_endings
 step "banned name (tracked files, commit messages since origin/main)" banned_name
 step "crate attributes (src/lib.rs)" check_crate_attributes
+step "git dependencies (Cargo.toml, Cargo.lock)" check_git_dependencies Cargo.toml Cargo.lock
+step_summary '^git dependencies: '
 
 if [ "$FAILED" -ne 0 ]; then
     echo "gate: FAILED"
