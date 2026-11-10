@@ -41,6 +41,81 @@ check_message_banned_name() {
     fi
 }
 
+check_banned_name_since_origin() {
+    check_tracked_banned_name || return 1
+    if ! git rev-parse -q --verify origin/main >/dev/null; then
+        echo "origin/main not found; cannot check commit messages"
+        return 1
+    fi
+    check_message_banned_name origin/main..HEAD
+}
+
+# cargo counts an ignored test as success, so this reads every "test result:" line of the cargo test
+# output on stdin and fails when any of them reports an ignored test, or when there are none to
+# read. Argument: the exit status of cargo test.
+check_cargo_test_output() {
+    local rc=$1 lines passed ignored with_ignored
+    read -r lines passed ignored with_ignored < <(awk '
+        /^test result:/ {
+            lines++
+            for (i = 1; i < NF; i++) {
+                if ($(i + 1) ~ /^passed/) passed += $i
+                if ($(i + 1) ~ /^ignored/) { ignored += $i; if ($i > 0) with_ignored++ }
+            }
+        }
+        END { printf "%d %d %d %d\n", lines, passed, ignored, with_ignored }')
+    echo "tests: $passed passed, $ignored ignored across $lines test result lines"
+    [ "$rc" -eq 0 ] || return 1
+    if [ "$lines" -eq 0 ]; then
+        echo "no test result lines found in cargo test output"
+        return 1
+    fi
+    if [ "$with_ignored" -gt 0 ]; then
+        echo "$with_ignored test result lines report ignored tests; the gate requires 0 ignored"
+        return 1
+    fi
+}
+
+# cargo audit lists vulnerabilities before warnings, so a log tail can miss the one that failed the
+# step. This reads the cargo audit output on stdin and prints one line per advisory: warnings first,
+# then vulnerabilities, then the count, so however many warnings there are, the vulnerability lines
+# stay in the tail a failing step prints. A block runs from one "Crate:" line to the next; it is a
+# warning when it has a "Warning:" line (unmaintained, unsound, yanked) and a vulnerability when it
+# has none. Argument: the exit status of cargo audit.
+check_cargo_audit_output() {
+    local rc=$1 out summary vulns reported
+    out=$(cat)
+    summary=$(printf '%s\n' "$out" | awk '
+        function flush() {
+            if (crate == "") return
+            if (kind == "") vl[++v] = sprintf("vulnerability: %s %s %s", id, crate, version)
+            else wl[++w] = sprintf("warning: %s %s %s %s", id, crate, version, kind)
+            crate = ""
+        }
+        /^Crate:/ { flush(); crate = $2; version = "none"; id = "none"; kind = "" }
+        /^Version:/ { version = $2 }
+        /^ID:/ { id = $2 }
+        /^Warning:/ { kind = $2 }
+        END {
+            flush()
+            for (i = 1; i <= w; i++) print wl[i]
+            for (i = 1; i <= v; i++) print vl[i]
+            printf "audit: %d %s, %d %s\n", v, (v == 1 ? "vulnerability" : "vulnerabilities"),
+                w, (w == 1 ? "warning" : "warnings")
+        }')
+    printf '%s\n' "$summary"
+    vulns=$(printf '%s\n' "$summary" | grep -c '^vulnerability: ')
+    reported=$(printf '%s\n' "$out" |
+        sed -n -E 's/^error: ([0-9]+) vulnerabilit(y|ies) found!$/\1/p')
+    if [ "$vulns" -ne "${reported:-0}" ]; then
+        echo "audit output could not be parsed: $vulns vulnerability blocks," \
+            "cargo audit reports ${reported:-0}"
+        return 1
+    fi
+    [ "$rc" -eq 0 ] || return 1
+    [ "$vulns" -eq 0 ]
+}
+
 check_crate_attributes() {
     local missing=0 attr
     for attr in '#![forbid(unsafe_code)]' '#![deny(warnings)]'; do
@@ -120,9 +195,10 @@ check_commit_message() {
 # Every lockfile source is crates.io or a pinned ChronoCoders git commit; every git dependency in
 # the manifest is pinned to a full rev; no [patch] or [replace] can redirect a crates.io name; and
 # git-sourced packages get the advisory check that cargo audit skips for git sources. Arguments:
-# manifest path, lockfile path, so the check can run on fixtures.
+# manifest path, lockfile path, so the check can run on fixtures, and optionally an advisory
+# database path, which the self-test passes so the check runs offline with no fetch.
 check_git_dependencies() {
-    python3 -I - "$1" "$2" <<'PY'
+    python3 -I - "$@" <<'PY'
 import json
 import os
 import re
@@ -138,6 +214,7 @@ DEP_TABLES = ("dependencies", "dev-dependencies", "build-dependencies",
               "dev_dependencies", "build_dependencies")
 
 manifest_path, lock_path = sys.argv[1], sys.argv[2]
+audit_db = ["--no-fetch", "--db", sys.argv[3]] if len(sys.argv) > 3 else []
 problems = []
 
 
@@ -206,7 +283,7 @@ if git_packages:
     with tempfile.NamedTemporaryFile("w", suffix=".lock", delete=False) as tmp:
         tmp.write(text)
     try:
-        run = subprocess.run(["cargo", "audit", "--json", "--file", tmp.name],
+        run = subprocess.run(["cargo", "audit", "--json", *audit_db, "--file", tmp.name],
                              capture_output=True, text=True)
     finally:
         os.unlink(tmp.name)
