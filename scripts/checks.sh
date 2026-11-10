@@ -7,7 +7,7 @@ EM_DASH=$'\xe2\x80\x94'
 EN_DASH=$'\xe2\x80\x93'
 CR=$'\r'
 BANNED_NAME_RE='c[l]aude'
-LOCAL_ONLY_PATH_RE='(^|/)c[l]aude\.md$|^\.c[l]aude/|^private/|(^|/)\.cargo/config(\.toml)?$'
+LOCAL_ONLY_PATH_RE='(^|/)c[l]aude\.md$|^\.c[l]aude/|^private/|(^|/)\.cargo/'
 COMMIT_SUBJECT_RE='^(feat|fix|docs|test|refactor|chore)\([a-z0-9_./-]+\): [^ ].*$'
 
 check_tracked_dashes() {
@@ -116,6 +116,30 @@ check_cargo_audit_output() {
     [ "$vulns" -eq 0 ]
 }
 
+# cargo audit reads ./.cargo/audit.toml, or else ${CARGO_HOME:-$HOME/.cargo}/audit.toml, with an
+# empty CARGO_HOME treated as unset (cargo-audit 0.22 src/commands.rs config_path, home 0.5.11
+# src/env.rs). fetch = false, stale = true and ignore there would let the gate pass on a stale or
+# filtered database, so the gate refuses either file.
+check_audit_config() {
+    local rc=0 path
+    for path in ./.cargo/audit.toml "${CARGO_HOME:-$HOME/.cargo}/audit.toml"; do
+        if [ -e "$path" ]; then
+            echo "cargo audit configuration file found: $path; the gate refuses it"
+            rc=1
+        fi
+    done
+    return $rc
+}
+
+check_cargo_audit() {
+    local out rc
+    check_audit_config || return 1
+    out=$(cargo audit --color never 2>&1)
+    rc=$?
+    printf '%s\n' "$out"
+    printf '%s\n' "$out" | check_cargo_audit_output "$rc"
+}
+
 check_crate_attributes() {
     local missing=0 attr
     for attr in '#![forbid(unsafe_code)]' '#![deny(warnings)]'; do
@@ -198,7 +222,9 @@ check_commit_message() {
 # manifest path, lockfile path, so the check can run on fixtures, and optionally an advisory
 # database path, which the self-test passes so the check runs offline with no fetch.
 check_git_dependencies() {
-    python3 -I - "$@" <<'PY'
+    local rc=0
+    check_audit_config || rc=1
+    python3 -I - "$@" <<'PY' || rc=1
 import json
 import os
 import re
@@ -313,4 +339,5 @@ if git_packages:
 else:
     print("git dependencies: none")
 PY
+    return $rc
 }

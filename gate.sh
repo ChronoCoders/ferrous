@@ -53,20 +53,12 @@ cargo_test() {
     printf '%s\n' "$out" | check_cargo_test_output "$rc"
 }
 
-cargo_audit() {
-    local out rc
-    out=$(cargo audit --color never 2>&1)
-    rc=$?
-    printf '%s\n' "$out"
-    printf '%s\n' "$out" | check_cargo_audit_output "$rc"
-}
-
 step "cargo fmt --check" cargo fmt --check
 step "cargo clippy --all-targets -- -D warnings" cargo clippy --all-targets -- -D warnings
 step "cargo test" cargo_test
 step_summary '^tests: '
 step "cargo build --release --example node" cargo build --release --example node
-step "cargo audit" cargo_audit
+step "cargo audit" check_cargo_audit
 # The ID pattern keeps cargo audit's own "warning: N allowed warnings found" line out.
 step_summary '^(vulnerability: |warning: ([A-Z]+-[0-9A-Za-z-]+|none) |audit: )'
 step "dash check (tracked files)" check_tracked_dashes

@@ -56,13 +56,24 @@ CASES: list[tuple[str, str, Callable[[], Result], int, list[str] | None]] = []
 
 
 def case(group: str, name: str, fn: Callable[[], Result], rc: int, want: list[str] | None) -> None:
-    """want lists substrings the output must contain; None means the output must be empty."""
+    """want lists substrings the output must contain, or must not contain when they start with !.
+    None means the output must be empty."""
     CASES.append((group, name, fn, rc, want))
 
 
-def run(args: list[str], cwd: str, stdin: str | None = None) -> Result:
+Env = dict[str, str | None]
+
+
+def run(args: list[str], cwd: str, stdin: str | None = None, env: Env | None = None) -> Result:
+    """env adds variables to GIT_ENV; a None value removes one."""
+    full = dict(GIT_ENV)
+    for k, v in (env or {}).items():
+        if v is None:
+            full.pop(k, None)
+        else:
+            full[k] = v
     p = subprocess.run(
-        args, cwd=cwd, input=stdin, capture_output=True, text=True, env=GIT_ENV, check=False
+        args, cwd=cwd, input=stdin, capture_output=True, text=True, env=full, check=False
     )
     return p.returncode, (p.stdout + p.stderr).strip()
 
@@ -74,8 +85,8 @@ def git(cwd: str, *args: str) -> str:
     return out
 
 
-def checks(cwd: str, call: str, stdin: str | None = None) -> Result:
-    return run(["bash", "-c", f'. "$0"; {call}', CHECKS], cwd, stdin)
+def checks(cwd: str, call: str, stdin: str | None = None, env: Env | None = None) -> Result:
+    return run(["bash", "-c", f'. "$0"; {call}', CHECKS], cwd, stdin, env)
 
 
 def write(root: str, path: str, text: str) -> None:
@@ -274,6 +285,9 @@ for label, path in [
     ("cargo_config", ".cargo/config"),
     ("cargo_config_toml", ".cargo/config.toml"),
     ("nested_cargo_config", "sub/.cargo/config.toml"),
+    ("cargo_audit_toml", ".cargo/audit.toml"),
+    ("cargo_any_file", ".cargo/credentials.toml.example"),
+    ("nested_cargo_any_file", "sub/.cargo/audit.toml"),
 ]:
     case(
         "check_staged_paths",
@@ -286,7 +300,8 @@ for label, path in [
     ("ordinary_file", "src/a.rs"),
     ("private_prefix_not_dir", "privateer.md"),
     ("md_suffix_only", f"not{NAME}.md.bak"),
-    ("cargo_other_file", ".cargo/credentials.toml.example"),
+    ("cargo_lookalike_dir", "x.cargo/audit.toml"),
+    ("cargo_manifest", "Cargo.toml"),
 ]:
     case(
         "check_staged_paths",
@@ -560,11 +575,23 @@ def manifest(extra: str) -> str:
     return '[package]\nname = "fixture"\nversion = "0.0.0"\nedition = "2021"\n\n' + extra
 
 
-def gitdeps(toml: str, lock: str, db: str = ADVISORY_DB) -> Result:
+def gitdeps(
+    toml: str,
+    lock: str,
+    db: str | None = ADVISORY_DB,
+    files: dict[str, str] | None = None,
+    env: Callable[[str], Env] | None = None,
+) -> Result:
+    """db None runs the gate's own path, which fetches. env builds overrides from the temp dir."""
     with tempfile.TemporaryDirectory() as d:
         write(d, "Cargo.toml", toml)
         write(d, "Cargo.lock", lock)
-        return checks(d, f'check_git_dependencies Cargo.toml Cargo.lock "{db}"')
+        for path, text in (files or {}).items():
+            write(d, path, text)
+        arg = "" if db is None else f' "{db}"'
+        return checks(
+            d, f"check_git_dependencies Cargo.toml Cargo.lock{arg}", env=env(d) if env else None
+        )
 
 
 def lock_case(label: str, source: str, rc: int, want: str) -> None:
@@ -757,6 +784,168 @@ case(
 )
 
 
+# cargo audit configuration files and the fetching paths. Inside run.sh's namespace there is no
+# network, so the gate's own fetching path fails exactly as it would when GitHub is unreachable.
+
+AUDIT_TOML = "[database]\nfetch = false\n"
+REFUSED = "; the gate refuses it"
+
+
+def audit_config(files: dict[str, str], env: Callable[[str], Env]) -> Result:
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "work"))
+        for path, text in files.items():
+            write(d, path, text)
+        return checks(os.path.join(d, "work"), "check_audit_config", env=env(d))
+
+
+def home_only(d: str) -> Env:
+    return {"HOME": os.path.join(d, "home"), "CARGO_HOME": None}
+
+
+def cargo_home(d: str) -> Env:
+    return {"HOME": os.path.join(d, "home"), "CARGO_HOME": os.path.join(d, "ch")}
+
+
+AuditCase = tuple[str, dict[str, str], Callable[[str], Env], int, list[str] | None]
+AUDIT_CASES: list[AuditCase] = [
+    ("none", {}, home_only, 0, None),
+    (
+        "project_file",
+        {"work/.cargo/audit.toml": AUDIT_TOML},
+        home_only,
+        1,
+        ["cargo audit configuration file found: ./.cargo/audit.toml" + REFUSED],
+    ),
+    ("cargo_home_file", {"ch/audit.toml": AUDIT_TOML}, cargo_home, 1, ["/ch/audit.toml" + REFUSED]),
+    (
+        "cargo_home_unset_home_file",
+        {"home/.cargo/audit.toml": AUDIT_TOML},
+        home_only,
+        1,
+        ["/home/.cargo/audit.toml" + REFUSED],
+    ),
+    (
+        "cargo_home_empty_uses_home",
+        {"home/.cargo/audit.toml": AUDIT_TOML},
+        lambda d: {"HOME": os.path.join(d, "home"), "CARGO_HOME": ""},
+        1,
+        ["/home/.cargo/audit.toml" + REFUSED],
+    ),
+    (
+        "cargo_home_relative_to_cwd",
+        {"work/rel/audit.toml": AUDIT_TOML},
+        lambda d: {"HOME": os.path.join(d, "home"), "CARGO_HOME": "rel"},
+        1,
+        ["found: rel/audit.toml" + REFUSED],
+    ),
+    # cargo audit does not read ~/.cargo/audit.toml when CARGO_HOME is set, so neither does this.
+    (
+        "cargo_home_set_home_file_unread",
+        {"home/.cargo/audit.toml": AUDIT_TOML},
+        cargo_home,
+        0,
+        None,
+    ),
+    (
+        "project_and_cargo_home",
+        {"work/.cargo/audit.toml": AUDIT_TOML, "ch/audit.toml": AUDIT_TOML},
+        cargo_home,
+        1,
+        ["found: ./.cargo/audit.toml" + REFUSED, "/ch/audit.toml" + REFUSED],
+    ),
+]
+for label, files, env, rc, want in AUDIT_CASES:
+    case("check_audit_config", label, partial(audit_config, files, env), rc, want)
+
+
+def cargo_audit_case(files: dict[str, str], env: Env | None = None) -> Result:
+    with tempfile.TemporaryDirectory() as d:
+        write(d, "Cargo.lock", REAL_LOCK)
+        for path, text in files.items():
+            write(d, path, text)
+        return checks(d, "check_cargo_audit", env=env)
+
+
+FETCH_FAILED = "couldn't fetch advisory database"
+case(
+    "check_cargo_audit",
+    "no_network_fetch_fails",
+    partial(cargo_audit_case, {}),
+    1,
+    [FETCH_FAILED, "audit: 0 vulnerabilities, 0 warnings"],
+)
+case(
+    "check_cargo_audit",
+    "project_config_refused_before_audit",
+    partial(cargo_audit_case, {".cargo/audit.toml": AUDIT_TOML}),
+    1,
+    ["cargo audit configuration file found: ./.cargo/audit.toml" + REFUSED, "!Fetching", "!audit:"],
+)
+
+
+def cargo_audit_home_case() -> Result:
+    with tempfile.TemporaryDirectory() as h:
+        write(h, "audit.toml", AUDIT_TOML)
+        return cargo_audit_case({}, {"CARGO_HOME": h})
+
+
+case(
+    "check_cargo_audit",
+    "cargo_home_config_refused_before_audit",
+    cargo_audit_home_case,
+    1,
+    ["/audit.toml" + REFUSED, "!Fetching", "!audit:"],
+)
+
+GIT_ITOA = append_pkg(REAL_LOCK, "itoa", "1.0.15", chrono("itoa"))
+case(
+    "check_git_dependencies",
+    "r5_fetch_fails_without_db_argument",
+    partial(gitdeps, REAL_TOML, GIT_ITOA, None),
+    1,
+    [FETCH_FAILED, "cargo audit produced no report for the git packages"],
+)
+case(
+    "check_git_dependencies",
+    "r5_project_audit_config_refused",
+    partial(gitdeps, REAL_TOML, REAL_LOCK, None, {".cargo/audit.toml": AUDIT_TOML}),
+    1,
+    [
+        "cargo audit configuration file found: ./.cargo/audit.toml" + REFUSED,
+        "git dependencies: none",
+    ],
+)
+case(
+    "check_git_dependencies",
+    "r5_cargo_home_audit_config_refused",
+    partial(
+        gitdeps,
+        REAL_TOML,
+        REAL_LOCK,
+        None,
+        {"ch/audit.toml": AUDIT_TOML},
+        lambda d: {"CARGO_HOME": os.path.join(d, "ch")},
+    ),
+    1,
+    ["/ch/audit.toml" + REFUSED],
+)
+case(
+    "check_git_dependencies",
+    "r5_home_audit_config_refused",
+    partial(
+        gitdeps,
+        REAL_TOML,
+        REAL_LOCK,
+        None,
+        {"h/.cargo/audit.toml": AUDIT_TOML},
+        lambda d: {"HOME": os.path.join(d, "h"), "CARGO_HOME": None},
+    ),
+    1,
+    ["/h/.cargo/audit.toml" + REFUSED],
+)
+
+
 # Hooks, run by real git commands in scratch repositories. The scratch gate.sh is a stub, so the
 # pre-push cases test the hook and not the gate it hands over to.
 
@@ -808,6 +997,7 @@ UNCHANGED = "receipt: HEAD unchanged"
 case("pre-commit", "pass", lambda: commit_case({"a.txt": "x\n"}, "fix(x): y"), 0, [ADVANCED])
 for label, files, hook_msg in [
     ("local_only_path", {"private/x.md": "x\n"}, LOCAL),
+    ("cargo_dir_file", {".cargo/audit.toml": "x\n"}, LOCAL),
     ("banned_name_path", {f"{NAME}.txt": "x\n"}, "banned name in staged paths"),
     ("banned_name_line", {"a.txt": f"{NAME}\n"}, "banned name in staged added lines"),
     ("em_dash", {"a.txt": f"a {EM} b\n"}, "em or en dash in staged added lines"),
@@ -1295,7 +1485,10 @@ def main() -> int:
             if out:
                 problems.append("output not empty")
         else:
-            problems += [f"missing {w!r}" for w in want if w not in out]
+            problems += [f"missing {w!r}" for w in want if not w.startswith("!") and w not in out]
+            problems += [
+                f"unexpected {w[1:]!r}" for w in want if w.startswith("!") and w[1:] in out
+            ]
         label = f"{group}/{name}"
         if problems:
             first = out.splitlines()[:6]
